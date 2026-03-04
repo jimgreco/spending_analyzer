@@ -1,0 +1,1325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spending Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg:#0f1117; --surface:#1a1d27; --border:#2a2d3a;
+  --text:#e8eaf0; --muted:#8b8fa8; --accent:#6366f1;
+  --accent2:#22d3ee; --green:#10b981; --amber:#f59e0b; --red:#ef4444;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh}
+a{color:var(--accent2);text-decoration:none}
+
+/* ── Main ───────────────────────────────────────────────────────────────── */
+.main{padding:24px;max-width:1400px;margin:0 auto}
+
+/* ── Drop overlay ───────────────────────────────────────────────────────── */
+#drop-overlay{
+  position:fixed;inset:0;background:rgba(99,102,241,.15);
+  border:3px dashed var(--accent);border-radius:16px;
+  display:none;align-items:center;justify-content:center;
+  z-index:200;font-size:1.5rem;font-weight:700;color:var(--accent);
+  pointer-events:none;
+}
+#drop-overlay.active{display:flex}
+
+/* ── Upload zone ────────────────────────────────────────────────────────── */
+#upload-zone{
+  border:2px dashed var(--border);border-radius:12px;
+  padding:20px 24px;margin-bottom:24px;
+  background:var(--surface);cursor:pointer;transition:all .2s;
+  display:flex;align-items:center;gap:16px;
+}
+#upload-zone:hover,#upload-zone.dragover{
+  border-color:var(--accent);background:rgba(99,102,241,.06)}
+#upload-zone .icon{font-size:1.8rem}
+#upload-zone .text strong{display:block;margin-bottom:2px}
+#upload-zone .text span{color:var(--muted);font-size:.8rem}
+#upload-zone input[type=file]{display:none}
+#upload-zone .pick-link{color:var(--accent2);cursor:pointer;text-decoration:underline}
+
+/* ── Upload history ─────────────────────────────────────────────────────── */
+#upload-history{margin-bottom:24px}
+#upload-history details summary{
+  cursor:pointer;color:var(--muted);font-size:.8rem;
+  list-style:none;display:flex;align-items:center;gap:6px}
+#upload-history details summary::before{content:"▶";font-size:.65rem}
+#upload-history details[open] summary::before{content:"▼"}
+#history-table{margin-top:10px;font-size:.8rem;border-collapse:collapse;width:100%}
+#history-table td,#history-table th{padding:6px 10px;border-bottom:1px solid var(--border);text-align:left}
+#history-table th{color:var(--muted);font-weight:600;font-size:.72rem;text-transform:uppercase}
+
+/* ── Summary cards ──────────────────────────────────────────────────────── */
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
+.card .label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.card .value{font-size:1.75rem;font-weight:700}
+.card .sub{font-size:.8rem;color:var(--muted);margin-top:4px}
+
+/* ── Charts ─────────────────────────────────────────────────────────────── */
+.charts{display:grid;grid-template-columns:380px 1fr;gap:16px;margin-bottom:24px}
+.chart-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
+.chart-box h3{font-size:.85rem;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.05em;margin-bottom:16px}
+
+/* ── Filter bar ─────────────────────────────────────────────────────────── */
+.filter-bar{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:14px 20px;margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.filter-bar input,.filter-bar select{
+  background:var(--bg);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:7px 12px;font-size:.875rem;outline:none}
+.filter-bar input:focus,.filter-bar select:focus{border-color:var(--accent)}
+.filter-bar input[type=search],.filter-bar input[type=text]{flex:1;min-width:200px}
+.filter-bar input[type=date]{flex:none;width:138px;color-scheme:dark}
+.filter-row{width:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.filter-row-label{font-size:.78rem;color:var(--muted);white-space:nowrap}
+.btn{background:var(--border);border:none;color:var(--muted);border-radius:8px;
+  padding:7px 14px;font-size:.875rem;cursor:pointer;transition:all .15s}
+.btn:hover{background:var(--accent);color:#fff}
+.preset-btn{background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.25);
+  color:var(--accent);border-radius:6px;padding:4px 11px;font-size:.78rem;
+  cursor:pointer;white-space:nowrap;transition:all .15s}
+.preset-btn:hover,.preset-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+#active-filter{font-size:.8rem;color:var(--accent2);cursor:pointer}
+#active-filter:hover{text-decoration:underline}
+
+/* ── Status tabs ─────────────────────────────────────────────────────────── */
+.status-tabs{display:flex;gap:6px;margin-bottom:10px;align-items:center}
+.status-tab{
+  background:var(--surface);border:1px solid var(--border);color:var(--muted);
+  border-radius:8px;padding:6px 14px;font-size:.8rem;cursor:pointer;transition:all .15s}
+.status-tab:hover{border-color:var(--accent);color:var(--text)}
+.status-tab[data-status=active].active{
+  background:rgba(99,102,241,.15);border-color:var(--accent);color:var(--accent)}
+.status-tab[data-status=deleted].active{
+  background:rgba(239,68,68,.12);border-color:var(--red);color:var(--red)}
+.status-tab[data-status=deduped].active{
+  background:rgba(245,158,11,.12);border-color:var(--amber);color:var(--amber)}
+.status-tab .tab-count{
+  display:inline-block;background:rgba(255,255,255,.08);
+  border-radius:999px;padding:1px 7px;font-size:.7rem;margin-left:5px}
+
+/* ── Table ──────────────────────────────────────────────────────────────── */
+.table-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:.875rem}
+thead th{background:var(--surface);color:var(--muted);font-weight:600;font-size:.75rem;
+  text-transform:uppercase;letter-spacing:.04em;padding:10px 12px;
+  text-align:left;border-bottom:1px solid var(--border);cursor:pointer;user-select:none}
+thead th:hover{color:var(--text)}
+thead th.asc::after{content:' ▲'}
+thead th.desc::after{content:' ▼'}
+tbody tr{border-bottom:1px solid var(--border);transition:background .1s}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+td{padding:9px 12px}
+td.amount{font-variant-numeric:tabular-nums;text-align:right;font-weight:600}
+.source-tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.7rem;font-weight:600}
+.pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:.75rem;
+  font-weight:500;cursor:pointer;transition:opacity .15s;border:2px solid transparent}
+.pill:hover{opacity:.75}
+.pill.edited{border-color:var(--amber)}
+.pill-select{background:var(--bg);border:1px solid var(--accent);color:var(--text);
+  border-radius:6px;font-size:.75rem;padding:2px 4px;cursor:pointer;outline:none}
+.pagination{display:flex;justify-content:center;align-items:center;gap:8px;
+  padding:16px;color:var(--muted);font-size:.85rem}
+.pagination button{background:var(--border);border:none;color:var(--text);
+  border-radius:6px;padding:5px 12px;cursor:pointer}
+.pagination button:hover{background:var(--accent)}
+.pagination button:disabled{opacity:.3;cursor:default}
+.empty-state{text-align:center;padding:60px 20px;color:var(--muted)}
+.empty-state .big{font-size:2rem;margin-bottom:8px}
+
+/* ── Row states ──────────────────────────────────────────────────────────── */
+tbody tr.status-deleted td{opacity:.45}
+tbody tr.status-deleted td.description-cell{text-decoration:line-through}
+tbody tr.status-deduped{border-left:3px solid var(--amber)}
+tbody tr.status-deduped td{opacity:.6}
+
+/* ── Restore button ──────────────────────────────────────────────────────── */
+.restore-btn{
+  background:none;border:1px solid var(--border);color:var(--muted);
+  border-radius:6px;padding:3px 10px;font-size:.75rem;cursor:pointer;
+  white-space:nowrap;transition:all .15s}
+.restore-btn:hover{border-color:var(--green);color:var(--green);background:rgba(16,185,129,.08)}
+
+/* ── Row selection ───────────────────────────────────────────────────────── */
+.col-check{width:36px;cursor:default}
+.col-check input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;cursor:pointer}
+thead th.col-check{cursor:default}
+tbody tr.selected{background:rgba(99,102,241,.1) !important}
+
+/* ── Bulk action bar ─────────────────────────────────────────────────────── */
+#bulk-bar{
+  position:fixed;bottom:-72px;left:50%;transform:translateX(-50%);
+  background:var(--surface);border:1px solid var(--accent);border-radius:12px;
+  padding:10px 18px;display:flex;align-items:center;gap:10px;
+  box-shadow:0 8px 32px rgba(0,0,0,.6);z-index:500;
+  transition:bottom .25s cubic-bezier(.4,0,.2,1);white-space:nowrap}
+#bulk-bar.visible{bottom:24px}
+#bulk-count{font-weight:600;font-size:.875rem;color:var(--accent2);min-width:110px}
+#bulk-cat-select{
+  background:var(--bg);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:6px 10px;font-size:.875rem;outline:none}
+#bulk-cat-select:focus{border-color:var(--accent)}
+.bulk-apply{background:var(--accent);border:none;color:#fff;border-radius:8px;
+  padding:6px 14px;font-size:.875rem;cursor:pointer}
+.bulk-apply:hover{opacity:.85}
+.bulk-sep{width:1px;height:20px;background:var(--border);flex-shrink:0}
+.bulk-delete{background:none;border:1px solid var(--red);color:var(--red);
+  border-radius:8px;padding:6px 12px;font-size:.875rem;cursor:pointer}
+.bulk-delete:hover{background:rgba(239,68,68,.1)}
+.bulk-restore-btn{background:none;border:1px solid var(--green);color:var(--green);
+  border-radius:8px;padding:6px 12px;font-size:.875rem;cursor:pointer}
+.bulk-restore-btn:hover{background:rgba(16,185,129,.1)}
+.bulk-clear{background:none;border:none;color:var(--muted);cursor:pointer;
+  font-size:.875rem;padding:4px 8px;border-radius:6px;margin-left:2px}
+.bulk-clear:hover{color:var(--text);background:rgba(255,255,255,.06)}
+
+/* ── Import file cell ────────────────────────────────────────────────────── */
+td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── Toast ──────────────────────────────────────────────────────────────── */
+#toast-container{position:fixed;top:24px;right:24px;z-index:1000;
+  display:flex;flex-direction:column;gap:8px;max-width:380px}
+.toast{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:14px 18px;box-shadow:0 8px 32px rgba(0,0,0,.5);animation:slideIn .3s ease}
+.toast.success{border-color:var(--green)}
+.toast.error{border-color:var(--red)}
+.toast.warn{border-color:var(--amber)}
+.toast-title{font-weight:600;margin-bottom:4px;font-size:.875rem}
+.toast-body{font-size:.8rem;color:var(--muted);line-height:1.4}
+@keyframes slideIn{from{transform:translateX(120%);opacity:0} to{transform:translateX(0);opacity:1}}
+
+/* ── Category manager modal ─────────────────────────────────────────────── */
+#cat-modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:400;
+  display:none;align-items:center;justify-content:center}
+#cat-modal-overlay.open{display:flex}
+#cat-modal{
+  background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:28px;width:440px;max-width:95vw;max-height:80vh;
+  display:flex;flex-direction:column;gap:14px}
+#cat-modal h2{font-size:1rem;font-weight:700}
+.cat-add-row{display:flex;gap:8px}
+.cat-add-row input{
+  flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:8px 12px;font-size:.875rem;outline:none}
+.cat-add-row input:focus{border-color:var(--accent)}
+.cat-add-row button{
+  background:var(--accent);border:none;color:#fff;border-radius:8px;
+  padding:8px 16px;font-size:.875rem;cursor:pointer;white-space:nowrap}
+.cat-add-row button:hover{opacity:.85}
+#cat-list{overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:3px;min-height:80px}
+.cat-row{
+  display:flex;align-items:center;gap:8px;
+  padding:6px 8px;border-radius:8px;background:var(--bg)}
+.cat-row-name{
+  flex:1;font-size:.875rem;padding:4px 6px;
+  background:transparent;border:none;color:var(--text);
+  border-radius:6px;outline:none;cursor:default}
+.cat-row-name[contenteditable=true]{
+  cursor:text;background:rgba(99,102,241,.1);border:1px solid var(--accent);padding:3px 6px}
+.cat-row-actions{display:flex;gap:4px;flex-shrink:0}
+.cat-btn{
+  background:none;border:none;color:var(--muted);cursor:pointer;
+  font-size:.8rem;padding:3px 7px;border-radius:4px;line-height:1}
+.cat-btn:hover{background:rgba(255,255,255,.08);color:var(--text)}
+.cat-btn.save{color:var(--green)}
+.cat-btn.save:hover{background:rgba(16,185,129,.15)}
+.cat-btn.del:hover{color:var(--red);background:rgba(239,68,68,.1)}
+.cat-btn:disabled{opacity:.2;cursor:default;pointer-events:none}
+.cat-modal-footer{display:flex;justify-content:flex-end}
+.cat-modal-footer button{
+  background:var(--border);border:none;color:var(--text);
+  border-radius:8px;padding:7px 20px;font-size:.875rem;cursor:pointer}
+.cat-modal-footer button:hover{background:var(--accent);color:#fff}
+
+/* ── Login overlay ──────────────────────────────────────────────────────── */
+#login-overlay{
+  position:fixed;inset:0;background:var(--bg);z-index:900;
+  display:none;align-items:center;justify-content:center}
+#login-overlay.visible{display:flex}
+.login-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:20px;
+  padding:48px 56px;text-align:center;max-width:400px;width:90%}
+.login-card .logo{font-size:2.5rem;margin-bottom:16px}
+.login-card h1{font-size:1.5rem;font-weight:700;margin-bottom:8px}
+.login-card p{color:var(--muted);font-size:.9rem;margin-bottom:32px;line-height:1.5}
+.google-btn{
+  display:inline-flex;align-items:center;gap:10px;
+  background:#fff;color:#3c4043;border:none;border-radius:10px;
+  padding:12px 24px;font-size:.95rem;font-weight:500;cursor:pointer;
+  box-shadow:0 2px 8px rgba(0,0,0,.3);transition:box-shadow .2s;
+  text-decoration:none}
+.google-btn:hover{box-shadow:0 4px 20px rgba(0,0,0,.45)}
+
+/* ── User header ────────────────────────────────────────────────────────── */
+#user-header{
+  display:none;background:var(--surface);border-bottom:1px solid var(--border);
+  padding:8px 24px;align-items:center;justify-content:flex-end;gap:12px}
+#user-header.visible{display:flex}
+.user-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;
+  border:2px solid var(--border);flex-shrink:0}
+.user-avatar-placeholder{
+  width:28px;height:28px;border-radius:50%;background:var(--accent);
+  display:flex;align-items:center;justify-content:center;
+  font-size:.75rem;font-weight:700;color:#fff;flex-shrink:0}
+#user-name{font-size:.82rem;color:var(--muted)}
+.logout-btn{
+  background:none;border:1px solid var(--border);color:var(--muted);
+  border-radius:6px;padding:3px 10px;font-size:.78rem;cursor:pointer;
+  transition:all .15s}
+.logout-btn:hover{border-color:var(--red);color:var(--red)}
+
+/* ── Upload progress ────────────────────────────────────────────────────── */
+#upload-progress{
+  position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:300;
+  display:none;align-items:center;justify-content:center}
+#upload-progress.visible{display:flex}
+.progress-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:32px 40px;text-align:center;min-width:280px}
+.spinner{width:36px;height:36px;border:3px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;
+  margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- Login overlay -->
+<div id="login-overlay">
+  <div class="login-card">
+    <div class="logo">💸</div>
+    <h1>Spending Dashboard</h1>
+    <p>Track and categorize your transactions<br>across all your cards.</p>
+    <a class="google-btn" href="/auth/login">
+      <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
+        <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908C16.658 14.013 17.64 11.706 17.64 9.2z" fill="#4285F4"/>
+        <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z" fill="#34A853"/>
+        <path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/>
+        <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
+      </svg>
+      Sign in with Google
+    </a>
+  </div>
+</div>
+
+<!-- User header -->
+<div id="user-header">
+  <div id="user-avatar-wrap"></div>
+  <span id="user-name"></span>
+  <button class="logout-btn" onclick="logout()">Sign out</button>
+</div>
+
+<!-- Drop overlay (full page highlight) -->
+<div id="drop-overlay">📂 Drop files to import</div>
+
+<!-- Upload progress -->
+<div id="upload-progress">
+  <div class="progress-card">
+    <div class="spinner"></div>
+    <div style="font-weight:600;font-size:1rem">Importing statements…</div>
+    <div style="color:var(--muted);font-size:.85rem;margin-top:6px" id="progress-detail"></div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<input type="file" id="file-input" multiple accept=".pdf,.csv" onchange="handleFileInput(this.files)" style="display:none">
+
+<div class="main">
+
+  <!-- Upload zone -->
+  <div id="upload-zone" onclick="document.getElementById('file-input').click()">
+    <div class="icon">📄</div>
+    <div class="text">
+      <strong>Drop PDF or CSV statements here</strong>
+      <span>Supports Chase, Apple Card, Citi, Coinbase, Bank of America ·
+        <span class="pick-link">or click to browse</span>
+      </span>
+    </div>
+  </div>
+
+  <!-- Upload history -->
+  <div id="upload-history"></div>
+
+  <!-- Summary cards -->
+  <div class="cards">
+    <div class="card">
+      <div class="label">Total Spent</div>
+      <div class="value" id="card-total">—</div>
+      <div class="sub" id="card-sub">all time</div>
+    </div>
+    <div class="card">
+      <div class="label">Transactions</div>
+      <div class="value" id="card-count">—</div>
+      <div class="sub">across all cards</div>
+    </div>
+    <div class="card">
+      <div class="label">Avg per Transaction</div>
+      <div class="value" id="card-avg">—</div>
+      <div class="sub">per transaction</div>
+    </div>
+    <div class="card">
+      <div class="label">Top Category</div>
+      <div class="value" style="font-size:1rem" id="card-top-cat">—</div>
+      <div class="sub" id="card-top-amt"></div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts">
+    <div class="chart-box">
+      <h3>By Category</h3>
+      <canvas id="donutChart" height="260"></canvas>
+    </div>
+    <div class="chart-box">
+      <h3>Monthly Spending <span id="active-filter" onclick="clearFilter()" style="display:none">(filtered – click to clear)</span></h3>
+      <canvas id="barChart" height="200"></canvas>
+    </div>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <input type="search" id="search" placeholder="🔍  Search description…" oninput="debounce(applyFilters,300)()">
+    <select id="filter-source" onchange="applyFilters()">
+      <option value="">All Cards</option>
+      <option>Amazon</option><option>Apple Card</option>
+      <option>Bank of America</option><option>Citi</option><option>Coinbase</option>
+    </select>
+    <select id="filter-cat" onchange="applyFilters()">
+      <option value="">All Categories</option>
+    </select>
+    <select id="filter-import" onchange="applyFilters()">
+      <option value="">All Imports</option>
+    </select>
+    <button class="btn" onclick="clearFilter()">Clear</button>
+    <button class="btn" onclick="openCatModal()" style="margin-left:auto">⚙ Categories</button>
+    <!-- Date range row -->
+    <div class="filter-row">
+      <span class="filter-row-label">Date</span>
+      <input type="date" id="filter-date-from" onchange="onDateInput()" title="From">
+      <span class="filter-row-label">—</span>
+      <input type="date" id="filter-date-to" onchange="onDateInput()" title="To">
+      <button class="preset-btn" id="preset-all"        onclick="setDatePreset('all')">All</button>
+      <button class="preset-btn" id="preset-month"      onclick="setDatePreset('month')">MTD</button>
+      <button class="preset-btn" id="preset-ytd"        onclick="setDatePreset('ytd')">YTD</button>
+      <button class="preset-btn" id="preset-last-month" onclick="setDatePreset('last-month')">Last Month</button>
+      <button class="preset-btn" id="preset-3months"    onclick="setDatePreset('3months')">Last 3 Mo</button>
+      <button class="preset-btn" id="preset-year"       onclick="setDatePreset('year')">Last Year</button>
+    </div>
+  </div>
+
+  <!-- Status tabs -->
+  <div class="status-tabs">
+    <button class="status-tab active" data-status="active"  onclick="setViewStatus('active')">Active</button>
+    <button class="status-tab"        data-status="deleted" onclick="setViewStatus('deleted')">🗑 Deleted</button>
+    <button class="status-tab"        data-status="deduped" onclick="setViewStatus('deduped')">⟳ Deduped</button>
+    <span id="status-hint" style="font-size:.75rem;color:var(--muted);margin-left:4px"></span>
+  </div>
+
+  <!-- Transaction table -->
+  <div class="table-box">
+    <table>
+      <thead>
+        <tr>
+          <th class="col-check"><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this.checked)"></th>
+          <th onclick="sortBy('date')">Date</th>
+          <th onclick="sortBy('description')">Description</th>
+          <th onclick="sortBy('category')">Category</th>
+          <th onclick="sortBy('source')">Card</th>
+          <th>Import</th>
+          <th onclick="sortBy('amount')" style="text-align:right">Amount</th>
+          <th id="col-actions-header" style="display:none"></th>
+        </tr>
+      </thead>
+      <tbody id="tx-body"></tbody>
+    </table>
+    <div class="pagination">
+      <button id="prev-btn" onclick="changePage(-1)">‹ Prev</button>
+      <span id="page-info"></span>
+      <button id="next-btn" onclick="changePage(1)">Next ›</button>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<!-- Bulk action bar -->
+<div id="bulk-bar">
+  <span id="bulk-count">0 selected</span>
+  <select id="bulk-cat-select"><option value="">Set category…</option></select>
+  <button class="bulk-apply" onclick="applyBulkCategory()">Apply</button>
+  <div class="bulk-sep"></div>
+  <button class="bulk-delete" id="bulk-delete-btn" onclick="deleteSelected()">🗑 Delete</button>
+  <button class="bulk-restore-btn" id="bulk-restore-btn" style="display:none" onclick="restoreSelected()">↩ Restore</button>
+  <button class="bulk-clear" onclick="clearSelection()">✕</button>
+</div>
+
+<!-- Category manager modal -->
+<div id="cat-modal-overlay" onclick="if(event.target===this)closeCatModal()">
+  <div id="cat-modal">
+    <h2>⚙ Manage Categories</h2>
+    <div class="cat-add-row">
+      <input id="cat-new-input" placeholder="New category name…"
+             onkeydown="if(event.key==='Enter')addCategoryFromInput()">
+      <button onclick="addCategoryFromInput()">+ Add</button>
+    </div>
+    <div id="cat-list"></div>
+    <div class="cat-modal-footer">
+      <button onclick="closeCatModal()">Done</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+let currentPage = 1;
+let totalPages  = 1;
+let sortCol     = 'date';
+let sortDir     = 'desc';
+let stats       = null;
+let categories  = [];
+let donutChart  = null;
+let barChart    = null;
+let catFilter   = '';  // category filter set by clicking donut
+let selectedIds = new Set();
+let viewStatus  = 'active';  // 'active' | 'deleted' | 'deduped'
+
+const SOURCE_COLORS = {
+  'Amazon':         { bg:'#ff9900', text:'#000' },
+  'Apple Card':     { bg:'#555',    text:'#fff' },
+  'Bank of America':{ bg:'#e31837', text:'#fff' },
+  'Citi':           { bg:'#003b8e', text:'#fff' },
+  'Coinbase':       { bg:'#0052ff', text:'#fff' },
+};
+
+const CAT_PALETTE = [
+  '#6366f1','#22d3ee','#10b981','#f59e0b','#ef4444','#8b5cf6',
+  '#ec4899','#14b8a6','#f97316','#84cc16','#06b6d4','#a855f7',
+  '#e11d48','#0ea5e9','#d97706','#16a34a','#7c3aed','#db2777',
+];
+const catColorMap = {};
+function catColor(cat) {
+  if (!catColorMap[cat]) {
+    const idx = Object.keys(catColorMap).length % CAT_PALETTE.length;
+    catColorMap[cat] = CAT_PALETTE[idx];
+  }
+  return catColorMap[cat];
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  setupDragDrop();
+  highlightPreset('all');
+  await checkAuth();
+});
+
+async function checkAuth() {
+  try {
+    const user = await fetch('/auth/me').then(r => {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+    showUserHeader(user);
+    await Promise.all([loadCategories(), loadStats(), loadTransactions(), loadUploadHistory()]);
+  } catch(e) {
+    document.getElementById('login-overlay').classList.add('visible');
+  }
+}
+
+function showUserHeader(user) {
+  const header = document.getElementById('user-header');
+  header.classList.add('visible');
+  document.getElementById('user-name').textContent = user.name || user.email;
+  const wrap = document.getElementById('user-avatar-wrap');
+  if (user.picture) {
+    wrap.innerHTML = `<img class="user-avatar" src="${escHtml(user.picture)}" alt="">`;
+  } else {
+    const initial = (user.name || user.email || 'U')[0].toUpperCase();
+    wrap.innerHTML = `<div class="user-avatar-placeholder">${initial}</div>`;
+  }
+}
+
+async function logout() {
+  await fetch('/auth/logout', { method: 'POST' });
+  window.location.reload();
+}
+
+// ── API helpers ────────────────────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function buildFilterParams(extra = {}) {
+  const p = new URLSearchParams({
+    source:      document.getElementById('filter-source').value,
+    category:    catFilter || document.getElementById('filter-cat').value,
+    date_from:   document.getElementById('filter-date-from').value,
+    date_to:     document.getElementById('filter-date-to').value,
+    search:      document.getElementById('search').value,
+    import_file: document.getElementById('filter-import').value,
+    status:      viewStatus,
+    ...extra
+  });
+  return p.toString();
+}
+
+// ── Status view ────────────────────────────────────────────────────────────────
+function setViewStatus(s) {
+  viewStatus = s;
+  document.querySelectorAll('.status-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.status === s));
+
+  const hint = document.getElementById('status-hint');
+  const actionsHeader = document.getElementById('col-actions-header');
+  const bulkDeleteBtn  = document.getElementById('bulk-delete-btn');
+  const bulkRestoreBtn = document.getElementById('bulk-restore-btn');
+
+  if (s === 'deleted') {
+    hint.textContent = 'Soft-deleted transactions — restore to bring them back.';
+    actionsHeader.style.display = '';
+    bulkDeleteBtn.style.display  = 'none';
+    bulkRestoreBtn.style.display = '';
+  } else if (s === 'deduped') {
+    hint.textContent = 'Transactions stored as cross-statement duplicates — restore to keep both.';
+    actionsHeader.style.display = '';
+    bulkDeleteBtn.style.display  = 'none';
+    bulkRestoreBtn.style.display = '';
+  } else {
+    hint.textContent = '';
+    actionsHeader.style.display = 'none';
+    bulkDeleteBtn.style.display  = '';
+    bulkRestoreBtn.style.display = 'none';
+  }
+
+  currentPage = 1;
+  clearSelection();
+  loadTransactions();
+}
+
+// ── Data loading ───────────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    stats = await api('/api/stats?' + buildFilterParams());
+    renderCards(stats);
+    renderCharts(stats);
+  } catch(e) { console.error('loadStats', e); }
+}
+
+async function loadTransactions() {
+  try {
+    const data = await api('/api/transactions?' + buildFilterParams({
+      page: currentPage, per_page: 50,
+      sort_by: sortCol, sort_dir: sortDir
+    }));
+    renderTable(data.transactions);
+    renderPagination(data.page, data.pages, data.total);
+  } catch(e) { console.error('loadTransactions', e); }
+}
+
+async function loadCategories() {
+  try {
+    const data = await api('/api/categories');
+    categories = data.categories;
+    const sel = document.getElementById('filter-cat');
+    sel.innerHTML = '<option value="">All Categories</option>' +
+      categories.map(c => `<option>${c}</option>`).join('');
+  } catch(e) { console.error('loadCategories', e); }
+}
+
+async function loadUploadHistory() {
+  try {
+    const data = await api('/api/uploads');
+    renderUploadHistory(data.uploads);
+  } catch(e) { console.error('loadUploadHistory', e); }
+}
+
+async function refreshAll() {
+  await Promise.all([loadCategories(), loadStats(), loadTransactions(), loadUploadHistory()]);
+}
+
+// ── Render: cards ──────────────────────────────────────────────────────────────
+function renderCards(s) {
+  const fmt = v => '$' + (+v || 0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.getElementById('card-total').textContent = fmt(s.total);
+  document.getElementById('card-count').textContent = (s.count || 0).toLocaleString();
+  document.getElementById('card-avg').textContent   = s.count ? fmt(s.total / s.count) : '—';
+  if (s.by_category && s.by_category.length) {
+    const top = s.by_category[0];
+    document.getElementById('card-top-cat').textContent = top.category;
+    document.getElementById('card-top-amt').textContent = fmt(top.total);
+  }
+}
+
+// ── Render: charts ─────────────────────────────────────────────────────────────
+function renderCharts(s) {
+  // Donut
+  const cats = s.by_category || [];
+  if (donutChart) donutChart.destroy();
+  donutChart = new Chart(document.getElementById('donutChart').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+      labels: cats.map(c => c.category),
+      datasets: [{
+        data: cats.map(c => c.total),
+        backgroundColor: cats.map(c => catColor(c.category)),
+        borderWidth: 2, borderColor: '#1a1d27'
+      }]
+    },
+    options: {
+      cutout: '65%',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const v = ctx.parsed;
+              const pct = ((v / cats.reduce((a,c)=>a+c.total,0))*100).toFixed(1);
+              return ` $${v.toLocaleString('en-US',{minimumFractionDigits:2})} (${pct}%)`;
+            }
+          }
+        }
+      },
+      onClick: (_, elems) => {
+        if (elems.length) {
+          catFilter = cats[elems[0].index].category;
+          document.getElementById('filter-cat').value = catFilter;
+          document.getElementById('active-filter').style.display = '';
+          applyFilters();
+        }
+      }
+    }
+  });
+
+  // Bar
+  const months = s.by_month || [];
+  if (barChart) barChart.destroy();
+  barChart = new Chart(document.getElementById('barChart').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: months.map(m => m.month),
+      datasets: [{
+        label: 'Spending', data: months.map(m => m.total),
+        backgroundColor: '#6366f1', borderRadius: 4
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        y: {
+          ticks: { color:'#8b8fa8', callback: v => `$${(v/1000).toFixed(0)}k` },
+          grid: { color:'#2a2d3a' }
+        },
+        x: { ticks: { color:'#8b8fa8' }, grid: { display:false } }
+      }
+    }
+  });
+}
+
+// ── Render: table ──────────────────────────────────────────────────────────────
+function renderTable(txs) {
+  const tbody = document.getElementById('tx-body');
+  const selectAllCb = document.getElementById('select-all-cb');
+  const showActions = viewStatus !== 'active';
+
+  if (!txs || !txs.length) {
+    const emptyMsg = viewStatus === 'deleted'
+      ? 'No deleted transactions.'
+      : viewStatus === 'deduped'
+        ? 'No cross-statement duplicates found.'
+        : 'No transactions found. Drop statement files above to get started.';
+    tbody.innerHTML = `<tr><td colspan="${showActions ? 8 : 7}">
+      <div class="empty-state">
+        <div class="big">${viewStatus === 'active' ? '📭' : '✓'}</div>
+        <div>${emptyMsg}</div>
+      </div></td></tr>`;
+    selectAllCb.checked = false;
+    selectAllCb.indeterminate = false;
+    return;
+  }
+
+  tbody.innerHTML = txs.map(t => {
+    const sel = selectedIds.has(t.id);
+    const fname = t.import_file
+      ? t.import_file.replace(/\.[^.]+$/, '').replace(/_/g, ' ')
+      : '—';
+    const actionsCell = showActions
+      ? `<td><button class="restore-btn" onclick="restoreOne(${t.id})">↩ Restore</button></td>`
+      : '';
+    return `
+    <tr class="${sel ? 'selected' : ''} status-${t.status || 'active'}">
+      <td class="col-check">
+        <input type="checkbox" data-id="${t.id}" ${sel ? 'checked' : ''}
+               onchange="toggleRow(this)">
+      </td>
+      <td>${t.date}</td>
+      <td class="description-cell">${escHtml(t.description)}</td>
+      <td>
+        <span class="pill${t.manually_corrected ? ' edited' : ''}"
+              style="background:${catColor(t.category)}22;color:${catColor(t.category)}"
+              data-id="${t.id}" data-cat="${escHtml(t.category)}"
+              onclick="startEdit(this)">
+          ${escHtml(t.category)}
+        </span>
+      </td>
+      <td>${sourceTag(t.source)}</td>
+      <td class="import-file" title="${escHtml(t.import_file||'')}">${escHtml(fname)}</td>
+      <td class="amount">$${(+t.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td>
+      ${actionsCell}
+    </tr>`;
+  }).join('');
+
+  // Sync select-all checkbox
+  const allCbs = document.querySelectorAll('#tx-body input[type=checkbox]');
+  const allChecked = allCbs.length > 0 && [...allCbs].every(c => c.checked);
+  const someChecked = [...allCbs].some(c => c.checked);
+  selectAllCb.checked = allChecked;
+  selectAllCb.indeterminate = someChecked && !allChecked;
+}
+
+function renderPagination(page, pages, total) {
+  currentPage = page;
+  totalPages  = pages;
+  document.getElementById('prev-btn').disabled = page <= 1;
+  document.getElementById('next-btn').disabled = page >= pages;
+  document.getElementById('page-info').textContent =
+    `Page ${page} of ${pages} · ${total.toLocaleString()} transactions`;
+}
+
+// ── Date range presets ─────────────────────────────────────────────────────────
+function fmtDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+let activePreset = null;
+
+function highlightPreset(id) {
+  activePreset = id;
+  ['all','month','ytd','last-month','3months','year'].forEach(p => {
+    const el = document.getElementById('preset-' + p);
+    if (el) el.classList.toggle('active', p === id);
+  });
+}
+
+function setDatePreset(preset) {
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = today.getMonth(); // 0-based
+  let from, to;
+
+  switch(preset) {
+    case 'all':
+      document.getElementById('filter-date-from').value = '';
+      document.getElementById('filter-date-to').value   = '';
+      highlightPreset('all');
+      applyFilters();
+      return;
+    case 'month':
+      from = new Date(y, m, 1);
+      to   = new Date(y, m + 1, 0);
+      break;
+    case 'ytd':
+      from = new Date(y, 0, 1);
+      to   = today;
+      break;
+    case 'last-month':
+      from = new Date(y, m - 1, 1);
+      to   = new Date(y, m, 0);
+      break;
+    case '3months':
+      from = new Date(y, m - 2, 1);
+      to   = today;
+      break;
+    case 'year':
+      from = new Date(y - 1, 0, 1);
+      to   = new Date(y - 1, 11, 31);
+      break;
+    default: return;
+  }
+
+  document.getElementById('filter-date-from').value = fmtDate(from);
+  document.getElementById('filter-date-to').value   = fmtDate(to);
+  highlightPreset(preset);
+  applyFilters();
+}
+
+function onDateInput() {
+  highlightPreset(null);
+  applyFilters();
+}
+
+// ── Render: upload history ─────────────────────────────────────────────────────
+function renderUploadHistory(uploads) {
+  // Populate import filter dropdown
+  const importSel = document.getElementById('filter-import');
+  const curImport = importSel.value;
+  importSel.innerHTML = '<option value="">All Imports</option>' +
+    (uploads || []).map(u =>
+      `<option ${u.filename === curImport ? 'selected' : ''}>${escHtml(u.filename)}</option>`
+    ).join('');
+
+  const el = document.getElementById('upload-history');
+  if (!uploads || !uploads.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <details>
+      <summary>Upload history (${uploads.length} files)</summary>
+      <table id="history-table">
+        <thead><tr>
+          <th>File</th><th>Card</th><th>New</th><th>Dupes</th><th>Imported</th><th></th>
+        </tr></thead>
+        <tbody>${uploads.map(u => `<tr>
+          <td>${escHtml(u.filename)}</td>
+          <td>${sourceTag(u.source || '?')}</td>
+          <td style="color:var(--green)">${u.tx_new}</td>
+          <td style="color:var(--muted)">${u.tx_dupes}</td>
+          <td style="color:var(--muted)">${u.uploaded_at}</td>
+          <td><button class="btn" style="font-size:.72rem;padding:3px 8px"
+                      onclick="reimportFile('${escHtml(u.filename)}')">🔄 Reimport</button></td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </details>`;
+}
+
+async function reimportFile(filename) {
+  try {
+    await api('/api/uploads?filename=' + encodeURIComponent(filename), { method: 'DELETE' });
+    showToast('Ready to reimport', `"${filename}" cleared — drop or upload the file again to reimport it.`, 'success');
+    await loadUploadHistory();
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+  }
+}
+
+// ── Category editing ───────────────────────────────────────────────────────────
+function startEdit(pillEl) {
+  const txId   = pillEl.dataset.id;
+  const curCat = pillEl.dataset.cat;
+  const opts   = categories.map(c =>
+    `<option ${c===curCat?'selected':''}>${c}</option>`).join('');
+  const sel = document.createElement('select');
+  sel.className = 'pill-select';
+  sel.innerHTML = opts;
+  sel.onchange = () => saveCategory(txId, sel.value, pillEl);
+  sel.onblur   = () => { sel.replaceWith(pillEl); };
+  pillEl.replaceWith(sel);
+  sel.focus();
+}
+
+async function saveCategory(txId, newCat, pillEl) {
+  try {
+    await api(`/api/transactions/${txId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ category: newCat })
+    });
+    pillEl.textContent = newCat;
+    pillEl.dataset.cat = newCat;
+    pillEl.style.background = catColor(newCat) + '22';
+    pillEl.style.color = catColor(newCat);
+    pillEl.classList.add('edited');
+    const sel = pillEl.parentElement?.querySelector('select');
+    sel?.replaceWith(pillEl);
+    // Refresh charts quietly
+    loadStats();
+  } catch(e) {
+    showToast('Update failed', e.message, 'error');
+  }
+}
+
+// ── Filters & sorting ──────────────────────────────────────────────────────────
+function applyFilters() {
+  currentPage = 1;
+  clearSelection();
+  loadStats();
+  loadTransactions();
+}
+
+function clearFilter() {
+  catFilter = '';
+  document.getElementById('filter-cat').value = '';
+  document.getElementById('filter-source').value = '';
+  document.getElementById('filter-date-from').value = '';
+  document.getElementById('filter-date-to').value = '';
+  document.getElementById('search').value = '';
+  document.getElementById('filter-import').value = '';
+  document.getElementById('active-filter').style.display = 'none';
+  highlightPreset(null);
+  applyFilters();
+}
+
+function sortBy(col) {
+  if (sortCol === col) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+  else { sortCol = col; sortDir = 'desc'; }
+  // Update header indicators
+  document.querySelectorAll('thead th').forEach(th => th.classList.remove('asc','desc'));
+  const colMap = {date:1,description:2,category:3,source:4,amount:6};
+  const th = document.querySelectorAll('thead th')[colMap[col]];
+  if (th) th.classList.add(sortDir);
+  currentPage = 1;
+  loadTransactions();
+}
+
+function changePage(delta) {
+  const np = currentPage + delta;
+  if (np < 1 || np > totalPages) return;
+  currentPage = np;
+  loadTransactions();
+  window.scrollTo(0, document.querySelector('.filter-bar').offsetTop - 20);
+}
+
+// ── Drag & drop ────────────────────────────────────────────────────────────────
+function setupDragDrop() {
+  const overlay = document.getElementById('drop-overlay');
+  const zone    = document.getElementById('upload-zone');
+  let counter   = 0;
+
+  document.addEventListener('dragenter', e => {
+    if (e.dataTransfer.types.includes('Files')) { counter++; overlay.classList.add('active'); }
+  });
+  document.addEventListener('dragleave', () => {
+    counter--;
+    if (counter <= 0) { counter = 0; overlay.classList.remove('active'); }
+  });
+  document.addEventListener('dragover', e => e.preventDefault());
+  document.addEventListener('drop', e => {
+    e.preventDefault();
+    counter = 0;
+    overlay.classList.remove('active');
+    const files = Array.from(e.dataTransfer.files).filter(
+      f => f.name.match(/\.(pdf|csv)$/i));
+    if (files.length) uploadFiles(files);
+    else showToast('No supported files', 'Please drop PDF or CSV files.', 'warn');
+  });
+
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); e.stopPropagation();
+    zone.classList.remove('dragover');
+  });
+}
+
+function handleFileInput(files) {
+  const arr = Array.from(files).filter(f => f.name.match(/\.(pdf|csv)$/i));
+  if (arr.length) uploadFiles(arr);
+}
+
+// ── Upload ─────────────────────────────────────────────────────────────────────
+async function uploadFiles(files) {
+  const prog = document.getElementById('upload-progress');
+  const detail = document.getElementById('progress-detail');
+  prog.classList.add('visible');
+  detail.textContent = `Uploading ${files.length} file${files.length>1?'s':''}…`;
+
+  const formData = new FormData();
+  files.forEach(f => formData.append('files', f));
+
+  try {
+    const data = await api('/api/upload', { method:'POST', body:formData });
+    prog.classList.remove('visible');
+
+    let totalNew = 0, totalDupes = 0;
+    data.results.forEach(r => {
+      totalNew   += r.new || 0;
+      totalDupes += r.dupes || 0;
+      if (r.status === 'error') {
+        showToast(`Error: ${r.filename}`, r.message, 'error');
+      } else if (r.status === 'already_imported') {
+        showToast(`Already imported`, r.filename, 'warn');
+      }
+    });
+
+    if (totalNew > 0 || totalDupes > 0) {
+      const lines = data.results
+        .filter(r => r.status === 'ok')
+        .map(r => `${r.filename}: ${r.new} new, ${r.dupes} dupes`);
+      showToast(
+        `✅ ${totalNew} new transaction${totalNew!==1?'s':''} imported`,
+        lines.join('\n') + (totalDupes ? `\n${totalDupes} duplicate${totalDupes!==1?'s':''} stored — view in ⟳ Deduped tab` : ''),
+        'success'
+      );
+    }
+
+    await refreshAll();
+  } catch(e) {
+    prog.classList.remove('visible');
+    showToast('Upload failed', e.message, 'error');
+  }
+
+  // Reset file input
+  document.getElementById('file-input').value = '';
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────────
+function showToast(title, body, type = 'success') {
+  const container = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<div class="toast-title">${escHtml(title)}</div>
+    <div class="toast-body">${escHtml(body).replace(/\n/g,'<br>')}</div>`;
+  container.prepend(el);
+  setTimeout(() => el.remove(), 6000);
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function sourceTag(src) {
+  const c = SOURCE_COLORS[src] || { bg:'#3f3f4a', text:'#eee' };
+  return `<span class="source-tag" style="background:${c.bg};color:${c.text}">${escHtml(src)}</span>`;
+}
+
+function escHtml(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+// ── Row selection & bulk actions ───────────────────────────────────────────────
+function toggleSelectAll(checked) {
+  document.querySelectorAll('#tx-body input[type=checkbox]').forEach(cb => {
+    cb.checked = checked;
+    const id = parseInt(cb.dataset.id);
+    checked ? selectedIds.add(id) : selectedIds.delete(id);
+    cb.closest('tr').classList.toggle('selected', checked);
+  });
+  updateBulkBar();
+}
+
+function toggleRow(cb) {
+  const id = parseInt(cb.dataset.id);
+  cb.checked ? selectedIds.add(id) : selectedIds.delete(id);
+  cb.closest('tr').classList.toggle('selected', cb.checked);
+  const allCbs  = document.querySelectorAll('#tx-body input[type=checkbox]');
+  const allChk  = [...allCbs].every(c => c.checked);
+  const someChk = [...allCbs].some(c => c.checked);
+  const hdr = document.getElementById('select-all-cb');
+  hdr.checked       = allChk;
+  hdr.indeterminate = someChk && !allChk;
+  updateBulkBar();
+}
+
+function clearSelection() {
+  selectedIds.clear();
+  document.querySelectorAll('#tx-body input[type=checkbox]').forEach(cb => {
+    cb.checked = false;
+    cb.closest('tr').classList.remove('selected');
+  });
+  const hdr = document.getElementById('select-all-cb');
+  if (hdr) { hdr.checked = false; hdr.indeterminate = false; }
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const n   = selectedIds.size;
+  const bar = document.getElementById('bulk-bar');
+  document.getElementById('bulk-count').textContent =
+    `${n} transaction${n !== 1 ? 's' : ''} selected`;
+  bar.classList.toggle('visible', n > 0);
+  if (n > 0) {
+    const sel = document.getElementById('bulk-cat-select');
+    sel.innerHTML = '<option value="">Set category…</option>' +
+      categories.map(c => `<option>${escHtml(c)}</option>`).join('');
+  }
+}
+
+async function applyBulkCategory() {
+  const cat = document.getElementById('bulk-cat-select').value;
+  if (!cat) { showToast('Pick a category', 'Select a category first.', 'warn'); return; }
+  try {
+    const data = await api('/api/transactions', {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ids: [...selectedIds], category: cat })
+    });
+    showToast(`Updated ${data.updated} transaction${data.updated!==1?'s':''}`,
+              `→ ${cat}`, 'success');
+    clearSelection();
+    loadStats();
+    loadTransactions();
+  } catch(e) { showToast('Update failed', e.message, 'error'); }
+}
+
+async function deleteSelected() {
+  const n = selectedIds.size;
+  if (!n) return;
+  if (!confirm(`Move ${n} transaction${n!==1?'s':''} to trash?`)) return;
+  try {
+    const data = await api('/api/transactions/bulk-delete', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ids: [...selectedIds] })
+    });
+    showToast(`Moved ${data.deleted} transaction${data.deleted!==1?'s':''} to trash`,
+              'View in 🗑 Deleted tab to restore.', 'success');
+    clearSelection();
+    loadStats();
+    loadTransactions();
+  } catch(e) { showToast('Delete failed', e.message, 'error'); }
+}
+
+// ── Restore ────────────────────────────────────────────────────────────────────
+async function restoreOne(id) {
+  try {
+    await api(`/api/transactions/${id}/restore`, { method: 'POST' });
+    showToast('Restored', 'Transaction moved back to active.', 'success');
+    clearSelection();
+    loadStats();
+    loadTransactions();
+  } catch(e) {
+    showToast('Restore failed', e.message, 'error');
+  }
+}
+
+async function restoreSelected() {
+  const n = selectedIds.size;
+  if (!n) return;
+  try {
+    const data = await api('/api/transactions/bulk-restore', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ids: [...selectedIds] })
+    });
+    showToast(`Restored ${data.restored} transaction${data.restored!==1?'s':''}`,
+              'Moved back to active.', 'success');
+    clearSelection();
+    loadStats();
+    loadTransactions();
+  } catch(e) { showToast('Restore failed', e.message, 'error'); }
+}
+
+// ── Category manager ───────────────────────────────────────────────────────────
+async function openCatModal() {
+  document.getElementById('cat-modal-overlay').classList.add('open');
+  document.getElementById('cat-new-input').value = '';
+  await renderCatList();
+}
+
+function closeCatModal() {
+  document.getElementById('cat-modal-overlay').classList.remove('open');
+}
+
+async function renderCatList() {
+  const data = await api('/api/categories');
+  const list = document.getElementById('cat-list');
+  list.innerHTML = data.categories.map(c => `
+    <div class="cat-row" data-name="${escHtml(c)}">
+      <span class="cat-row-name" data-original="${escHtml(c)}">${escHtml(c)}</span>
+      <div class="cat-row-actions">
+        <button class="cat-btn" title="Rename" onclick="startRename(this)">✏</button>
+        <button class="cat-btn save" title="Save rename" onclick="saveRename(this)" style="display:none">✓ Save</button>
+        <button class="cat-btn del" title="Delete" onclick="deleteCategory('${escHtml(c)}')"
+                ${c === 'Other' ? 'disabled' : ''}>✕</button>
+      </div>
+    </div>`).join('');
+}
+
+function startRename(btn) {
+  const row  = btn.closest('.cat-row');
+  const span = row.querySelector('.cat-row-name');
+  span.contentEditable = 'true';
+  span.style.cursor = 'text';
+  span.focus();
+  // Select all text
+  const range = document.createRange();
+  range.selectNodeContents(span);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+  btn.style.display = 'none';
+  row.querySelector('.cat-btn.save').style.display = '';
+  span.onkeydown = e => {
+    if (e.key === 'Enter') { e.preventDefault(); saveRename(row.querySelector('.cat-btn.save')); }
+    if (e.key === 'Escape') { cancelRename(row); }
+  };
+}
+
+function cancelRename(row) {
+  const span = row.querySelector('.cat-row-name');
+  span.textContent = span.dataset.original;
+  span.contentEditable = 'false';
+  row.querySelector('.cat-btn:not(.save):not(.del)').style.display = '';
+  row.querySelector('.cat-btn.save').style.display = 'none';
+}
+
+async function saveRename(btn) {
+  const row    = btn.closest('.cat-row');
+  const span   = row.querySelector('.cat-row-name');
+  const oldName = span.dataset.original;
+  const newName = span.textContent.trim();
+  if (!newName || newName === oldName) { cancelRename(row); return; }
+  try {
+    const data = await api('/api/categories', {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ old_name: oldName, new_name: newName })
+    });
+    const msg = data.updated > 0
+      ? `${data.updated} transaction${data.updated!==1?'s':''} updated`
+      : 'No transactions affected';
+    showToast('Category renamed', `"${oldName}" → "${newName}" · ${msg}`, 'success');
+    await renderCatList();
+    await loadCategories();
+    if (catFilter === oldName) {
+      catFilter = newName;
+      document.getElementById('filter-cat').value = newName;
+    }
+    loadStats();
+    loadTransactions();
+  } catch(e) {
+    showToast('Rename failed', e.message, 'error');
+    cancelRename(row);
+  }
+}
+
+async function addCategoryFromInput() {
+  const input = document.getElementById('cat-new-input');
+  const name  = input.value.trim();
+  if (!name) return;
+  try {
+    await api('/api/categories', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name })
+    });
+    input.value = '';
+    await renderCatList();
+    await loadCategories();
+    showToast('Category added', name, 'success');
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+  }
+}
+
+async function deleteCategory(name) {
+  if (!confirm(`Delete "${name}"?\n\nAny transactions using it will be moved to "Other".`)) return;
+  try {
+    const data = await api('/api/categories?name=' + encodeURIComponent(name), { method: 'DELETE' });
+    await renderCatList();
+    await loadCategories();
+    const msg = data.reassigned > 0
+      ? `${data.reassigned} transaction${data.reassigned!==1?'s':''} moved to "Other"`
+      : 'No transactions affected';
+    showToast('Category deleted', `"${name}" · ${msg}`, data.reassigned > 0 ? 'warn' : 'success');
+    if (catFilter === name || document.getElementById('filter-cat').value === name) {
+      catFilter = '';
+      document.getElementById('filter-cat').value = '';
+    }
+    loadStats();
+    loadTransactions();
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+  }
+}
+</script>
+</body>
+</html>
