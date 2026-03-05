@@ -1015,6 +1015,12 @@ async def upload_files(files: List[UploadFile] = File(...),
 
             new_count = dupe_count = 0
             with conn.cursor() as cur:
+                # Use existing display name if file was previously renamed
+                cur.execute("SELECT filename FROM uploaded_files WHERE user_id=%s AND file_hash=%s",
+                            (user_id, file_hash))
+                row = cur.fetchone()
+                import_name = row[0] if row else f.filename
+
                 for r in rows:
                     cur.execute(
                         "SELECT id FROM transactions WHERE user_id=%s AND dedup_key=%s AND status='active' LIMIT 1",
@@ -1028,7 +1034,7 @@ async def upload_files(files: List[UploadFile] = File(...),
                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """, (user_id, r["date"], r["description"], r["category"],
                           r["amount"], r["source"], r["dedup_key"],
-                          tx_status, r["dedup_key"] if is_dupe else None, f.filename))
+                          tx_status, r["dedup_key"] if is_dupe else None, import_name))
                     if tx_status == "active": new_count  += 1
                     else:                     dupe_count += 1
 
