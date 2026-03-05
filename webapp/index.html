@@ -360,9 +360,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
       </span>
     </div>
   </div>
-  <label style="display:inline-flex;align-items:center;gap:6px;font-size:.8rem;color:var(--muted);margin-top:8px;cursor:pointer">
-    <input type="checkbox" id="force-reimport"> Force reimport (re-process previously imported files)
-  </label>
+  <input type="file" id="reimport-file-input" accept=".pdf,.csv" multiple style="display:none">
 
   <!-- Upload history -->
   <div id="upload-history"></div>
@@ -1001,14 +999,16 @@ async function saveImportRename(oldName, btn) {
   }
 }
 
-async function reimportFile(filename) {
-  try {
-    await api('/api/uploads?filename=' + encodeURIComponent(filename), { method: 'DELETE' });
-    showToast('Ready to reimport', `"${filename}" cleared — drop or upload the file again to reimport it.`, 'success');
-    await loadUploadHistory();
-  } catch(e) {
-    showToast('Error', e.message, 'error');
-  }
+function reimportFile(filename) {
+  const input = document.getElementById('reimport-file-input');
+  const handler = async () => {
+    input.removeEventListener('change', handler);
+    const files = Array.from(input.files).filter(f => f.name.match(/\.(pdf|csv)$/i));
+    input.value = '';
+    if (files.length) await uploadFiles(files, true);
+  };
+  input.addEventListener('change', handler);
+  input.click();
 }
 
 // ── Category editing ───────────────────────────────────────────────────────────
@@ -1127,7 +1127,7 @@ function handleFileInput(files) {
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────────
-async function uploadFiles(files) {
+async function uploadFiles(files, force = false) {
   const prog = document.getElementById('upload-progress');
   const detail = document.getElementById('progress-detail');
   prog.classList.add('visible');
@@ -1136,7 +1136,6 @@ async function uploadFiles(files) {
   const formData = new FormData();
   files.forEach(f => formData.append('files', f));
 
-  const force = document.getElementById('force-reimport')?.checked;
   try {
     const data = await api('/api/upload' + (force ? '?force=true' : ''), { method:'POST', body:formData });
     prog.classList.remove('visible');
