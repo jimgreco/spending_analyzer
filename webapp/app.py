@@ -1156,37 +1156,6 @@ def delete_upload_record(filename: str, user: dict = Depends(get_current_user)):
             if cur.rowcount == 0: raise HTTPException(404, "Upload record not found")
     return {"ok": True, "filename": filename}
 
-# ── One-time admin cleanup ────────────────────────────────────────────────────────
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
-
-@app.delete("/api/admin/orphan-transactions")
-def delete_orphan_transactions(secret: str, dry_run: bool = True):
-    if not ADMIN_SECRET or secret != ADMIN_SECRET:
-        raise HTTPException(403, "Forbidden")
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT COUNT(*), import_file
-                FROM transactions t
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM uploaded_files u
-                    WHERE u.user_id = t.user_id AND u.filename = t.import_file
-                )
-                GROUP BY import_file ORDER BY COUNT(*) DESC
-            """)
-            preview = [{"count": r[0], "import_file": r[1]} for r in cur.fetchall()]
-            if dry_run:
-                return {"dry_run": True, "would_delete": preview}
-            cur.execute("""
-                DELETE FROM transactions t
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM uploaded_files u
-                    WHERE u.user_id = t.user_id AND u.filename = t.import_file
-                )
-            """)
-            deleted = cur.rowcount
-    return {"dry_run": False, "deleted": deleted, "breakdown": preview}
-
 # ── Run ───────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=True)
