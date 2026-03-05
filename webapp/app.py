@@ -479,6 +479,7 @@ def parse_coinbase_pdf(text: str) -> list:
         if re.search(r'Payments and Credits', s, re.I): in_credits = True; in_tx = False;  continue
         if re.search(r'Total payments', s, re.I):        in_credits = False;                continue
         if not (in_tx or in_credits) or COINBASE_SKIP.search(s): continue
+        if re.search(r'Credit Limit', s, re.I): continue
         if in_credits and re.search(r'PAYMENT', s, re.I): continue  # skip payments, keep returns
         m = COINBASE_TX.match(s)
         if m:
