@@ -447,6 +447,10 @@ def infer_year(mo: int, day: int, open_dt: datetime, close_dt: datetime) -> Opti
 # ── PDF parsers ───────────────────────────────────────────────────────────────────
 APPLE_TX = re.compile(
     r'^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+\d+%\s+\$[\d,.]+\s+(\$[\d,]+\.\d{2})\s*$')
+APPLE_INSTALL_HDR = re.compile(
+    r'^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+\$[\d,]+\.\d{2}\s*$')
+APPLE_INSTALL_AMT = re.compile(
+    r"This month.s installment:\s+\$(-?[\d,]+\.\d{2})")
 APPLE_PERIOD = re.compile(
     r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2}\s*[—–-]+\s*'
     r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},\s*(\d{4})', re.I)
@@ -462,24 +466,36 @@ def parse_apple_pdf(text: str) -> list:
             pass
 
     rows, in_tx, in_install = [], False, False
+    install_desc = None
     for line in text.split("\n"):
         s = line.strip()
         if s == "Transactions":                          in_tx = True;  in_install = False; continue
-        if s == "Apple Card Monthly Installments":       in_install = True; in_tx = False;  continue
+        if s == "Apple Card Monthly Installments":       in_install = True; in_tx = False; install_desc = None; continue
         if s.startswith(("Total Daily Cash", "Total charges", "Total financed")):
             in_tx = False; in_install = False; continue
         if not (in_tx or in_install) or (s.startswith("Date") and "Description" in s): continue
-        m = APPLE_TX.match(s)
-        if m:
-            amt = float(m.group(3).replace("$", "").replace(",", ""))
-            if amt != 0:
-                if in_install and stmt_month_start:
-                    date = stmt_month_start.strftime("%Y-%m-%d")
-                else:
-                    date = parse_date(m.group(1))
-                rows.append({"date": date,
-                             "description": m.group(2).strip(),
-                             "amount": amt, "source": "Apple Card"})
+
+        if in_install:
+            mh = APPLE_INSTALL_HDR.match(s)
+            if mh:
+                install_desc = mh.group(2).strip()
+                continue
+            ma = APPLE_INSTALL_AMT.search(s)
+            if ma and install_desc:
+                amt = float(ma.group(1).replace(",", ""))
+                if amt != 0:
+                    date = stmt_month_start.strftime("%Y-%m-%d") if stmt_month_start else datetime.now().strftime("%Y-%m-%d")
+                    rows.append({"date": date, "description": install_desc,
+                                 "amount": amt, "source": "Apple Card"})
+                install_desc = None
+        else:
+            m = APPLE_TX.match(s)
+            if m:
+                amt = float(m.group(3).replace("$", "").replace(",", ""))
+                if amt != 0:
+                    rows.append({"date": parse_date(m.group(1)),
+                                 "description": m.group(2).strip(),
+                                 "amount": amt, "source": "Apple Card"})
     return rows
 
 COINBASE_TX = re.compile(
