@@ -629,11 +629,15 @@ def parse_csv_bytes(content: bytes, filename: str) -> tuple:
                              "category": str(row.get("Category", "Other")).strip(),
                              "amount": abs(float(row["Amount"])), "source": source})
 
-    elif "debit" in header_line:
-        source = "Citi"
-        start = next(
+    else:
+        # Citi CSVs may have preamble rows before the real header — scan all lines
+        citi_start = next(
             (i for i, l in enumerate(text.split("\n"))
-             if l.strip().lower().startswith("date,description,debit")), 0)
+             if l.strip().lower().startswith("date,description,debit")), None)
+        if citi_start is None:
+            return rows, source
+        source = "Citi"
+        start = citi_start
         df = pd.read_csv(io.StringIO("\n".join(text.split("\n")[start:])))
         for _, row in df.iterrows():
             debit = row.get("Debit", "")
