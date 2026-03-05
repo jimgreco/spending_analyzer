@@ -470,8 +470,22 @@ COINBASE_TX = re.compile(
 COINBASE_SKIP = re.compile(
     r'Coinbase One Card is offered|@gmail\.com|^Jim Greco|^Page \d+ of \d+|^Date\s+Description|Credit Limit')
 
+COINBASE_PERIOD = re.compile(
+    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2}[, ]+(\d{4})\s*[-–]\s*'
+    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2}[, ]+(\d{4})', re.I)
+
 def parse_coinbase_pdf(text: str) -> list:
+    # Determine statement closing month to use as date for credits/returns
+    stmt_month_start = None
+    mp = COINBASE_PERIOD.search(text)
+    if mp:
+        try:
+            stmt_month_start = datetime.strptime(f"{mp.group(3)} 1 {mp.group(4)}", "%b 1 %Y")
+        except ValueError:
+            pass
+
     rows, in_tx, in_credits = [], False, False
+    latest_tx_date = None
     for line in text.split("\n"):
         s = line.strip()
         if s == "Transactions":                          in_tx = True;  in_credits = False; continue
@@ -485,9 +499,17 @@ def parse_coinbase_pdf(text: str) -> list:
         if m:
             amt = float(m.group(3).replace("$", "").replace(",", ""))
             if amt == 0: continue
-            if in_credits: amt = -abs(amt)  # credits section: negate to mark as refund
             desc = re.sub(r'\s+\d{3}\s+\d{3}$', '', m.group(2)).strip()
-            rows.append({"date": parse_date(m.group(1)), "description": desc,
+            if in_credits:
+                amt = -abs(amt)
+                # Use 1st of statement closing month; fall back to 1st of latest tx month
+                ref = stmt_month_start or latest_tx_date
+                tx_date = ref.replace(day=1).strftime("%Y-%m-%d") if ref else parse_date(m.group(1))
+            else:
+                tx_date = parse_date(m.group(1))
+                try:    latest_tx_date = datetime.strptime(tx_date, "%Y-%m-%d")
+                except ValueError: pass
+            rows.append({"date": tx_date, "description": desc,
                          "amount": amt, "source": "Coinbase"})
     return rows
 
