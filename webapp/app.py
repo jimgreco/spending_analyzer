@@ -468,7 +468,7 @@ COINBASE_TX = re.compile(
     r'^((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4})\s+'
     r'(.+?)\s+(-?\$[\d,]+\.\d{2})\s*$')
 COINBASE_SKIP = re.compile(
-    r'Coinbase One Card is offered|@gmail\.com|^Jim Greco|^Page \d+ of \d+|^Date\s+Description')
+    r'Coinbase One Card is offered|@gmail\.com|^Jim Greco|^Page \d+ of \d+|^Date\s+Description|Credit Limit')
 
 def parse_coinbase_pdf(text: str) -> list:
     rows, in_tx, in_credits = [], False, False
