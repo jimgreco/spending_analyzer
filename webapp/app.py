@@ -969,6 +969,7 @@ def bulk_restore_transactions(body: BulkRestore, user: dict = Depends(get_curren
 # ── Upload ────────────────────────────────────────────────────────────────────────
 @app.post("/api/upload")
 async def upload_files(files: List[UploadFile] = File(...),
+                       force: bool = False,
                        user: dict = Depends(get_current_user)):
     user_id = user["id"]
     results = []
@@ -983,13 +984,14 @@ async def upload_files(files: List[UploadFile] = File(...),
             content   = await f.read()
             file_hash = hashlib.md5(content).hexdigest()
 
-            with conn.cursor() as cur:
-                cur.execute("SELECT id FROM uploaded_files WHERE user_id=%s AND file_hash=%s",
-                            (user_id, file_hash))
-                if cur.fetchone():
-                    results.append({"filename": f.filename, "status": "already_imported",
-                                    "message": "File was already imported", "new": 0, "dupes": 0})
-                    continue
+            if not force:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id FROM uploaded_files WHERE user_id=%s AND file_hash=%s",
+                                (user_id, file_hash))
+                    if cur.fetchone():
+                        results.append({"filename": f.filename, "status": "already_imported",
+                                        "message": "File was already imported", "new": 0, "dupes": 0})
+                        continue
 
             rows, source, error = parse_file_bytes(content, f.filename)
             if error:
