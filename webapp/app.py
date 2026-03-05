@@ -739,29 +739,93 @@ def parse_csv_bytes(content: bytes, filename: str) -> tuple:
 
     return rows, source
 
+# ── GPT-based parser ──────────────────────────────────────────────────────────────
+GPT_PARSE_PROMPT = """You are a credit card statement parser. Extract all transactions from the statement.
+
+Return JSON in this exact format:
+{"transactions": [{"date": "YYYY-MM-DD", "description": "merchant name", "amount": 0.00, "source": "card name"}, ...]}
+
+Rules:
+- amount: positive for purchases/charges, negative for refunds/credits/returns
+- date: YYYY-MM-DD format
+- source: card name (e.g. "Apple Card", "Citi", "Amazon", "Bank of America", "Coinbase")
+- SKIP: card payments to your account (autopay, payment received, payment thank you), interest charges, fees, credit limit lines, balance summaries
+- Apple Card Monthly Installments: use the monthly installment amount (NOT the original purchase price); set date to the 1st of the statement month
+- Include merchant refunds and credits as negative amounts"""
+
+def parse_with_gpt(text: str, filename: str) -> tuple:
+    """Parse statement text using GPT. Returns (rows, source, error)."""
+    if not OPENAI_API_KEY:
+        return [], None, "No OpenAI API key configured"
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": GPT_PARSE_PROMPT},
+                {"role": "user",   "content": text[:120000]},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+        data = json.loads(resp.choices[0].message.content)
+        raw_rows = data.get("transactions", [])
+        rows, source = [], None
+        for r in raw_rows:
+            try:
+                src = str(r.get("source", "")).strip() or None
+                if src and not source:
+                    source = src
+                rows.append({
+                    "date":        str(r["date"]).strip(),
+                    "description": str(r["description"]).strip(),
+                    "amount":      float(r["amount"]),
+                    "source":      src or "Unknown",
+                })
+            except (KeyError, ValueError, TypeError):
+                continue
+        print(f"[GPT parse] '{filename}': {len(rows)} transactions, source={source}")
+        return rows, source, ""
+    except Exception as e:
+        return [], None, f"GPT parse error for '{filename}': {e}"
+
 # ── Main parse dispatcher ─────────────────────────────────────────────────────────
 def parse_file_bytes(content: bytes, filename: str) -> tuple:
     fname = filename.lower()
-    rows, source = [], None
+
+    # Extract raw text
     try:
         if fname.endswith(".pdf"):
             with pdfplumber.open(io.BytesIO(content)) as pdf:
                 text = "\n".join(p.extract_text() or "" for p in pdf.pages)
-            source = detect_source(text)
-            if not source:
-                return [], None, f"Could not detect card type from '{filename}'"
-            rows = PDF_PARSERS[source](text)
         elif fname.endswith(".csv"):
-            rows, source = parse_csv_bytes(content, filename)
-            if not source:
-                return [], None, f"Unrecognized CSV format in '{filename}'"
+            text = content.decode("utf-8", errors="replace")
         else:
             return [], None, f"Unsupported file type: '{filename}' (use PDF or CSV)"
     except Exception as e:
-        return [], None, f"Parse error in '{filename}': {e}"
+        return [], None, f"Could not read '{filename}': {e}"
+
+    # Try GPT first
+    rows, source, gpt_error = parse_with_gpt(text, filename)
+
+    # Fall back to regex parsers if GPT fails or returns nothing
+    if not rows:
+        print(f"[parse] GPT fallback for '{filename}': {gpt_error or 'no rows returned'}")
+        try:
+            if fname.endswith(".pdf"):
+                source = detect_source(text)
+                if source:
+                    rows = PDF_PARSERS[source](text)
+            else:
+                rows, source = parse_csv_bytes(content, filename)
+        except Exception as e:
+            return [], source, f"Parse error in '{filename}': {e}"
 
     if not rows:
         return [], source, f"No transactions found in '{filename}'"
+
+    if not source:
+        source = detect_source(text) or "Unknown"
 
     seq_counts: Counter = Counter()
     for r in rows:
