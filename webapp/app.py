@@ -1185,7 +1185,7 @@ def get_uploads(user: dict = Depends(get_current_user)):
                 SELECT filename, file_hash, source, tx_new, tx_dupes,
                        to_char(uploaded_at,'YYYY-MM-DD HH24:MI') as uploaded_at
                 FROM uploaded_files WHERE user_id=%s
-                ORDER BY uploaded_at DESC LIMIT 50
+                ORDER BY source, filename LIMIT 50
             """, (user["id"],))
             return {"uploads": [dict(r) for r in cur.fetchall()]}
 
