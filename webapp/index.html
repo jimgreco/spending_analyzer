@@ -912,24 +912,27 @@ function renderUploadHistory(uploads) {
 }
 
 function startImportRename(btn) {
-  const cell = btn.closest('.import-name-cell');
+  const row = btn.closest('tr');
+  const cell = row.querySelector('.import-name-cell');
   cell.querySelector('.import-name-text').style.display = 'none';
   cell.querySelector('.import-name-edit').style.display = 'inline-flex';
   cell.querySelector('.import-name-edit').style.alignItems = 'center';
   cell.querySelector('.import-name-edit').style.gap = '4px';
   cell.querySelector('.import-name-input').focus();
-  btn.closest('td').querySelector('button').style.display = 'none';
+  btn.style.display = 'none';
 }
 
 function cancelImportRename(btn) {
-  const cell = btn.closest('.import-name-cell');
+  const row = btn.closest('tr');
+  const cell = row.querySelector('.import-name-cell');
   cell.querySelector('.import-name-text').style.display = '';
   cell.querySelector('.import-name-edit').style.display = 'none';
-  btn.closest('td').querySelector('button').style.display = '';
+  row.querySelector('button[onclick^="startImportRename"]').style.display = '';
 }
 
 async function saveImportRename(oldName, btn) {
-  const cell = btn.closest('.import-name-cell');
+  const row = btn.closest('tr');
+  const cell = row.querySelector('.import-name-cell');
   const newName = cell.querySelector('.import-name-input').value.trim();
   if (!newName || newName === oldName) { cancelImportRename(btn); return; }
   try {
