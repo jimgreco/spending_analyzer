@@ -525,17 +525,24 @@ def parse_citi_pdf(text: str) -> list:
     m = CITI_BALANCE.search(text)
     close_dt = datetime.strptime(m.group(1), "%m/%d/%y") if m else datetime.now()
     open_dt  = close_dt - timedelta(days=35)
-    rows, in_tx = [], False
+    rows, in_tx, in_credits = [], False, False
     for line in text.split("\n"):
         s = line.strip()
-        if re.search(r'Standard Purchases', s, re.I):   in_tx = True; continue
-        if re.search(r'Total fees|Interest charged|202[56] totals', s, re.I): in_tx = False; continue
-        if not in_tx or re.search(r'^Trans\.|^Post\s|^ThankYou Points|^Bonus Points', s): continue
+        if re.search(r'Standard Purchases', s, re.I):
+            in_tx = True; in_credits = False; continue
+        if re.search(r'Payments, Credits, and Adjustments', s, re.I):
+            in_credits = True; in_tx = False; continue
+        if re.search(r'Total fees|Interest charged|202[56] totals', s, re.I):
+            in_tx = False; in_credits = False; continue
+        if not (in_tx or in_credits): continue
+        if re.search(r'^Trans\.|^Post\s|^ThankYou Points|^Bonus Points', s): continue
+        if in_credits and re.search(r'AUTOPAY', s, re.I): continue  # skip payments
         m2 = CITI_TX.match(s)
         if m2:
             mo, day = int(m2.group(1)[:2]), int(m2.group(1)[3:])
             amt = float(m2.group(3).replace(",", ""))
             if amt == 0: continue
+            if in_credits: amt = -abs(amt)  # credits section: negate to mark as refund
             d = infer_year(mo, day, open_dt, close_dt)
             if d:
                 desc = re.sub(r'\s+[A-Z]{2,3}\s*$', '', m2.group(2).strip()).strip()
