@@ -447,19 +447,37 @@ def infer_year(mo: int, day: int, open_dt: datetime, close_dt: datetime) -> Opti
 # ── PDF parsers ───────────────────────────────────────────────────────────────────
 APPLE_TX = re.compile(
     r'^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+\d+%\s+\$[\d,.]+\s+(\$[\d,]+\.\d{2})\s*$')
+APPLE_PERIOD = re.compile(
+    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2}\s*[—–-]+\s*'
+    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},\s*(\d{4})', re.I)
 
 def parse_apple_pdf(text: str) -> list:
-    rows, in_tx = [], False
+    # Find statement closing month for dating installment payments
+    stmt_month_start = None
+    mp = APPLE_PERIOD.search(text)
+    if mp:
+        try:
+            stmt_month_start = datetime.strptime(f"{mp.group(2)} 1 {mp.group(3)}", "%b 1 %Y")
+        except ValueError:
+            pass
+
+    rows, in_tx, in_install = [], False, False
     for line in text.split("\n"):
         s = line.strip()
-        if s == "Transactions":        in_tx = True; continue
-        if s.startswith(("Total Daily Cash", "Total charges")): in_tx = False; continue
-        if not in_tx or (s.startswith("Date") and "Description" in s): continue
+        if s == "Transactions":                          in_tx = True;  in_install = False; continue
+        if s == "Apple Card Monthly Installments":       in_install = True; in_tx = False;  continue
+        if s.startswith(("Total Daily Cash", "Total charges", "Total financed")):
+            in_tx = False; in_install = False; continue
+        if not (in_tx or in_install) or (s.startswith("Date") and "Description" in s): continue
         m = APPLE_TX.match(s)
         if m:
             amt = float(m.group(3).replace("$", "").replace(",", ""))
             if amt != 0:
-                rows.append({"date": parse_date(m.group(1)),
+                if in_install and stmt_month_start:
+                    date = stmt_month_start.strftime("%Y-%m-%d")
+                else:
+                    date = parse_date(m.group(1))
+                rows.append({"date": date,
                              "description": m.group(2).strip(),
                              "amount": amt, "source": "Apple Card"})
     return rows
