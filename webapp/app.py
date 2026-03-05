@@ -279,9 +279,12 @@ def _ensure_local_user() -> dict:
     return _local_user_cache
 
 def _seed_user_categories(user_id: int):
-    """Seed the default category list for a new user."""
+    """Seed the default category list — only if the user has no categories yet."""
     with db() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM categories WHERE user_id = %s LIMIT 1", (user_id,))
+            if cur.fetchone():
+                return  # already seeded; don't overwrite user's current list
             for cat in ALL_CATEGORIES:
                 cur.execute(
                     "INSERT INTO categories (user_id, name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
