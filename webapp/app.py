@@ -661,11 +661,11 @@ def parse_csv_bytes(content: bytes, filename: str) -> tuple:
             elif pd.notna(credit) and str(credit).strip() not in ("", "nan"):
                 try:
                     amt = float(str(credit).replace(",", "").replace('"', "").strip())
-                    if amt > 0:
+                    if amt != 0:  # already negative in CSV, store as-is
                         rows.append({"date": parse_date(str(row["Date"]).strip()),
                                      "description": str(row["Description"]).strip(),
                                      "category": str(row.get("Category", "Other")).strip(),
-                                     "amount": -amt, "source": source})
+                                     "amount": amt, "source": source})
                 except (ValueError, TypeError):
                     pass
 
