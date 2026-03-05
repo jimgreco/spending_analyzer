@@ -382,7 +382,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     </div>
     <div class="chart-box">
       <h3>Monthly Spending <span id="active-filter" onclick="clearFilter()" style="display:none">(filtered – click to clear)</span></h3>
-      <canvas id="barChart" height="200"></canvas>
+      <canvas id="barChart" height="100"></canvas>
     </div>
   </div>
 
@@ -427,6 +427,11 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 
   <!-- Transaction table -->
   <div class="table-box">
+    <div class="pagination pagination-top">
+      <button id="prev-btn-top" onclick="changePage(-1)">‹ Prev</button>
+      <span id="page-info-top"></span>
+      <button id="next-btn-top" onclick="changePage(1)">Next ›</button>
+    </div>
     <table>
       <thead>
         <tr>
@@ -789,10 +794,12 @@ function renderTable(txs) {
 function renderPagination(page, pages, total) {
   currentPage = page;
   totalPages  = pages;
-  document.getElementById('prev-btn').disabled = page <= 1;
-  document.getElementById('next-btn').disabled = page >= pages;
-  document.getElementById('page-info').textContent =
-    `Page ${page} of ${pages} · ${total.toLocaleString()} transactions`;
+  const label = `Page ${page} of ${pages} · ${total.toLocaleString()} transactions`;
+  ['', '-top'].forEach(suffix => {
+    document.getElementById(`prev-btn${suffix}`).disabled = page <= 1;
+    document.getElementById(`next-btn${suffix}`).disabled = page >= pages;
+    document.getElementById(`page-info${suffix}`).textContent = label;
+  });
 }
 
 // ── Date range presets ─────────────────────────────────────────────────────────
@@ -876,17 +883,67 @@ function renderUploadHistory(uploads) {
         <thead><tr>
           <th>File</th><th>Card</th><th>New</th><th>Dupes</th><th>Imported</th><th></th>
         </tr></thead>
-        <tbody>${uploads.map(u => `<tr>
-          <td>${escHtml(u.filename)}</td>
+        <tbody>${uploads.map(u => `<tr id="urow-${escHtml(u.file_hash)}">
+          <td class="import-name-cell">
+            <span class="import-name-text">${escHtml(u.filename)}</span>
+            <span class="import-name-edit" style="display:none">
+              <input class="import-name-input" value="${escHtml(u.filename)}"
+                     style="background:var(--bg);border:1px solid var(--border);color:var(--text);
+                            border-radius:4px;padding:2px 6px;font-size:.8rem;width:220px">
+              <button class="btn" style="font-size:.72rem;padding:3px 8px"
+                      onclick="saveImportRename('${escHtml(u.filename)}', this)">✓ Save</button>
+              <button class="btn" style="font-size:.72rem;padding:3px 8px"
+                      onclick="cancelImportRename(this)">✕</button>
+            </span>
+          </td>
           <td>${sourceTag(u.source || '?')}</td>
           <td style="color:var(--green)">${u.tx_new}</td>
           <td style="color:var(--muted)">${u.tx_dupes}</td>
           <td style="color:var(--muted)">${u.uploaded_at}</td>
-          <td><button class="btn" style="font-size:.72rem;padding:3px 8px"
-                      onclick="reimportFile('${escHtml(u.filename)}')">🔄 Reimport</button></td>
+          <td style="white-space:nowrap">
+            <button class="btn" style="font-size:.72rem;padding:3px 8px"
+                    onclick="startImportRename(this)">✏️ Rename</button>
+            <button class="btn" style="font-size:.72rem;padding:3px 8px"
+                    onclick="reimportFile('${escHtml(u.filename)}')">🔄 Reimport</button>
+          </td>
         </tr>`).join('')}</tbody>
       </table>
     </details>`;
+}
+
+function startImportRename(btn) {
+  const cell = btn.closest('.import-name-cell');
+  cell.querySelector('.import-name-text').style.display = 'none';
+  cell.querySelector('.import-name-edit').style.display = 'inline-flex';
+  cell.querySelector('.import-name-edit').style.alignItems = 'center';
+  cell.querySelector('.import-name-edit').style.gap = '4px';
+  cell.querySelector('.import-name-input').focus();
+  btn.closest('td').querySelector('button').style.display = 'none';
+}
+
+function cancelImportRename(btn) {
+  const cell = btn.closest('.import-name-cell');
+  cell.querySelector('.import-name-text').style.display = '';
+  cell.querySelector('.import-name-edit').style.display = 'none';
+  btn.closest('td').querySelector('button').style.display = '';
+}
+
+async function saveImportRename(oldName, btn) {
+  const cell = btn.closest('.import-name-cell');
+  const newName = cell.querySelector('.import-name-input').value.trim();
+  if (!newName || newName === oldName) { cancelImportRename(btn); return; }
+  try {
+    await api('/api/uploads/rename', {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ old_name: oldName, new_name: newName })
+    });
+    showToast('Renamed', `"${oldName}" → "${newName}"`, 'success');
+    await loadUploadHistory();
+    loadTransactions();
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+  }
 }
 
 async function reimportFile(filename) {

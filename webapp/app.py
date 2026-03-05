@@ -1096,6 +1096,31 @@ def get_uploads(user: dict = Depends(get_current_user)):
             """, (user["id"],))
             return {"uploads": [dict(r) for r in cur.fetchall()]}
 
+class UploadRename(BaseModel):
+    old_name: str
+    new_name: str
+
+@app.patch("/api/uploads/rename")
+def rename_upload(body: UploadRename, user: dict = Depends(get_current_user)):
+    old, new, uid = body.old_name.strip(), body.new_name.strip(), user["id"]
+    if not new:    raise HTTPException(400, "New name cannot be empty")
+    if old == new: raise HTTPException(400, "New name is the same as old name")
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM uploaded_files WHERE user_id=%s AND filename=%s",
+                (uid, old))
+            if not cur.fetchone():
+                raise HTTPException(404, "Upload record not found")
+            cur.execute(
+                "UPDATE uploaded_files SET filename=%s WHERE user_id=%s AND filename=%s",
+                (new, uid, old))
+            cur.execute(
+                "UPDATE transactions SET import_file=%s WHERE user_id=%s AND import_file=%s",
+                (new, uid, old))
+            updated = cur.rowcount
+    return {"ok": True, "old_name": old, "new_name": new, "updated": updated}
+
 @app.delete("/api/uploads")
 def delete_upload_record(filename: str, user: dict = Depends(get_current_user)):
     with db() as conn:
