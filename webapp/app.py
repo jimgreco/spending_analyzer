@@ -471,16 +471,20 @@ COINBASE_SKIP = re.compile(
     r'Coinbase One Card is offered|@gmail\.com|^Jim Greco|^Page \d+ of \d+|^Date\s+Description')
 
 def parse_coinbase_pdf(text: str) -> list:
-    rows, in_tx = [], False
+    rows, in_tx, in_credits = [], False, False
     for line in text.split("\n"):
         s = line.strip()
-        if s == "Transactions":          in_tx = True; continue
-        if s.startswith("Total new charges"): in_tx = False; continue
-        if not in_tx or COINBASE_SKIP.search(s): continue
+        if s == "Transactions":                          in_tx = True;  in_credits = False; continue
+        if s.startswith("Total new charges"):            in_tx = False;                     continue
+        if re.search(r'Payments and Credits', s, re.I): in_credits = True; in_tx = False;  continue
+        if re.search(r'Total payments', s, re.I):        in_credits = False;                continue
+        if not (in_tx or in_credits) or COINBASE_SKIP.search(s): continue
+        if in_credits and re.search(r'PAYMENT', s, re.I): continue  # skip payments, keep returns
         m = COINBASE_TX.match(s)
         if m:
             amt = float(m.group(3).replace("$", "").replace(",", ""))
             if amt == 0: continue
+            if in_credits: amt = -abs(amt)  # credits section: negate to mark as refund
             desc = re.sub(r'\s+\d{3}\s+\d{3}$', '', m.group(2)).strip()
             rows.append({"date": parse_date(m.group(1)), "description": desc,
                          "amount": amt, "source": "Coinbase"})
