@@ -262,8 +262,12 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 /* ── User header ────────────────────────────────────────────────────────── */
 #user-header{
   display:none;background:var(--surface);border-bottom:1px solid var(--border);
-  padding:8px 24px;align-items:center;justify-content:flex-end;gap:12px}
+  padding:8px 24px;align-items:center;justify-content:flex-end;position:relative}
 #user-header.visible{display:flex}
+#user-menu-trigger{
+  display:flex;align-items:center;gap:8px;cursor:pointer;
+  border-radius:20px;padding:4px 10px 4px 4px;transition:background .15s}
+#user-menu-trigger:hover{background:rgba(255,255,255,.06)}
 .user-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;
   border:2px solid var(--border);flex-shrink:0}
 .user-avatar-placeholder{
@@ -271,11 +275,17 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   display:flex;align-items:center;justify-content:center;
   font-size:.75rem;font-weight:700;color:#fff;flex-shrink:0}
 #user-name{font-size:.82rem;color:var(--muted)}
+#user-dropdown{
+  position:absolute;top:calc(100% + 4px);right:16px;
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:6px;min-width:120px;display:none;
+  box-shadow:0 8px 24px rgba(0,0,0,.5);z-index:100}
+#user-dropdown.open{display:block}
 .logout-btn{
-  background:none;border:1px solid var(--border);color:var(--muted);
-  border-radius:6px;padding:3px 10px;font-size:.78rem;cursor:pointer;
-  transition:all .15s}
-.logout-btn:hover{border-color:var(--red);color:var(--red)}
+  width:100%;background:none;border:none;color:var(--muted);
+  border-radius:6px;padding:7px 14px;font-size:.82rem;cursor:pointer;
+  text-align:left;transition:all .15s}
+.logout-btn:hover{background:rgba(239,68,68,.1);color:var(--red)}
 
 /* ── Upload progress ────────────────────────────────────────────────────── */
 #upload-progress{
@@ -312,9 +322,13 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 
 <!-- User header -->
 <div id="user-header">
-  <div id="user-avatar-wrap"></div>
-  <span id="user-name"></span>
-  <button class="logout-btn" onclick="logout()">Sign out</button>
+  <div id="user-menu-trigger" onclick="toggleUserMenu()">
+    <div id="user-avatar-wrap"></div>
+    <span id="user-name"></span>
+  </div>
+  <div id="user-dropdown">
+    <button class="logout-btn" onclick="logout()">Sign out</button>
+  </div>
 </div>
 
 <!-- Drop overlay (full page highlight) -->
@@ -494,6 +508,7 @@ let categories  = [];
 let donutChart  = null;
 let barChart    = null;
 let catFilter   = '';  // category filter set by clicking donut
+let monthFilter = '';  // month filter set by clicking bar chart
 let selectedIds = new Set();
 let viewStatus  = 'active';  // 'active' | 'deleted' | 'deduped'
 
@@ -551,6 +566,16 @@ function showUserHeader(user) {
     wrap.innerHTML = `<div class="user-avatar-placeholder">${initial}</div>`;
   }
 }
+
+function toggleUserMenu() {
+  document.getElementById('user-dropdown').classList.toggle('open');
+}
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('#user-menu-trigger')) {
+    document.getElementById('user-dropdown')?.classList.remove('open');
+  }
+});
 
 async function logout() {
   await fetch('/auth/logout', { method: 'POST' });
@@ -696,9 +721,10 @@ function renderCharts(s) {
       },
       onClick: (_, elems) => {
         if (elems.length) {
-          catFilter = cats[elems[0].index].category;
+          const clicked = cats[elems[0].index].category;
+          catFilter = catFilter === clicked ? '' : clicked;
           document.getElementById('filter-cat').value = catFilter;
-          document.getElementById('active-filter').style.display = '';
+          document.getElementById('active-filter').style.display = catFilter || monthFilter ? '' : 'none';
           applyFilters();
         }
       }
@@ -719,12 +745,32 @@ function renderCharts(s) {
     },
     options: {
       plugins: { legend: { display: false } },
+      onHover: (e) => { e.native.target.style.cursor = 'pointer'; },
       scales: {
         y: {
           ticks: { color:'#8b8fa8', callback: v => `$${(v/1000).toFixed(0)}k` },
           grid: { color:'#2a2d3a' }
         },
         x: { ticks: { color:'#8b8fa8' }, grid: { display:false } }
+      },
+      onClick: (_, elems) => {
+        if (elems.length) {
+          const clicked = months[elems[0].index].month; // 'YYYY-MM'
+          if (monthFilter === clicked) {
+            monthFilter = '';
+            document.getElementById('filter-date-from').value = '';
+            document.getElementById('filter-date-to').value = '';
+          } else {
+            monthFilter = clicked;
+            const [y, mo] = clicked.split('-').map(Number);
+            const lastDay = new Date(y, mo, 0).getDate();
+            document.getElementById('filter-date-from').value = `${clicked}-01`;
+            document.getElementById('filter-date-to').value = `${clicked}-${String(lastDay).padStart(2,'0')}`;
+          }
+          highlightPreset(null);
+          document.getElementById('active-filter').style.display = catFilter || monthFilter ? '' : 'none';
+          applyFilters();
+        }
       }
     }
   });
@@ -825,6 +871,7 @@ function setDatePreset(preset) {
 
   switch(preset) {
     case 'all':
+      monthFilter = '';
       document.getElementById('filter-date-from').value = '';
       document.getElementById('filter-date-to').value   = '';
       highlightPreset('all');
@@ -853,6 +900,7 @@ function setDatePreset(preset) {
     default: return;
   }
 
+  monthFilter = '';
   document.getElementById('filter-date-from').value = fmtDate(from);
   document.getElementById('filter-date-to').value   = fmtDate(to);
   highlightPreset(preset);
@@ -860,6 +908,7 @@ function setDatePreset(preset) {
 }
 
 function onDateInput() {
+  monthFilter = '';
   highlightPreset(null);
   applyFilters();
 }
@@ -1005,6 +1054,7 @@ function applyFilters() {
 
 function clearFilter() {
   catFilter = '';
+  monthFilter = '';
   document.getElementById('filter-cat').value = '';
   document.getElementById('filter-source').value = '';
   document.getElementById('filter-date-from').value = '';
