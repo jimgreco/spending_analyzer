@@ -458,7 +458,7 @@ def parse_apple_pdf(text: str) -> list:
         m = APPLE_TX.match(s)
         if m:
             amt = float(m.group(3).replace("$", "").replace(",", ""))
-            if amt > 0:
+            if amt != 0:
                 rows.append({"date": parse_date(m.group(1)),
                              "description": m.group(2).strip(),
                              "amount": amt, "source": "Apple Card"})
@@ -466,7 +466,7 @@ def parse_apple_pdf(text: str) -> list:
 
 COINBASE_TX = re.compile(
     r'^((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4})\s+'
-    r'(.+?)\s+(\$[\d,]+\.\d{2})\s*$')
+    r'(.+?)\s+(-?\$[\d,]+\.\d{2})\s*$')
 COINBASE_SKIP = re.compile(
     r'Coinbase One Card is offered|@gmail\.com|^Jim Greco|^Page \d+ of \d+|^Date\s+Description')
 
@@ -480,14 +480,14 @@ def parse_coinbase_pdf(text: str) -> list:
         m = COINBASE_TX.match(s)
         if m:
             amt = float(m.group(3).replace("$", "").replace(",", ""))
-            if amt > 0:
-                desc = re.sub(r'\s+\d{3}\s+\d{3}$', '', m.group(2)).strip()
-                rows.append({"date": parse_date(m.group(1)), "description": desc,
-                             "amount": amt, "source": "Coinbase"})
+            if amt == 0: continue
+            desc = re.sub(r'\s+\d{3}\s+\d{3}$', '', m.group(2)).strip()
+            rows.append({"date": parse_date(m.group(1)), "description": desc,
+                         "amount": amt, "source": "Coinbase"})
     return rows
 
 CHASE_PERIOD = re.compile(r'Opening/Closing Date\s+([\d/]+)\s*-\s*([\d/]+)')
-CHASE_TX     = re.compile(r'^(\d{2}/\d{2})\s+(.+?)\s+([\d,]+\.\d{2})$')
+CHASE_TX     = re.compile(r'^(\d{2}/\d{2})\s+(.+?)\s+(-?[\d,]+\.\d{2})$')
 CHASE_POINTS = re.compile(r'^(\d{2}/\d{2})\s+(.+?)\s+[\d,]+\.\d{2}\s+[\d,]+$')
 CHASE_SKIP   = re.compile(
     r'^(Order Number|Date of|Transaction Merchant|WILMINGTON|Pay by phone|Send Inquiries)')
@@ -510,7 +510,7 @@ def parse_chase_pdf(text: str) -> list:
         if m2:
             mo, day = int(m2.group(1)[:2]), int(m2.group(1)[3:])
             amt = float(m2.group(3).replace(",", ""))
-            if amt <= 0: continue
+            if amt == 0: continue
             d = infer_year(mo, day, open_dt, close_dt)
             if d:
                 rows.append({"date": d.strftime("%Y-%m-%d"),
@@ -519,7 +519,7 @@ def parse_chase_pdf(text: str) -> list:
     return rows
 
 CITI_BALANCE = re.compile(r'balance as of (\d{2}/\d{2}/\d{2})', re.I)
-CITI_TX      = re.compile(r'^(\d{2}/\d{2})(?:\s+\d{2}/\d{2})?\s+(.+?)\s+\$?([\d,]+\.\d{2})')
+CITI_TX      = re.compile(r'^(\d{2}/\d{2})(?:\s+\d{2}/\d{2})?\s+(.+?)\s+\$?(-?[\d,]+\.\d{2})')
 
 def parse_citi_pdf(text: str) -> list:
     m = CITI_BALANCE.search(text)
@@ -535,7 +535,7 @@ def parse_citi_pdf(text: str) -> list:
         if m2:
             mo, day = int(m2.group(1)[:2]), int(m2.group(1)[3:])
             amt = float(m2.group(3).replace(",", ""))
-            if amt <= 0: continue
+            if amt == 0: continue
             d = infer_year(mo, day, open_dt, close_dt)
             if d:
                 desc = re.sub(r'\s+[A-Z]{2,3}\s*$', '', m2.group(2).strip()).strip()
@@ -550,11 +550,12 @@ def parse_bofa_yearend(text: str) -> list:
     for line in text.split("\n"):
         s = line.strip()
         m = BOFA_YEAREND_TX.match(s)
-        if not m or m.group(4): continue
+        if not m: continue
         try:    dt = datetime.strptime(m.group(1), "%m/%d/%y")
         except ValueError: continue
         amt = float(m.group(3).replace(",", ""))
-        if amt <= 0: continue
+        if m.group(4): amt = -amt  # CR suffix = credit/refund
+        if amt == 0: continue
         desc_raw = m.group(2).strip()
         desc = re.sub(r'\s+\S+,\s+[A-Z]{2}$', '', desc_raw).strip() or desc_raw
         rows.append({"date": dt.strftime("%Y-%m-%d"), "description": desc,
@@ -565,7 +566,7 @@ BOFA_PERIOD = re.compile(
     r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d+\s*[-–]\s*'
     r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d+),\s*(\d{4})', re.I)
 BOFA_ESTMT_TX = re.compile(
-    r'^(\d{2}/\d{2})\s+\d{2}/\d{2}\s+(.+?)\s+\d{4}\s+\d{4}\s+([\d,]+\.\d{2})\s*$')
+    r'^(\d{2}/\d{2})\s+\d{2}/\d{2}\s+(.+?)\s+\d{4}\s+\d{4}\s+(-?[\d,]+\.\d{2})\s*$')
 
 def parse_bofa_estmt(text: str) -> list:
     m = BOFA_PERIOD.search(text)
@@ -587,7 +588,7 @@ def parse_bofa_estmt(text: str) -> list:
         if m2:
             mo, day = int(m2.group(1)[:2]), int(m2.group(1)[3:])
             amt = float(m2.group(3).replace(",", ""))
-            if amt <= 0: continue
+            if amt == 0: continue
             d = infer_year(mo, day, open_dt, close_dt)
             if d:
                 rows.append({"date": d.strftime("%Y-%m-%d"),
@@ -616,7 +617,7 @@ def parse_csv_bytes(content: bytes, filename: str) -> tuple:
         source = "Apple Card"
         df = pd.read_csv(io.StringIO(text))
         for _, row in df.iterrows():
-            if str(row.get("Type", "")).strip() == "Purchase":
+            if str(row.get("Type", "")).strip() in ("Purchase", "Credit"):
                 rows.append({"date": parse_date(str(row["Transaction Date"])),
                              "description": str(row["Description"]).strip(),
                              "category": str(row.get("Category", "Other")).strip(),
@@ -626,11 +627,15 @@ def parse_csv_bytes(content: bytes, filename: str) -> tuple:
         source = "Amazon"
         df = pd.read_csv(io.StringIO(text))
         for _, row in df.iterrows():
-            if str(row.get("Type", "")).strip() == "Sale":
+            tx_type = str(row.get("Type", "")).strip()
+            if tx_type in ("Sale", "Refund"):
+                amt = float(row["Amount"])
+                if tx_type == "Refund" and amt > 0:
+                    amt = -amt  # normalize refunds to negative
                 rows.append({"date": parse_date(str(row["Transaction Date"])),
                              "description": str(row["Description"]).strip(),
                              "category": str(row.get("Category", "Other")).strip(),
-                             "amount": abs(float(row["Amount"])), "source": source})
+                             "amount": amt, "source": source})
 
     else:
         # Citi CSVs may have preamble rows before the real header — scan all lines
@@ -644,6 +649,7 @@ def parse_csv_bytes(content: bytes, filename: str) -> tuple:
         df = pd.read_csv(io.StringIO("\n".join(text.split("\n")[start:])))
         for _, row in df.iterrows():
             debit = row.get("Debit", "")
+            credit = row.get("Credit", "")
             if pd.notna(debit) and str(debit).strip() not in ("", "nan"):
                 try:
                     amt = float(str(debit).replace(",", "").replace('"', "").strip())
@@ -652,6 +658,16 @@ def parse_csv_bytes(content: bytes, filename: str) -> tuple:
                                      "description": str(row["Description"]).strip(),
                                      "category": str(row.get("Category", "Other")).strip(),
                                      "amount": amt, "source": source})
+                except (ValueError, TypeError):
+                    pass
+            elif pd.notna(credit) and str(credit).strip() not in ("", "nan"):
+                try:
+                    amt = float(str(credit).replace(",", "").replace('"', "").strip())
+                    if amt > 0:
+                        rows.append({"date": parse_date(str(row["Date"]).strip()),
+                                     "description": str(row["Description"]).strip(),
+                                     "category": str(row.get("Category", "Other")).strip(),
+                                     "amount": -amt, "source": source})
                 except (ValueError, TypeError):
                     pass
 
