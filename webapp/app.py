@@ -628,7 +628,7 @@ def parse_csv_bytes(content: bytes, filename: str) -> tuple:
         df = pd.read_csv(io.StringIO(text))
         for _, row in df.iterrows():
             tx_type = str(row.get("Type", "")).strip()
-            if tx_type in ("Sale", "Refund"):
+            if tx_type in ("Sale", "Refund", "Return"):
                 amt = -float(row["Amount"])  # CSV: negative=debit, positive=credit; invert to our convention
                 rows.append({"date": parse_date(str(row["Transaction Date"])),
                              "description": str(row["Description"]).strip(),
