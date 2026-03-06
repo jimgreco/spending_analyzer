@@ -676,7 +676,9 @@ BOFA_CHECKING_SKIP = re.compile(
     r'|CITI\s*AUTOPAY'
     r'|AMERICAN\s*EXPRESS.{0,15}ACH\s*PMT'
     r'|COINBASE\s*CARD.{0,15}PAYMENT'
+    r'|CHASE\s+CREDIT\s+CRD'
     r'|ONLINE\s+BANKING\s+TRANSFER'
+    r'|AGENT\s+ASSISTED\s+TRANSFER'
     r'|INTEREST\s+EARNED'
     r'|PREFERRED\s+REWARDS'
     r'|MERRILL\s+LYNCH'
@@ -799,12 +801,12 @@ Rules:
 - Include merchant refunds and credits as negative amounts
 
 BofA Checking account rules (source = "BofA Checking"):
-- SKIP ALL deposits / income (wire transfers in, payroll, ACH credits, interest earned, any money coming into the account)
-- SKIP: payments to credit cards (Apple Card / APPLECARD GSBANK, Citi / CITI AUTOPAY, American Express / ACH PMT, Coinbase Card)
+- SKIP ALL incoming deposits / income (positive amounts: wire transfers in, ACH credits, mobile deposits, interest earned, any money coming INTO the account)
+- SKIP: payments to credit cards (Apple Card / APPLECARD GSBANK, Citi / CITI AUTOPAY, American Express / ACH PMT, Coinbase Card, Chase / CHASE CREDIT CRD)
 - SKIP: internal bank transfers (Online Banking transfer to/from other accounts)
-- SKIP: transfers to investment/brokerage accounts (Merrill Lynch, Fidelity, Vanguard, etc.)
+- SKIP: transfers to investment/brokerage accounts (Merrill Lynch, Fidelity, Vanguard, Agent Assisted transfer, etc.)
 - SKIP: 529 college savings contributions
-- INCLUDE as positive amounts: actual out-of-pocket spending — PayPal purchases, Venmo payments, Zelle payments
+- INCLUDE ALL other outgoing payments as positive amounts: utilities (electric, gas, water), insurance, mortgage/loan payments, car payments, phone/internet bills, taxes (IRS, property tax), HOA/condo fees, payroll services, subscriptions, Venmo, Zelle, PayPal, and any other real spending
 - Use clean merchant/payee names; strip ACH noise (DES:, INDN:, CO ID:, Conf#, Confirmation#, WEB, PPD suffixes)"""
 
 def parse_with_gpt(text: str, filename: str) -> tuple:
