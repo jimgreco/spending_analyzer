@@ -1342,6 +1342,25 @@ def delete_upload_record(filename: str, user: dict = Depends(get_current_user)):
             if cur.rowcount == 0: raise HTTPException(404, "Upload record not found")
     return {"ok": True, "filename": filename}
 
+# ── TEMP admin: fix BofA Checking source (remove after use) ──────────────────────
+@app.post("/api/admin/fix-bofa-checking-source")
+def fix_bofa_checking_source(secret: str):
+    if secret != os.getenv("ADMIN_SECRET", ""):
+        raise HTTPException(403, "Forbidden")
+    filename = "BofA Jim Checking 2026-02-23.pdf"
+    new_source = "BofA Checking"
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE uploaded_files SET source=%s WHERE filename=%s",
+                (new_source, filename))
+            uf_rows = cur.rowcount
+            cur.execute(
+                "UPDATE transactions SET source=%s WHERE import_file=%s",
+                (new_source, filename))
+            tx_rows = cur.rowcount
+    return {"ok": True, "uploaded_files_updated": uf_rows, "transactions_updated": tx_rows}
+
 # ── Run ───────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=True)
