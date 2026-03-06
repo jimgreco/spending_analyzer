@@ -649,7 +649,7 @@ async function loadStats() {
 async function loadTransactions() {
   try {
     const data = await api('/api/transactions?' + buildFilterParams({
-      page: currentPage, per_page: 50,
+      page: currentPage, per_page: 100,
       sort_by: sortCol, sort_dir: sortDir
     }));
     renderTable(data.transactions);

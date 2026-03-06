@@ -944,7 +944,7 @@ def index():
 # ── Transactions ──────────────────────────────────────────────────────────────────
 @app.get("/api/transactions")
 def get_transactions(
-    page: int = 1, per_page: int = 50,
+    page: int = 1, per_page: int = 100,
     source: str = "", category: str = "", search: str = "",
     date_from: str = "", date_to: str = "",
     import_file: str = "",
