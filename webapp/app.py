@@ -418,6 +418,8 @@ def detect_source(text: str) -> Optional[str]:
         return "Citi"
     if "PRIME VISA" in t or "CHASE.COM/AMAZON" in t or "CHASE MOBILE" in t:
         return "Amazon"
+    if "ADV RELATIONSHIP BANKING" in t:
+        return "BofA Checking"
     if "BANKOFAMERICA.COM" in t or "BANK OF AMERICA" in t:
         return "Bank of America"
     return None
@@ -667,12 +669,52 @@ def parse_bofa_estmt(text: str) -> list:
 def parse_bofa_pdf(text: str) -> list:
     return parse_bofa_yearend(text) if re.search(r'year.end summary', text, re.I) else parse_bofa_estmt(text)
 
+# ── BofA Checking parser ───────────────────────────────────────────────────────────
+BOFA_CHECKING_TX = re.compile(r'^(\d{2}/\d{2}/\d{2})\s+(.+?)\s+(-?[\d,]+\.\d{2})\s*$')
+BOFA_CHECKING_SKIP = re.compile(
+    r'APPLECARD\s*GSBANK'
+    r'|CITI\s*AUTOPAY'
+    r'|AMERICAN\s*EXPRESS.{0,15}ACH\s*PMT'
+    r'|COINBASE\s*CARD.{0,15}PAYMENT'
+    r'|ONLINE\s+BANKING\s+TRANSFER'
+    r'|INTEREST\s+EARNED'
+    r'|PREFERRED\s+REWARDS',
+    re.I,
+)
+
+def parse_bofa_checking(text: str) -> list:
+    rows = []
+    for line in text.split("\n"):
+        s = line.strip()
+        m = BOFA_CHECKING_TX.match(s)
+        if not m:
+            continue
+        try:
+            dt = datetime.strptime(m.group(1), "%m/%d/%y")
+        except ValueError:
+            continue
+        desc = m.group(2).strip()
+        amt_raw = float(m.group(3).replace(",", ""))
+        if amt_raw == 0:
+            continue
+        if BOFA_CHECKING_SKIP.search(desc):
+            continue
+        # Clean up ACH / wire description noise
+        desc = re.sub(r'\s+DES:.*$', '', desc, flags=re.I).strip() or desc
+        desc = re.sub(r'\s+(Conf|Confirmation)#\s*\S+.*$', '', desc, flags=re.I).strip() or desc
+        # Negate: withdrawals are negative in PDF → positive (expense)
+        #         deposits are positive in PDF → negative (income)
+        rows.append({"date": dt.strftime("%Y-%m-%d"), "description": desc,
+                     "amount": -amt_raw, "source": "BofA Checking"})
+    return rows
+
 PDF_PARSERS = {
     "Apple Card":      parse_apple_pdf,
     "Coinbase":        parse_coinbase_pdf,
     "Amazon":          parse_chase_pdf,
     "Citi":            parse_citi_pdf,
     "Bank of America": parse_bofa_pdf,
+    "BofA Checking":   parse_bofa_checking,
 }
 
 # ── CSV parsers ───────────────────────────────────────────────────────────────────
@@ -740,18 +782,27 @@ def parse_csv_bytes(content: bytes, filename: str) -> tuple:
     return rows, source
 
 # ── GPT-based parser ──────────────────────────────────────────────────────────────
-GPT_PARSE_PROMPT = """You are a credit card statement parser. Extract all transactions from the statement.
+GPT_PARSE_PROMPT = """You are a financial statement parser. Extract all transactions from the statement.
 
 Return JSON in this exact format:
 {"transactions": [{"date": "YYYY-MM-DD", "description": "merchant name", "amount": 0.00, "source": "card name"}, ...]}
 
 Rules:
-- amount: positive for purchases/charges, negative for refunds/credits/returns
+- amount: positive for purchases/charges/outflows, negative for refunds/credits/income
 - date: YYYY-MM-DD format
-- source: card name (e.g. "Apple Card", "Citi", "Amazon", "Bank of America", "Coinbase")
-- SKIP: card payments to your account (autopay, payment received, payment thank you), interest charges, fees, credit limit lines, balance summaries
+- source: account name (e.g. "Apple Card", "Citi", "Amazon", "Bank of America", "Coinbase", "BofA Checking")
+- SKIP on ALL statement types: interest charges, fees, credit limit lines, balance summaries, $0 amounts
+- SKIP on credit card statements: card payments to your account (autopay, payment received, payment thank you)
 - Apple Card Monthly Installments: use the monthly installment amount (NOT the original purchase price); set date to the 1st of the statement month
-- Include merchant refunds and credits as negative amounts"""
+- Include merchant refunds and credits as negative amounts
+
+BofA Checking account rules (source = "BofA Checking"):
+- SKIP: payments to credit cards (Apple Card / APPLECARD GSBANK, Citi / CITI AUTOPAY, American Express / ACH PMT, Coinbase Card)
+- SKIP: internal bank transfers (Online Banking transfer to/from other accounts)
+- SKIP: interest earned
+- INCLUDE as positive amounts: PayPal purchases, Venmo payments, Zelle payments, wire transfers out, investment contributions
+- INCLUDE as negative amounts: wire transfers in (income deposits from external sources)
+- Use clean merchant/payee names; strip ACH noise (DES:, INDN:, CO ID:, Conf#, Confirmation#, WEB, PPD suffixes)"""
 
 def parse_with_gpt(text: str, filename: str) -> tuple:
     """Parse statement text using GPT. Returns (rows, source, error)."""
