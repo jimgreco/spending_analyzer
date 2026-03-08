@@ -234,6 +234,9 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 .cat-btn.save:hover{background:rgba(16,185,129,.15)}
 .cat-btn.del:hover{color:var(--red);background:rgba(239,68,68,.1)}
 .cat-btn:disabled{opacity:.2;cursor:default;pointer-events:none}
+.cat-btn.excl-btn{font-size:.75rem;color:var(--muted)}
+.cat-btn.excl-btn.excl-on{color:var(--amber);background:rgba(245,158,11,.12)}
+.cat-btn.excl-btn.excl-on:hover{background:rgba(245,158,11,.25)}
 .cat-modal-footer{display:flex;justify-content:flex-end}
 .cat-modal-footer button{
   background:var(--border);border:none;color:var(--text);
@@ -286,6 +289,49 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   border-radius:6px;padding:7px 14px;font-size:.82rem;cursor:pointer;
   text-align:left;transition:all .15s}
 .logout-btn:hover{background:rgba(239,68,68,.1);color:var(--red)}
+
+/* ── Invite / Access modal ──────────────────────────────────────────────── */
+#invite-modal-overlay{
+  display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);
+  z-index:200;align-items:center;justify-content:center}
+#invite-modal-overlay.open{display:flex}
+#invite-modal{
+  background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:28px 32px;width:520px;max-width:95vw;max-height:85vh;
+  display:flex;flex-direction:column;gap:20px}
+#invite-modal h2{font-size:1rem;font-weight:700;margin:0}
+.invite-form{display:flex;gap:8px;align-items:center}
+.invite-form input{
+  flex:1;background:var(--bg);border:1px solid var(--border);border-radius:8px;
+  color:var(--text);padding:7px 12px;font-size:.85rem}
+.invite-form input:focus{outline:none;border-color:var(--accent)}
+.invite-form select,.invite-role-sel{
+  background:var(--bg);border:1px solid var(--border);border-radius:8px;
+  color:var(--text);padding:7px 10px;font-size:.85rem;cursor:pointer}
+.invite-form button{
+  background:var(--accent);border:none;color:#fff;border-radius:8px;
+  padding:7px 16px;font-size:.85rem;cursor:pointer;white-space:nowrap}
+.invite-form button:hover{opacity:.85}
+.invite-list{overflow-y:auto;display:flex;flex-direction:column;gap:8px;flex:1}
+.invite-row{
+  display:flex;align-items:center;gap:10px;padding:10px 12px;
+  background:var(--bg);border:1px solid var(--border);border-radius:10px}
+.invite-email{flex:1;font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.invite-meta{font-size:.75rem;color:var(--muted);white-space:nowrap}
+.invite-status{
+  font-size:.72rem;padding:2px 8px;border-radius:10px;white-space:nowrap;
+  background:rgba(100,100,100,.15);color:var(--muted)}
+.invite-status.active{background:rgba(16,185,129,.12);color:#10b981}
+.invite-revoke{
+  background:none;border:none;color:var(--muted);cursor:pointer;
+  font-size:.8rem;padding:4px 8px;border-radius:6px;transition:all .15s}
+.invite-revoke:hover{background:rgba(239,68,68,.1);color:var(--red)}
+.invite-empty{font-size:.85rem;color:var(--muted);text-align:center;padding:16px}
+.invite-modal-footer{display:flex;justify-content:flex-end}
+.invite-modal-footer button{
+  background:var(--border);border:none;color:var(--text);border-radius:8px;
+  padding:8px 20px;font-size:.85rem;cursor:pointer}
+.invite-modal-footer button:hover{background:var(--accent);color:#fff}
 
 /* ── Upload progress ────────────────────────────────────────────────────── */
 #upload-progress{
@@ -482,6 +528,26 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   <button class="bulk-clear" onclick="clearSelection()">✕</button>
 </div>
 
+<!-- Invite / Access modal -->
+<div id="invite-modal-overlay" onclick="if(event.target===this)closeInviteModal()">
+  <div id="invite-modal">
+    <h2>👥 Manage Access</h2>
+    <div class="invite-form">
+      <input id="invite-email-input" type="email" placeholder="Email address…"
+             onkeydown="if(event.key==='Enter')addInvite()">
+      <select id="invite-role-input">
+        <option value="read">Read only</option>
+        <option value="edit">Can edit</option>
+      </select>
+      <button onclick="addInvite()">+ Invite</button>
+    </div>
+    <div id="invite-list" class="invite-list"></div>
+    <div class="invite-modal-footer">
+      <button onclick="closeInviteModal()">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- Category manager modal -->
 <div id="cat-modal-overlay" onclick="if(event.target===this)closeCatModal()">
   <div id="cat-modal">
@@ -555,7 +621,10 @@ async function checkAuth() {
   }
 }
 
+let currentUser = null;
+
 function showUserHeader(user) {
+  currentUser = user;
   const header = document.getElementById('user-header');
   header.classList.add('visible');
   document.getElementById('user-name').textContent = user.name || user.email;
@@ -565,6 +634,15 @@ function showUserHeader(user) {
   } else {
     const initial = (user.name || user.email || 'U')[0].toUpperCase();
     wrap.innerHTML = `<div class="user-avatar-placeholder">${initial}</div>`;
+  }
+  if (user.is_owner) {
+    const dropdown = document.getElementById('user-dropdown');
+    const accessBtn = document.createElement('button');
+    accessBtn.className = 'logout-btn';
+    accessBtn.style.cssText = 'color:var(--text)';
+    accessBtn.textContent = 'Manage Access';
+    accessBtn.onclick = () => { dropdown.classList.remove('open'); openInviteModal(); };
+    dropdown.insertBefore(accessBtn, dropdown.firstChild);
   }
 }
 
@@ -660,10 +738,10 @@ async function loadTransactions() {
 async function loadCategories() {
   try {
     const data = await api('/api/categories');
-    categories = data.categories;
+    categories = data.categories;  // [{name, excluded_from_spending}]
     const sel = document.getElementById('filter-cat');
     sel.innerHTML = '<option value="">All Categories</option>' +
-      categories.map(c => `<option>${c}</option>`).join('');
+      categories.map(c => `<option value="${escHtml(c.name)}">${escHtml(c.name)}</option>`).join('');
   } catch(e) { console.error('loadCategories', e); }
 }
 
@@ -1016,7 +1094,7 @@ function startEdit(pillEl) {
   const txId   = pillEl.dataset.id;
   const curCat = pillEl.dataset.cat;
   const opts   = categories.map(c =>
-    `<option ${c===curCat?'selected':''}>${c}</option>`).join('');
+    `<option ${c.name===curCat?'selected':''}>${c.name}</option>`).join('');
   const sel = document.createElement('select');
   sel.className = 'pill-select';
   sel.innerHTML = opts;
@@ -1242,7 +1320,7 @@ function updateBulkBar() {
   if (n > 0) {
     const sel = document.getElementById('bulk-cat-select');
     sel.innerHTML = '<option value="">Set category…</option>' +
-      categories.map(c => `<option>${escHtml(c)}</option>`).join('');
+      categories.map(c => `<option>${escHtml(c.name)}</option>`).join('');
   }
 }
 
@@ -1326,13 +1404,18 @@ async function renderCatList() {
   const data = await api('/api/categories');
   const list = document.getElementById('cat-list');
   list.innerHTML = data.categories.map(c => `
-    <div class="cat-row" data-name="${escHtml(c)}">
-      <span class="cat-row-name" data-original="${escHtml(c)}">${escHtml(c)}</span>
+    <div class="cat-row" data-name="${escHtml(c.name)}">
+      <span class="cat-row-name" data-original="${escHtml(c.name)}">${escHtml(c.name)}</span>
       <div class="cat-row-actions">
+        <button class="cat-btn excl-btn${c.excluded_from_spending ? ' excl-on' : ''}"
+                title="${c.excluded_from_spending ? 'Excluded from spending — click to include' : 'Click to exclude from spending totals'}"
+                onclick="toggleExclusion('${escHtml(c.name)}', ${!c.excluded_from_spending})">
+          ${c.excluded_from_spending ? '⊘ excl' : '⊘'}
+        </button>
         <button class="cat-btn" title="Rename" onclick="startRename(this)">✏</button>
         <button class="cat-btn save" title="Save rename" onclick="saveRename(this)" style="display:none">✓ Save</button>
-        <button class="cat-btn del" title="Delete" onclick="deleteCategory('${escHtml(c)}')"
-                ${c === 'Other' ? 'disabled' : ''}>✕</button>
+        <button class="cat-btn del" title="Delete" onclick="deleteCategory('${escHtml(c.name)}')"
+                ${c.name === 'Other' ? 'disabled' : ''}>✕</button>
       </div>
     </div>`).join('');
 }
@@ -1429,6 +1512,110 @@ async function deleteCategory(name) {
     }
     loadStats();
     loadTransactions();
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+  }
+}
+
+async function toggleExclusion(name, excluded) {
+  try {
+    await api('/api/categories/exclusion', {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, excluded })
+    });
+    await renderCatList();
+    await loadCategories();
+    loadStats();
+    showToast(
+      excluded ? 'Excluded from spending' : 'Included in spending',
+      `"${name}" will ${excluded ? 'no longer' : 'now'} count toward spending totals`,
+      'success'
+    );
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+  }
+}
+
+// ── Invite / Access management ─────────────────────────────────────────────────
+async function openInviteModal() {
+  document.getElementById('invite-modal-overlay').classList.add('open');
+  await renderInviteList();
+}
+
+function closeInviteModal() {
+  document.getElementById('invite-modal-overlay').classList.remove('open');
+}
+
+async function renderInviteList() {
+  const list = document.getElementById('invite-list');
+  list.innerHTML = '<div class="invite-empty">Loading…</div>';
+  try {
+    const data = await api('/api/invites');
+    if (!data.invites.length) {
+      list.innerHTML = '<div class="invite-empty">No one invited yet.</div>';
+      return;
+    }
+    list.innerHTML = data.invites.map(inv => {
+      const statusLabel = inv.last_seen_at
+        ? `<span class="invite-status active">last seen ${inv.last_seen_at}</span>`
+        : inv.has_account
+          ? `<span class="invite-status active">signed up</span>`
+          : `<span class="invite-status">never logged in</span>`;
+      return `
+        <div class="invite-row">
+          <span class="invite-email" title="${escHtml(inv.email)}">${escHtml(inv.email)}</span>
+          ${statusLabel}
+          <select class="invite-role-sel" onchange="changeInviteRole('${escHtml(inv.email)}', this.value)">
+            <option value="read" ${inv.role==='read'?'selected':''}>Read only</option>
+            <option value="edit" ${inv.role==='edit'?'selected':''}>Can edit</option>
+          </select>
+          <button class="invite-revoke" onclick="revokeInvite('${escHtml(inv.email)}')" title="Revoke access">✕</button>
+        </div>`;
+    }).join('');
+  } catch(e) {
+    list.innerHTML = `<div class="invite-empty">Error: ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function addInvite() {
+  const email = document.getElementById('invite-email-input').value.trim();
+  const role  = document.getElementById('invite-role-input').value;
+  if (!email) return;
+  try {
+    await api('/api/invites', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ email, role })
+    });
+    document.getElementById('invite-email-input').value = '';
+    await renderInviteList();
+    showToast('Invited', `${email} can now sign in with ${role === 'read' ? 'read-only' : 'edit'} access`, 'success');
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+  }
+}
+
+async function changeInviteRole(email, role) {
+  try {
+    await api(`/api/invites/${encodeURIComponent(email)}`, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ role })
+    });
+    showToast('Updated', `${email} is now ${role === 'read' ? 'read-only' : 'can edit'}`, 'success');
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+    await renderInviteList(); // revert displayed value
+  }
+}
+
+async function revokeInvite(email) {
+  if (!confirm(`Revoke access for ${email}?`)) return;
+  try {
+    await api(`/api/invites/${encodeURIComponent(email)}`, { method: 'DELETE' });
+    await renderInviteList();
+    showToast('Revoked', `${email} no longer has access`, 'success');
   } catch(e) {
     showToast('Error', e.message, 'error');
   }

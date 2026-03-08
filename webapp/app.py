@@ -45,6 +45,7 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 SECRET_KEY           = os.getenv("SECRET_KEY", secrets.token_hex(32))
 APP_URL              = os.getenv("APP_URL", "http://localhost:8000").rstrip("/")
 LOCAL_DEV            = os.getenv("LOCAL_DEV", "false").lower() in ("true", "1", "yes")
+OWNER_EMAIL          = os.getenv("OWNER_EMAIL", "")
 
 SESSION_MAX_AGE = 30 * 24 * 3600  # 30 days
 
@@ -132,6 +133,14 @@ CREATE TABLE IF NOT EXISTS uploaded_files (
     tx_dupes    INTEGER     DEFAULT 0,
     uploaded_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (user_id, file_hash)
+);
+
+CREATE TABLE IF NOT EXISTS invited_users (
+    id           SERIAL      PRIMARY KEY,
+    email        TEXT        UNIQUE NOT NULL,
+    role         TEXT        NOT NULL DEFAULT 'read',
+    invited_at   TIMESTAMPTZ DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ
 );
 """
 
@@ -237,6 +246,19 @@ def init_db():
                 END IF;
             END $$
         """),
+
+        ("add excluded_from_spending to categories",
+         "ALTER TABLE categories ADD COLUMN IF NOT EXISTS excluded_from_spending BOOLEAN NOT NULL DEFAULT FALSE"),
+
+        ("add invited_users table", """
+            CREATE TABLE IF NOT EXISTS invited_users (
+                id           SERIAL      PRIMARY KEY,
+                email        TEXT        UNIQUE NOT NULL,
+                role         TEXT        NOT NULL DEFAULT 'read',
+                invited_at   TIMESTAMPTZ DEFAULT NOW(),
+                last_seen_at TIMESTAMPTZ
+            )
+        """),
     ]
 
     for label, sql in migrations:
@@ -286,25 +308,32 @@ def _seed_user_categories(user_id: int):
             if cur.fetchone():
                 return  # already seeded; don't overwrite user's current list
             for cat in ALL_CATEGORIES:
+                excluded = cat in EXCLUDED_FROM_SPENDING_DEFAULT
                 cur.execute(
-                    "INSERT INTO categories (user_id, name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                    (user_id, cat)
+                    "INSERT INTO categories (user_id, name, excluded_from_spending) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                    (user_id, cat, excluded)
                 )
 
 ALL_CATEGORIES = [
     "Alcohol", "Childcare", "Clothing", "Dining", "Education", "Entertainment",
     "Fees", "Groceries", "Health & Fitness", "Other", "Services", "Shopping",
-    "Subscriptions", "Transportation", "Travel",
+    "Subscriptions", "Taxes", "Transportation", "Transfers", "Travel",
 ]
+
+# Categories that are excluded from spending totals by default
+EXCLUDED_FROM_SPENDING_DEFAULT = {"Taxes", "Transfers"}
 
 # ── Auth dependency ───────────────────────────────────────────────────────────────
 def get_current_user(request: Request) -> dict:
     """
     FastAPI dependency — resolves the authenticated user.
+    Returns a dict with: id (owner's id for data queries), email, name, picture,
+    role ('owner'|'edit'|'read'), is_owner (bool).
     In LOCAL_DEV mode returns the local test user without checking a cookie.
     """
     if LOCAL_DEV:
-        return _ensure_local_user()
+        local = _ensure_local_user()
+        return {**local, "role": "owner", "is_owner": True}
 
     token = request.cookies.get("session")
     if not token:
@@ -315,12 +344,60 @@ def get_current_user(request: Request) -> dict:
 
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, email, name, picture FROM users WHERE id = %s", (user_id,))
-            user = cur.fetchone()
-    if not user:
+            cur.execute("SELECT id, email, name, picture FROM users WHERE id = %s", (user_id,))
+            auth_user = cur.fetchone()
+    if not auth_user:
         raise HTTPException(status_code=401, detail="User not found")
-    return dict(user)
+    auth_user = dict(auth_user)
+
+    # No OWNER_EMAIL set → backward compat: every user is their own owner
+    if not OWNER_EMAIL:
+        return {**auth_user, "role": "owner", "is_owner": True}
+
+    # Owner access
+    if auth_user["email"].lower() == OWNER_EMAIL.lower():
+        return {**auth_user, "role": "owner", "is_owner": True}
+
+    # Invited user — resolve role fresh from DB on every request so revocations take effect immediately
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT role FROM invited_users WHERE lower(email) = lower(%s)",
+                (auth_user["email"],)
+            )
+            invite = cur.fetchone()
+            if not invite:
+                raise HTTPException(status_code=403, detail="Not authorized")
+            cur.execute(
+                "UPDATE invited_users SET last_seen_at = NOW() WHERE lower(email) = lower(%s)",
+                (auth_user["email"],)
+            )
+            cur.execute("SELECT id FROM users WHERE lower(email) = lower(%s)", (OWNER_EMAIL,))
+            owner_row = cur.fetchone()
+    if not owner_row:
+        raise HTTPException(status_code=403, detail="Owner has not logged in yet")
+
+    return {
+        "id":       owner_row["id"],       # data queries always use owner's id
+        "auth_id":  auth_user["id"],
+        "email":    auth_user["email"],
+        "name":     auth_user["name"],
+        "picture":  auth_user["picture"],
+        "role":     invite["role"],        # 'read' or 'edit'
+        "is_owner": False,
+    }
+
+def require_edit(user: dict = Depends(get_current_user)) -> dict:
+    """Dependency: allows owner and editors; blocks read-only users."""
+    if user["role"] == "read":
+        raise HTTPException(status_code=403, detail="Read-only access — editing not permitted")
+    return user
+
+def require_owner(user: dict = Depends(get_current_user)) -> dict:
+    """Dependency: allows only the owner."""
+    if not user["is_owner"]:
+        raise HTTPException(status_code=403, detail="Owner-only action")
+    return user
 
 # ── DB-based category matching ────────────────────────────────────────────────────
 def load_all_tx(conn, user_id: int) -> tuple:
@@ -1047,16 +1124,27 @@ def get_stats(
     date_to: str = "", import_file: str = "",
     user: dict = Depends(get_current_user)
 ):
-    where, params = ["status = 'active'", "user_id = %s"], [user["id"]]
+    uid = user["id"]
+    where, params = ["status = 'active'", "user_id = %s"], [uid]
     if source:      where.append("source = %s");      params.append(source)
     if category:    where.append("category = %s");    params.append(category)
     if date_from:   where.append("date >= %s");       params.append(date_from)
     if date_to:     where.append("date <= %s");       params.append(date_to)
     if import_file: where.append("import_file = %s"); params.append(import_file)
-    wc = " AND ".join(where)
 
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Always exclude categories marked as excluded from spending
+            cur.execute(
+                "SELECT name FROM categories WHERE user_id=%s AND excluded_from_spending=TRUE",
+                (uid,)
+            )
+            excluded = [r["name"] for r in cur.fetchall()]
+            if excluded:
+                where.append("NOT (category = ANY(%s))")
+                params.append(excluded)
+
+            wc = " AND ".join(where)
             cur.execute(f"SELECT category, SUM(amount)::float AS total, COUNT(*)::int AS count FROM transactions WHERE {wc} GROUP BY category ORDER BY total DESC", params)
             by_category = [dict(r) for r in cur.fetchall()]
             cur.execute(f"SELECT TO_CHAR(date,'YYYY-MM') AS month, SUM(amount)::float AS total FROM transactions WHERE {wc} GROUP BY month ORDER BY month", params)
@@ -1073,7 +1161,7 @@ class CategoryUpdate(BaseModel):
     category: str
 
 @app.patch("/api/transactions/{tx_id}")
-def update_category(tx_id: int, body: CategoryUpdate, user: dict = Depends(get_current_user)):
+def update_category(tx_id: int, body: CategoryUpdate, user: dict = Depends(require_edit)):
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -1088,7 +1176,7 @@ class BulkCategoryUpdate(BaseModel):
     ids: List[int]; category: str
 
 @app.patch("/api/transactions")
-def bulk_update_category(body: BulkCategoryUpdate, user: dict = Depends(get_current_user)):
+def bulk_update_category(body: BulkCategoryUpdate, user: dict = Depends(require_edit)):
     if not body.ids:
         raise HTTPException(400, "No IDs provided")
     with db() as conn:
@@ -1102,7 +1190,7 @@ def bulk_update_category(body: BulkCategoryUpdate, user: dict = Depends(get_curr
 
 # ── Soft-delete ───────────────────────────────────────────────────────────────────
 @app.delete("/api/transactions/{tx_id}")
-def delete_transaction(tx_id: int, user: dict = Depends(get_current_user)):
+def delete_transaction(tx_id: int, user: dict = Depends(require_edit)):
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1116,7 +1204,7 @@ class BulkDelete(BaseModel):
     ids: List[int]
 
 @app.post("/api/transactions/bulk-delete")
-def bulk_delete_transactions(body: BulkDelete, user: dict = Depends(get_current_user)):
+def bulk_delete_transactions(body: BulkDelete, user: dict = Depends(require_edit)):
     if not body.ids: raise HTTPException(400, "No IDs provided")
     with db() as conn:
         with conn.cursor() as cur:
@@ -1128,7 +1216,7 @@ def bulk_delete_transactions(body: BulkDelete, user: dict = Depends(get_current_
 
 # ── Restore ───────────────────────────────────────────────────────────────────────
 @app.post("/api/transactions/{tx_id}/restore")
-def restore_transaction(tx_id: int, user: dict = Depends(get_current_user)):
+def restore_transaction(tx_id: int, user: dict = Depends(require_edit)):
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1142,7 +1230,7 @@ class BulkRestore(BaseModel):
     ids: List[int]
 
 @app.post("/api/transactions/bulk-restore")
-def bulk_restore_transactions(body: BulkRestore, user: dict = Depends(get_current_user)):
+def bulk_restore_transactions(body: BulkRestore, user: dict = Depends(require_edit)):
     if not body.ids: raise HTTPException(400, "No IDs provided")
     with db() as conn:
         with conn.cursor() as cur:
@@ -1156,7 +1244,7 @@ def bulk_restore_transactions(body: BulkRestore, user: dict = Depends(get_curren
 @app.post("/api/upload")
 async def upload_files(files: List[UploadFile] = File(...),
                        force: bool = False,
-                       user: dict = Depends(get_current_user)):
+                       user: dict = Depends(require_edit)):
     user_id = user["id"]
     results = []
     with db() as conn:
@@ -1242,16 +1330,19 @@ async def upload_files(files: List[UploadFile] = File(...),
 def get_categories(user: dict = Depends(get_current_user)):
     uid = user["id"]
     with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT name FROM categories WHERE user_id=%s ORDER BY name", (uid,))
-            cats = [r[0] for r in cur.fetchall()]
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT name, excluded_from_spending FROM categories WHERE user_id=%s ORDER BY name",
+                (uid,)
+            )
+            cats = [dict(r) for r in cur.fetchall()]
     return {"categories": cats}
 
 class CategoryCreate(BaseModel):
     name: str
 
 @app.post("/api/categories", status_code=201)
-def create_category(body: CategoryCreate, user: dict = Depends(get_current_user)):
+def create_category(body: CategoryCreate, user: dict = Depends(require_edit)):
     name = body.name.strip()
     if not name: raise HTTPException(400, "Category name cannot be empty")
     with db() as conn:
@@ -1262,11 +1353,28 @@ def create_category(body: CategoryCreate, user: dict = Depends(get_current_user)
             if cur.rowcount == 0: raise HTTPException(409, "Category already exists")
     return {"ok": True, "name": name}
 
+class CategoryExclusionToggle(BaseModel):
+    name: str
+    excluded: bool
+
+@app.patch("/api/categories/exclusion")
+def toggle_category_exclusion(body: CategoryExclusionToggle, user: dict = Depends(require_edit)):
+    uid = user["id"]
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE categories SET excluded_from_spending = %s WHERE user_id=%s AND name=%s RETURNING name",
+                (body.excluded, uid, body.name)
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(404, "Category not found")
+    return {"ok": True, "name": body.name, "excluded": body.excluded}
+
 class CategoryRename(BaseModel):
     old_name: str; new_name: str
 
 @app.patch("/api/categories")
-def rename_category(body: CategoryRename, user: dict = Depends(get_current_user)):
+def rename_category(body: CategoryRename, user: dict = Depends(require_edit)):
     old, new, uid = body.old_name.strip(), body.new_name.strip(), user["id"]
     if not new:    raise HTTPException(400, "New name cannot be empty")
     if old == new: raise HTTPException(400, "New name is the same as old name")
@@ -1283,7 +1391,7 @@ def rename_category(body: CategoryRename, user: dict = Depends(get_current_user)
     return {"ok": True, "old_name": old, "new_name": new, "updated": updated}
 
 @app.delete("/api/categories")
-def delete_category(name: str, user: dict = Depends(get_current_user)):
+def delete_category(name: str, user: dict = Depends(require_edit)):
     if name == "Other": raise HTTPException(400, "Cannot delete the 'Other' category")
     uid = user["id"]
     with db() as conn:
@@ -1314,7 +1422,7 @@ class UploadRename(BaseModel):
     new_name: str
 
 @app.patch("/api/uploads/rename")
-def rename_upload(body: UploadRename, user: dict = Depends(get_current_user)):
+def rename_upload(body: UploadRename, user: dict = Depends(require_edit)):
     old, new, uid = body.old_name.strip(), body.new_name.strip(), user["id"]
     if not new:    raise HTTPException(400, "New name cannot be empty")
     if old == new: raise HTTPException(400, "New name is the same as old name")
@@ -1335,7 +1443,7 @@ def rename_upload(body: UploadRename, user: dict = Depends(get_current_user)):
     return {"ok": True, "old_name": old, "new_name": new, "updated": updated}
 
 @app.delete("/api/uploads")
-def delete_upload_record(filename: str, user: dict = Depends(get_current_user)):
+def delete_upload_record(filename: str, user: dict = Depends(require_edit)):
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1343,6 +1451,74 @@ def delete_upload_record(filename: str, user: dict = Depends(get_current_user)):
                 (user["id"], filename))
             if cur.rowcount == 0: raise HTTPException(404, "Upload record not found")
     return {"ok": True, "filename": filename}
+
+# ── Invite management ─────────────────────────────────────────────────────────────
+@app.get("/api/invites")
+def list_invites(user: dict = Depends(require_owner)):
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT i.email, i.role,
+                       to_char(i.invited_at, 'YYYY-MM-DD') AS invited_at,
+                       to_char(i.last_seen_at, 'YYYY-MM-DD HH24:MI') AS last_seen_at,
+                       u.id IS NOT NULL AS has_account
+                FROM invited_users i
+                LEFT JOIN users u ON lower(u.email) = lower(i.email)
+                ORDER BY i.invited_at DESC
+            """)
+            return {"invites": [dict(r) for r in cur.fetchall()]}
+
+class InviteCreate(BaseModel):
+    email: str
+    role: str = "read"
+
+@app.post("/api/invites", status_code=201)
+def create_invite(body: InviteCreate, user: dict = Depends(require_owner)):
+    email = body.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Invalid email address")
+    if body.role not in ("read", "edit"):
+        raise HTTPException(400, "Role must be 'read' or 'edit'")
+    if OWNER_EMAIL and email == OWNER_EMAIL.lower():
+        raise HTTPException(400, "Cannot invite the owner")
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO invited_users (email, role) VALUES (%s, %s) ON CONFLICT (email) DO NOTHING RETURNING id",
+                (email, body.role)
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(409, "Email already invited")
+    return {"ok": True, "email": email, "role": body.role}
+
+class InviteRoleUpdate(BaseModel):
+    role: str
+
+@app.patch("/api/invites/{email}")
+def update_invite_role(email: str, body: InviteRoleUpdate, user: dict = Depends(require_owner)):
+    if body.role not in ("read", "edit"):
+        raise HTTPException(400, "Role must be 'read' or 'edit'")
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE invited_users SET role=%s WHERE lower(email)=lower(%s) RETURNING email",
+                (body.role, email)
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(404, "Invite not found")
+    return {"ok": True, "email": email, "role": body.role}
+
+@app.delete("/api/invites/{email}")
+def revoke_invite(email: str, user: dict = Depends(require_owner)):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM invited_users WHERE lower(email)=lower(%s) RETURNING email",
+                (email,)
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(404, "Invite not found")
+    return {"ok": True, "email": email}
 
 # ── Run ───────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
