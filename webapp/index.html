@@ -1047,14 +1047,20 @@ function renderUploadHistory(uploads) {
           </td>
           <td class="import-source-cell">
             <span class="import-source-tag" style="cursor:pointer" title="Click to edit issuer"
-                  onclick="startSourceCellEdit(this, '${escHtml(u.filename)}', '${escHtml(u.source||'')}')">
+                  onclick="startSourceCellEdit(this)">
               ${sourceTag(u.source || '?')}
             </span>
-            <select class="pill-select import-source-sel" style="display:none"
-                    onchange="saveUploadSource('${escHtml(u.filename)}', this)"
-                    onblur="cancelSourceCellEdit(this)">
-              ${ALL_SOURCES.map(s => `<option ${s===(u.source||'')?'selected':''}>${escHtml(s)}</option>`).join('')}
-            </select>
+            <span class="import-source-edit" style="display:none;align-items:center;gap:4px">
+              <input class="import-source-input" value="${escHtml(u.source||'')}"
+                     style="background:var(--bg);border:1px solid var(--border);color:var(--text);
+                            border-radius:4px;padding:2px 6px;font-size:.8rem;width:130px"
+                     onkeydown="if(event.key==='Enter')saveUploadSource('${escHtml(u.filename)}',this.closest('.import-source-edit'));
+                                if(event.key==='Escape')cancelSourceCellEdit(this.closest('.import-source-edit'))">
+              <button class="btn" style="font-size:.72rem;padding:3px 8px"
+                      onclick="saveUploadSource('${escHtml(u.filename)}', this.closest('.import-source-edit'))">✓</button>
+              <button class="btn" style="font-size:.72rem;padding:3px 8px"
+                      onclick="cancelSourceCellEdit(this.closest('.import-source-edit'))">✕</button>
+            </span>
           </td>
           <td class="import-card-cell" data-filename="${escHtml(u.filename)}">
             <span class="import-card-text" style="color:var(--muted);font-size:.8rem">
@@ -1087,20 +1093,21 @@ function renderUploadHistory(uploads) {
     </details>`;
 }
 
-function startSourceCellEdit(span, filename, curSource) {
+function startSourceCellEdit(span) {
   span.style.display = 'none';
-  const sel = span.nextElementSibling;
-  sel.style.display = '';
-  sel.focus();
+  const edit = span.nextElementSibling;
+  edit.style.display = 'inline-flex';
+  edit.querySelector('.import-source-input').select();
 }
 
-function cancelSourceCellEdit(sel) {
-  sel.style.display = 'none';
-  sel.previousElementSibling.style.display = '';
+function cancelSourceCellEdit(edit) {
+  edit.style.display = 'none';
+  edit.previousElementSibling.style.display = '';
 }
 
-async function saveUploadSource(filename, sel) {
-  const newSource = sel.value;
+async function saveUploadSource(filename, edit) {
+  const newSource = edit.querySelector('.import-source-input').value.trim();
+  if (!newSource) return;
   try {
     await api('/api/uploads/source', {
       method: 'PATCH',
@@ -1113,7 +1120,7 @@ async function saveUploadSource(filename, sel) {
     showToast('Updated', `Issuer set to ${newSource}`, 'success');
   } catch(e) {
     showToast('Error', e.message, 'error');
-    cancelSourceCellEdit(sel);
+    cancelSourceCellEdit(edit);
   }
 }
 
@@ -1379,17 +1386,21 @@ const ALL_SOURCES = ['Amazon','Apple Card','Bank of America','Citi','Coinbase'];
 function startSourceEdit(wrap) {
   const txId = wrap.dataset.id;
   const cur  = wrap.dataset.source;
-  const sel  = document.createElement('select');
-  sel.className = 'pill-select';
-  sel.innerHTML = ALL_SOURCES.map(s =>
-    `<option ${s === cur ? 'selected' : ''}>${escHtml(s)}</option>`).join('');
-  sel.onchange = () => saveSource(txId, sel.value, wrap);
-  sel.onblur   = () => { sel.replaceWith(wrap); };
-  wrap.replaceWith(sel);
-  sel.focus();
+  const inp  = document.createElement('input');
+  inp.className = 'import-name-input';
+  inp.value = cur;
+  inp.style.cssText = 'background:var(--bg);border:1px solid var(--accent);color:var(--text);border-radius:4px;padding:2px 8px;font-size:.8rem;width:130px';
+  inp.onkeydown = e => {
+    if (e.key === 'Enter') saveSource(txId, inp.value.trim(), wrap);
+    if (e.key === 'Escape') inp.replaceWith(wrap);
+  };
+  inp.onblur = () => { inp.replaceWith(wrap); };
+  wrap.replaceWith(inp);
+  inp.select();
 }
 
 async function saveSource(txId, newSource, wrap) {
+  if (!newSource) return;
   try {
     await api(`/api/transactions/${txId}`, {
       method: 'PATCH',
@@ -1398,9 +1409,8 @@ async function saveSource(txId, newSource, wrap) {
     });
     wrap.dataset.source = newSource;
     wrap.innerHTML = sourceTag(newSource);
-    sel?.replaceWith(wrap);
-    const sel2 = wrap.parentElement?.querySelector('select');
-    sel2?.replaceWith(wrap);
+    const inp = wrap.parentElement?.querySelector('input');
+    inp?.replaceWith(wrap);
     loadStats();
   } catch(e) {
     showToast('Update failed', e.message, 'error');
