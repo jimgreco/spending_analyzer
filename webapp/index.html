@@ -458,6 +458,9 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <select id="filter-cat" onchange="applyFilters()">
       <option value="">All Categories</option>
     </select>
+    <select id="filter-card" onchange="applyFilters()">
+      <option value="">All Card #s</option>
+    </select>
     <select id="filter-import" onchange="applyFilters()">
       <option value="">All Imports</option>
     </select>
@@ -675,6 +678,7 @@ function buildFilterParams(extra = {}) {
     date_from:   document.getElementById('filter-date-from').value,
     date_to:     document.getElementById('filter-date-to').value,
     search:      document.getElementById('search').value,
+    card_last4:  document.getElementById('filter-card').value,
     import_file: document.getElementById('filter-import').value,
     status:      viewStatus,
     ...extra
@@ -994,6 +998,16 @@ function onDateInput() {
 
 // ── Render: upload history ─────────────────────────────────────────────────────
 function renderUploadHistory(uploads) {
+  // Populate card filter dropdown
+  const cardSel = document.getElementById('filter-card');
+  const curCard = cardSel.value;
+  const uniqueCards = [...new Set((uploads || []).map(u => u.card_last4).filter(Boolean))].sort();
+  cardSel.innerHTML = '<option value="">All Card #s</option>' +
+    uniqueCards.map(c => `<option ${c === curCard ? 'selected' : ''}>•••• ${escHtml(c)}</option>`).join('');
+  // Keep actual value as last4 but display with bullets — use data values
+  cardSel.innerHTML = '<option value="">All Card #s</option>' +
+    uniqueCards.map(c => `<option value="${escHtml(c)}" ${c === curCard ? 'selected' : ''}>•••• ${escHtml(c)}</option>`).join('');
+
   // Populate import filter dropdown
   const importSel = document.getElementById('filter-import');
   const curImport = importSel.value;
@@ -1009,7 +1023,7 @@ function renderUploadHistory(uploads) {
       <summary>Upload history (${uploads.length} files)</summary>
       <table id="history-table">
         <thead><tr>
-          <th>File</th><th>Card</th><th>New</th><th>Dupes</th><th>Imported</th><th></th>
+          <th>File</th><th>Card Type</th><th>Card #</th><th>New</th><th>Dupes</th><th>Imported</th><th></th>
         </tr></thead>
         <tbody>${uploads.map(u => `<tr id="urow-${escHtml(u.file_hash)}">
           <td class="import-name-cell">
@@ -1025,6 +1039,23 @@ function renderUploadHistory(uploads) {
             </span>
           </td>
           <td>${sourceTag(u.source || '?')}</td>
+          <td class="import-card-cell" data-filename="${escHtml(u.filename)}">
+            <span class="import-card-text" style="color:var(--muted);font-size:.8rem">
+              ${u.card_last4 ? `•••• ${escHtml(u.card_last4)}` : '<span style="color:var(--border)">—</span>'}
+            </span>
+            <span class="import-card-edit" style="display:none;align-items:center;gap:4px">
+              <input class="import-card-input" value="${escHtml(u.card_last4 || '')}" maxlength="4"
+                     placeholder="last 4"
+                     style="background:var(--bg);border:1px solid var(--border);color:var(--text);
+                            border-radius:4px;padding:2px 6px;font-size:.8rem;width:56px">
+              <button class="btn" style="font-size:.72rem;padding:3px 8px"
+                      onclick="saveCardLast4('${escHtml(u.filename)}', this)">✓</button>
+              <button class="btn" style="font-size:.72rem;padding:3px 8px"
+                      onclick="cancelCardEdit(this)">✕</button>
+            </span>
+            <button class="btn import-card-edit-btn" style="font-size:.65rem;padding:2px 6px;opacity:.5"
+                    onclick="startCardEdit(this)">✏</button>
+          </td>
           <td style="color:var(--green)">${u.tx_new}</td>
           <td style="color:var(--muted)">${u.tx_dupes}</td>
           <td style="color:var(--muted)">${u.uploaded_at}</td>
@@ -1037,6 +1068,40 @@ function renderUploadHistory(uploads) {
         </tr>`).join('')}</tbody>
       </table>
     </details>`;
+}
+
+function startCardEdit(btn) {
+  const cell = btn.closest('.import-card-cell');
+  cell.querySelector('.import-card-text').style.display = 'none';
+  btn.style.display = 'none';
+  const edit = cell.querySelector('.import-card-edit');
+  edit.style.display = 'inline-flex';
+  edit.querySelector('.import-card-input').focus();
+  edit.querySelector('.import-card-input').select();
+}
+
+function cancelCardEdit(btn) {
+  const cell = btn.closest('.import-card-cell');
+  cell.querySelector('.import-card-text').style.display = '';
+  cell.querySelector('.import-card-edit-btn').style.display = '';
+  cell.querySelector('.import-card-edit').style.display = 'none';
+}
+
+async function saveCardLast4(filename, btn) {
+  const cell = btn.closest('.import-card-cell');
+  const val = cell.querySelector('.import-card-input').value.trim().replace(/\D/g, '').slice(-4);
+  try {
+    await api('/api/uploads/card-last4', {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filename, card_last4: val })
+    });
+    await loadUploadHistory();
+    showToast('Saved', val ? `Card set to •••• ${val}` : 'Card # cleared', 'success');
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+    cancelCardEdit(btn);
+  }
 }
 
 function startImportRename(btn) {
@@ -1141,6 +1206,7 @@ function clearFilter() {
   document.getElementById('filter-date-from').value = '';
   document.getElementById('filter-date-to').value = '';
   document.getElementById('search').value = '';
+  document.getElementById('filter-card').value = '';
   document.getElementById('filter-import').value = '';
   document.getElementById('active-filter').style.display = 'none';
   highlightPreset(null);

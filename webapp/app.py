@@ -259,6 +259,9 @@ def init_db():
                 last_seen_at TIMESTAMPTZ
             )
         """),
+
+        ("add card_last4 to uploaded_files",
+         "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS card_last4 TEXT"),
     ]
 
     for label, sql in migrations:
@@ -1080,7 +1083,7 @@ def get_transactions(
     page: int = 1, per_page: int = 100,
     source: str = "", category: str = "", search: str = "",
     date_from: str = "", date_to: str = "",
-    import_file: str = "",
+    import_file: str = "", card_last4: str = "",
     sort_by: str = "date", sort_dir: str = "desc",
     status: str = "active",
     user: dict = Depends(get_current_user)
@@ -1094,6 +1097,9 @@ def get_transactions(
     if date_to:     where.append("date <= %s");           params.append(date_to)
     if search:      where.append("description ILIKE %s"); params.append(f"%{search}%")
     if import_file: where.append("import_file = %s");     params.append(import_file)
+    if card_last4:
+        where.append("import_file IN (SELECT filename FROM uploaded_files WHERE user_id=%s AND card_last4=%s)")
+        params.extend([user["id"], card_last4])
     wc = " AND ".join(where)
 
     valid_cols = {"date", "amount", "description", "category", "source"}
@@ -1121,7 +1127,7 @@ def get_transactions(
 @app.get("/api/stats")
 def get_stats(
     source: str = "", category: str = "", date_from: str = "",
-    date_to: str = "", import_file: str = "",
+    date_to: str = "", import_file: str = "", card_last4: str = "",
     user: dict = Depends(get_current_user)
 ):
     uid = user["id"]
@@ -1131,6 +1137,9 @@ def get_stats(
     if date_from:   where.append("date >= %s");       params.append(date_from)
     if date_to:     where.append("date <= %s");       params.append(date_to)
     if import_file: where.append("import_file = %s"); params.append(import_file)
+    if card_last4:
+        where.append("import_file IN (SELECT filename FROM uploaded_files WHERE user_id=%s AND card_last4=%s)")
+        params.extend([uid, card_last4])
 
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1410,7 +1419,7 @@ def get_uploads(user: dict = Depends(get_current_user)):
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT filename, file_hash, source, tx_new, tx_dupes,
+                SELECT filename, file_hash, source, card_last4, tx_new, tx_dupes,
                        to_char(uploaded_at,'YYYY-MM-DD HH24:MI') as uploaded_at
                 FROM uploaded_files WHERE user_id=%s
                 ORDER BY source, filename LIMIT 50
@@ -1441,6 +1450,23 @@ def rename_upload(body: UploadRename, user: dict = Depends(require_edit)):
                 (new, uid, old))
             updated = cur.rowcount
     return {"ok": True, "old_name": old, "new_name": new, "updated": updated}
+
+class CardLast4Update(BaseModel):
+    filename: str
+    card_last4: str  # empty string = clear it
+
+@app.patch("/api/uploads/card-last4")
+def set_card_last4(body: CardLast4Update, user: dict = Depends(require_edit)):
+    val = body.card_last4.strip() or None
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE uploaded_files SET card_last4=%s WHERE user_id=%s AND filename=%s RETURNING filename",
+                (val, user["id"], body.filename)
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(404, "Upload record not found")
+    return {"ok": True, "filename": body.filename, "card_last4": val}
 
 @app.delete("/api/uploads")
 def delete_upload_record(filename: str, user: dict = Depends(require_edit)):
