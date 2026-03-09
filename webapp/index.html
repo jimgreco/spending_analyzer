@@ -1034,15 +1034,18 @@ function renderUploadHistory(uploads) {
         </tr></thead>
         <tbody>${uploads.map(u => `<tr id="urow-${escHtml(u.file_hash)}">
           <td class="import-name-cell">
-            <span class="import-name-text">${escHtml(u.filename)}</span>
-            <span class="import-name-edit" style="display:none">
+            <span class="import-name-text" style="cursor:pointer" title="Click to rename"
+                  onclick="startImportRename(this)">${escHtml(u.filename)}</span>
+            <span class="import-name-edit" style="display:none;align-items:center;gap:4px">
               <input class="import-name-input" value="${escHtml(u.filename)}"
                      style="background:var(--bg);border:1px solid var(--border);color:var(--text);
-                            border-radius:4px;padding:2px 6px;font-size:.8rem;width:220px">
+                            border-radius:4px;padding:2px 6px;font-size:.8rem;width:220px"
+                     onkeydown="if(event.key==='Enter')saveImportRename('${escHtml(u.filename)}',this.closest('.import-name-edit'));
+                                if(event.key==='Escape')cancelImportRename(this.closest('.import-name-edit'))">
               <button class="btn" style="font-size:.72rem;padding:3px 8px"
-                      onclick="saveImportRename('${escHtml(u.filename)}', this)">✓ Save</button>
+                      onclick="saveImportRename('${escHtml(u.filename)}', this.closest('.import-name-edit'))">✓</button>
               <button class="btn" style="font-size:.72rem;padding:3px 8px"
-                      onclick="cancelImportRename(this)">✕</button>
+                      onclick="cancelImportRename(this.closest('.import-name-edit'))">✕</button>
             </span>
           </td>
           <td class="import-source-cell">
@@ -1083,8 +1086,6 @@ function renderUploadHistory(uploads) {
           <td style="color:var(--muted)">${u.tx_dupes}</td>
           <td style="color:var(--muted)">${u.uploaded_at}</td>
           <td style="white-space:nowrap">
-            <button class="btn" style="font-size:.72rem;padding:3px 8px"
-                    onclick="startImportRename(this)">✏️ Rename</button>
             <button class="btn" style="font-size:.72rem;padding:3px 8px"
                     onclick="reimportFile('${escHtml(u.filename)}')">🔄 Reimport</button>
           </td>
@@ -1158,30 +1159,22 @@ async function saveCardLast4(filename, btn) {
   }
 }
 
-function startImportRename(btn) {
-  const row = btn.closest('tr');
-  const cell = row.querySelector('.import-name-cell');
-  cell.querySelector('.import-name-text').style.display = 'none';
-  cell.querySelector('.import-name-edit').style.display = 'inline-flex';
-  cell.querySelector('.import-name-edit').style.alignItems = 'center';
-  cell.querySelector('.import-name-edit').style.gap = '4px';
-  cell.querySelector('.import-name-input').focus();
-  btn.style.display = 'none';
+function startImportRename(span) {
+  const cell = span.closest('.import-name-cell');
+  span.style.display = 'none';
+  const edit = cell.querySelector('.import-name-edit');
+  edit.style.display = 'inline-flex';
+  edit.querySelector('.import-name-input').select();
 }
 
-function cancelImportRename(btn) {
-  const row = btn.closest('tr');
-  const cell = row.querySelector('.import-name-cell');
-  cell.querySelector('.import-name-text').style.display = '';
-  cell.querySelector('.import-name-edit').style.display = 'none';
-  row.querySelector('button[onclick^="startImportRename"]').style.display = '';
+function cancelImportRename(edit) {
+  edit.style.display = 'none';
+  edit.closest('.import-name-cell').querySelector('.import-name-text').style.display = '';
 }
 
-async function saveImportRename(oldName, btn) {
-  const row = btn.closest('tr');
-  const cell = row.querySelector('.import-name-cell');
-  const newName = cell.querySelector('.import-name-input').value.trim();
-  if (!newName || newName === oldName) { cancelImportRename(btn); return; }
+async function saveImportRename(oldName, edit) {
+  const newName = edit.querySelector('.import-name-input').value.trim();
+  if (!newName || newName === oldName) { cancelImportRename(edit); return; }
   try {
     await api('/api/uploads/rename', {
       method: 'PATCH',
