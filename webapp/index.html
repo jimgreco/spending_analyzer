@@ -998,15 +998,19 @@ function onDateInput() {
 
 // ── Render: upload history ─────────────────────────────────────────────────────
 function renderUploadHistory(uploads) {
-  // Populate card filter dropdown
+  // Populate card filter dropdown — dedupe by last4, show source of first match
   const cardSel = document.getElementById('filter-card');
   const curCard = cardSel.value;
-  const uniqueCards = [...new Set((uploads || []).map(u => u.card_last4).filter(Boolean))].sort();
+  const cardMap = new Map();
+  (uploads || []).filter(u => u.card_last4).forEach(u => {
+    if (!cardMap.has(u.card_last4)) cardMap.set(u.card_last4, u.source || '');
+  });
+  const sortedCards = [...cardMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   cardSel.innerHTML = '<option value="">All Card #s</option>' +
-    uniqueCards.map(c => `<option ${c === curCard ? 'selected' : ''}>•••• ${escHtml(c)}</option>`).join('');
-  // Keep actual value as last4 but display with bullets — use data values
-  cardSel.innerHTML = '<option value="">All Card #s</option>' +
-    uniqueCards.map(c => `<option value="${escHtml(c)}" ${c === curCard ? 'selected' : ''}>•••• ${escHtml(c)}</option>`).join('');
+    sortedCards.map(([last4, src]) => {
+      const label = src ? `${escHtml(src)} •••• ${escHtml(last4)}` : `•••• ${escHtml(last4)}`;
+      return `<option value="${escHtml(last4)}" ${last4 === curCard ? 'selected' : ''}>${label}</option>`;
+    }).join('');
 
   // Populate import filter dropdown
   const importSel = document.getElementById('filter-import');
