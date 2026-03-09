@@ -1013,7 +1013,11 @@ function renderUploadHistory(uploads) {
   (uploads || []).filter(u => u.card_last4).forEach(u => {
     if (!cardMap.has(u.card_last4)) cardMap.set(u.card_last4, u.source || '');
   });
-  const sortedCards = [...cardMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const sortedCards = [...cardMap.entries()].sort((a, b) => {
+    const labelA = (a[1] ? a[1] + ' ' : '') + a[0];
+    const labelB = (b[1] ? b[1] + ' ' : '') + b[0];
+    return labelA.localeCompare(labelB);
+  });
   cardSel.innerHTML = '<option value="">All Card #s</option>' +
     sortedCards.map(([last4, src]) => {
       const label = src ? `${escHtml(src)} •••• ${escHtml(last4)}` : `•••• ${escHtml(last4)}`;
