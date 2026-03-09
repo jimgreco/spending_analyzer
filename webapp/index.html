@@ -452,8 +452,6 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <input type="search" id="search" placeholder="🔍  Search description…" oninput="debounce(applyFilters,300)()">
     <select id="filter-source" onchange="applyFilters()">
       <option value="">All Cards</option>
-      <option>Amazon</option><option>Apple Card</option>
-      <option>Bank of America</option><option>Citi</option><option>Coinbase</option>
     </select>
     <select id="filter-cat" onchange="applyFilters()">
       <option value="">All Categories</option>
@@ -1001,6 +999,13 @@ function onDateInput() {
 
 // ── Render: upload history ─────────────────────────────────────────────────────
 function renderUploadHistory(uploads) {
+  // Populate issuer filter dropdown dynamically from uploads
+  const sourceSel = document.getElementById('filter-source');
+  const curSource = sourceSel.value;
+  const uniqueSources = [...new Set((uploads || []).map(u => u.source).filter(Boolean))].sort();
+  sourceSel.innerHTML = '<option value="">All Cards</option>' +
+    uniqueSources.map(s => `<option ${s === curSource ? 'selected' : ''}>${escHtml(s)}</option>`).join('');
+
   // Populate card filter dropdown — dedupe by last4, show source of first match
   const cardSel = document.getElementById('filter-card');
   const curCard = cardSel.value;
