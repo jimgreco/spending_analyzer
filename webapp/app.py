@@ -262,6 +262,11 @@ def init_db():
 
         ("add card_last4 to uploaded_files",
          "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS card_last4 TEXT"),
+
+        ("rename BofA Checking source to Bank of America", """
+            UPDATE transactions SET source = 'Bank of America' WHERE source = 'BofA Checking';
+            UPDATE uploaded_files SET source = 'Bank of America' WHERE source = 'BofA Checking'
+        """),
     ]
 
     for label, sql in migrations:
