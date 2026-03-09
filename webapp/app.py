@@ -499,7 +499,7 @@ def detect_source(text: str) -> Optional[str]:
     if "PRIME VISA" in t or "CHASE.COM/AMAZON" in t or "CHASE MOBILE" in t:
         return "Amazon"
     if "ADV RELATIONSHIP BANKING" in t:
-        return "BofA Checking"
+        return "Bank of America"
     if "BANKOFAMERICA.COM" in t or "BANK OF AMERICA" in t:
         return "Bank of America"
     return None
@@ -749,7 +749,7 @@ def parse_bofa_estmt(text: str) -> list:
 def parse_bofa_pdf(text: str) -> list:
     return parse_bofa_yearend(text) if re.search(r'year.end summary', text, re.I) else parse_bofa_estmt(text)
 
-# ── BofA Checking parser ───────────────────────────────────────────────────────────
+# ── Bank of America parser ───────────────────────────────────────────────────────────
 BOFA_CHECKING_TX = re.compile(r'^(\d{2}/\d{2}/\d{2})\s+(.+?)\s+(-?[\d,]+\.\d{2})\s*$')
 BOFA_CHECKING_SKIP = re.compile(
     r'APPLECARD\s*GSBANK'
@@ -789,7 +789,7 @@ def parse_bofa_checking(text: str) -> list:
         # Negate: withdrawals are negative in PDF → positive (expense)
         #         deposits are positive in PDF → negative (income)
         rows.append({"date": dt.strftime("%Y-%m-%d"), "description": desc,
-                     "amount": -amt_raw, "source": "BofA Checking"})
+                     "amount": -amt_raw, "source": "Bank of America"})
     return rows
 
 PDF_PARSERS = {
@@ -798,7 +798,7 @@ PDF_PARSERS = {
     "Amazon":          parse_chase_pdf,
     "Citi":            parse_citi_pdf,
     "Bank of America": parse_bofa_pdf,
-    "BofA Checking":   parse_bofa_checking,
+    "Bank of America":   parse_bofa_checking,
 }
 
 # ── CSV parsers ───────────────────────────────────────────────────────────────────
@@ -874,13 +874,13 @@ Return JSON in this exact format:
 Rules:
 - amount: positive for purchases/charges/outflows, negative for refunds/credits/income
 - date: YYYY-MM-DD format
-- source: account name (e.g. "Apple Card", "Citi", "Amazon", "Bank of America", "Coinbase", "BofA Checking")
+- source: account name (e.g. "Apple Card", "Citi", "Amazon", "Bank of America", "Coinbase", "Bank of America")
 - SKIP on ALL statement types: interest charges, fees, credit limit lines, balance summaries, $0 amounts
 - SKIP on credit card statements: card payments to your account (autopay, payment received, payment thank you)
 - Apple Card Monthly Installments: use the monthly installment amount (NOT the original purchase price); set date to the 1st of the statement month
 - Include merchant refunds and credits as negative amounts
 
-BofA Checking account rules (source = "BofA Checking"):
+Bank of America account rules (source = "Bank of America"):
 - SKIP ALL incoming deposits / income (positive amounts: wire transfers in, ACH credits, mobile deposits, interest earned, any money coming INTO the account)
 - SKIP: payments to credit cards (Apple Card / APPLECARD GSBANK, Citi / CITI AUTOPAY, American Express / ACH PMT, Coinbase Card, Chase / CHASE CREDIT CRD)
 - SKIP: internal bank transfers (Online Banking transfer to/from other accounts)

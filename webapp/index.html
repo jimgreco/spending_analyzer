@@ -1027,7 +1027,7 @@ function renderUploadHistory(uploads) {
       <summary>Upload history (${uploads.length} files)</summary>
       <table id="history-table">
         <thead><tr>
-          <th>File</th><th>Card Type</th><th>Card #</th><th>New</th><th>Dupes</th><th>Imported</th><th></th>
+          <th>File</th><th>Issuer</th><th>Card #</th><th>New</th><th>Dupes</th><th>Imported</th><th></th>
         </tr></thead>
         <tbody>${uploads.map(u => `<tr id="urow-${escHtml(u.file_hash)}">
           <td class="import-name-cell">
