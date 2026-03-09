@@ -905,7 +905,10 @@ function renderTable(txs) {
           ${escHtml(t.category)}
         </span>
       </td>
-      <td>${sourceTag(t.source)}</td>
+      <td><span class="source-tag-wrap" data-id="${t.id}" data-source="${escHtml(t.source)}"
+               onclick="startSourceEdit(this)" style="cursor:pointer" title="Click to edit issuer">
+            ${sourceTag(t.source)}
+          </span></td>
       <td class="import-file" title="${escHtml(t.import_file||'')}">${escHtml(fname)}</td>
       <td class="amount">$${(+t.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td>
       ${actionsCell}
@@ -1329,6 +1332,39 @@ function showToast(title, body, type = 'success') {
     <div class="toast-body">${escHtml(body).replace(/\n/g,'<br>')}</div>`;
   container.prepend(el);
   setTimeout(() => el.remove(), 6000);
+}
+
+const ALL_SOURCES = ['Amazon','Apple Card','Bank of America','Citi','Coinbase'];
+
+function startSourceEdit(wrap) {
+  const txId = wrap.dataset.id;
+  const cur  = wrap.dataset.source;
+  const sel  = document.createElement('select');
+  sel.className = 'pill-select';
+  sel.innerHTML = ALL_SOURCES.map(s =>
+    `<option ${s === cur ? 'selected' : ''}>${escHtml(s)}</option>`).join('');
+  sel.onchange = () => saveSource(txId, sel.value, wrap);
+  sel.onblur   = () => { sel.replaceWith(wrap); };
+  wrap.replaceWith(sel);
+  sel.focus();
+}
+
+async function saveSource(txId, newSource, wrap) {
+  try {
+    await api(`/api/transactions/${txId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ source: newSource })
+    });
+    wrap.dataset.source = newSource;
+    wrap.innerHTML = sourceTag(newSource);
+    sel?.replaceWith(wrap);
+    const sel2 = wrap.parentElement?.querySelector('select');
+    sel2?.replaceWith(wrap);
+    loadStats();
+  } catch(e) {
+    showToast('Update failed', e.message, 'error');
+  }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

@@ -1173,18 +1173,25 @@ def get_stats(
 # ── Category update ───────────────────────────────────────────────────────────────
 class CategoryUpdate(BaseModel):
     category: str
+    source: Optional[str] = None
 
 @app.patch("/api/transactions/{tx_id}")
-def update_category(tx_id: int, body: CategoryUpdate, user: dict = Depends(require_edit)):
+def update_transaction(tx_id: int, body: CategoryUpdate, user: dict = Depends(require_edit)):
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE transactions SET category = %s, manually_corrected = TRUE
-                WHERE id = %s AND user_id = %s RETURNING id
-            """, (body.category, tx_id, user["id"]))
+            if body.source is not None:
+                cur.execute("""
+                    UPDATE transactions SET source = %s
+                    WHERE id = %s AND user_id = %s RETURNING id
+                """, (body.source, tx_id, user["id"]))
+            else:
+                cur.execute("""
+                    UPDATE transactions SET category = %s, manually_corrected = TRUE
+                    WHERE id = %s AND user_id = %s RETURNING id
+                """, (body.category, tx_id, user["id"]))
             if cur.rowcount == 0:
                 raise HTTPException(404, "Transaction not found")
-    return {"ok": True, "id": tx_id, "category": body.category}
+    return {"ok": True, "id": tx_id}
 
 class BulkCategoryUpdate(BaseModel):
     ids: List[int]; category: str
