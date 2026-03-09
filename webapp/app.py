@@ -1463,6 +1463,30 @@ def rename_upload(body: UploadRename, user: dict = Depends(require_edit)):
             updated = cur.rowcount
     return {"ok": True, "old_name": old, "new_name": new, "updated": updated}
 
+class UploadSourceUpdate(BaseModel):
+    filename: str
+    source: str
+
+@app.patch("/api/uploads/source")
+def set_upload_source(body: UploadSourceUpdate, user: dict = Depends(require_edit)):
+    source = body.source.strip()
+    if not source:
+        raise HTTPException(400, "Source cannot be empty")
+    uid = user["id"]
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE uploaded_files SET source=%s WHERE user_id=%s AND filename=%s RETURNING filename",
+                (source, uid, body.filename)
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(404, "Upload record not found")
+            cur.execute(
+                "UPDATE transactions SET source=%s WHERE user_id=%s AND import_file=%s",
+                (source, uid, body.filename)
+            )
+    return {"ok": True, "filename": body.filename, "source": source}
+
 class CardLast4Update(BaseModel):
     filename: str
     card_last4: str  # empty string = clear it

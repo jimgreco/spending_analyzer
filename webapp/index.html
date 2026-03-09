@@ -1045,7 +1045,17 @@ function renderUploadHistory(uploads) {
                       onclick="cancelImportRename(this)">✕</button>
             </span>
           </td>
-          <td>${sourceTag(u.source || '?')}</td>
+          <td class="import-source-cell">
+            <span class="import-source-tag" style="cursor:pointer" title="Click to edit issuer"
+                  onclick="startSourceCellEdit(this, '${escHtml(u.filename)}', '${escHtml(u.source||'')}')">
+              ${sourceTag(u.source || '?')}
+            </span>
+            <select class="pill-select import-source-sel" style="display:none"
+                    onchange="saveUploadSource('${escHtml(u.filename)}', this)"
+                    onblur="cancelSourceCellEdit(this)">
+              ${ALL_SOURCES.map(s => `<option ${s===(u.source||'')?'selected':''}>${escHtml(s)}</option>`).join('')}
+            </select>
+          </td>
           <td class="import-card-cell" data-filename="${escHtml(u.filename)}">
             <span class="import-card-text" style="color:var(--muted);font-size:.8rem">
               ${u.card_last4 ? `•••• ${escHtml(u.card_last4)}` : '<span style="color:var(--border)">—</span>'}
@@ -1075,6 +1085,36 @@ function renderUploadHistory(uploads) {
         </tr>`).join('')}</tbody>
       </table>
     </details>`;
+}
+
+function startSourceCellEdit(span, filename, curSource) {
+  span.style.display = 'none';
+  const sel = span.nextElementSibling;
+  sel.style.display = '';
+  sel.focus();
+}
+
+function cancelSourceCellEdit(sel) {
+  sel.style.display = 'none';
+  sel.previousElementSibling.style.display = '';
+}
+
+async function saveUploadSource(filename, sel) {
+  const newSource = sel.value;
+  try {
+    await api('/api/uploads/source', {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filename, source: newSource })
+    });
+    await loadUploadHistory();
+    loadTransactions();
+    loadStats();
+    showToast('Updated', `Issuer set to ${newSource}`, 'success');
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+    cancelSourceCellEdit(sel);
+  }
 }
 
 function startCardEdit(btn) {
