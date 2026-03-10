@@ -86,8 +86,8 @@ a{color:var(--accent2);text-decoration:none}
   color:var(--accent);border-radius:6px;padding:4px 11px;font-size:.78rem;
   cursor:pointer;white-space:nowrap;transition:all .15s}
 .preset-btn:hover,.preset-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-#active-filter{font-size:.8rem;color:var(--accent2);cursor:pointer}
-#active-filter:hover{text-decoration:underline}
+#active-filter,#donut-filter{font-size:.8rem;color:var(--accent2);cursor:pointer}
+#active-filter:hover,#donut-filter:hover{text-decoration:underline}
 
 /* ── Status tabs ─────────────────────────────────────────────────────────── */
 .status-tabs{display:flex;gap:6px;margin-bottom:10px;align-items:center}
@@ -166,6 +166,9 @@ tbody tr.selected{background:rgba(99,102,241,.1) !important}
   background:var(--bg);border:1px solid var(--border);color:var(--text);
   border-radius:8px;padding:6px 10px;font-size:.875rem;outline:none}
 #bulk-cat-select:focus{border-color:var(--accent)}
+#bulk-subcat-input{background:var(--bg);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:6px 10px;font-size:.875rem;outline:none;width:140px}
+#bulk-subcat-input:focus{border-color:var(--accent)}
 .bulk-apply{background:var(--accent);border:none;color:#fff;border-radius:8px;
   padding:6px 14px;font-size:.875rem;cursor:pointer}
 .bulk-apply:hover{opacity:.85}
@@ -183,6 +186,25 @@ tbody tr.selected{background:rgba(99,102,241,.1) !important}
 /* ── Import file cell ────────────────────────────────────────────────────── */
 td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── Subcategory ─────────────────────────────────────────────────────────── */
+.subcat-tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:.7rem;
+  background:rgba(255,255,255,.06);color:var(--muted)}
+.subcat-cell.clickable{cursor:pointer}
+.subcat-cell.clickable:hover .subcat-tag{opacity:.7}
+.subcat-none{color:var(--border);font-size:.75rem}
+.subcat-cell.clickable:hover .subcat-none{color:var(--muted);text-decoration:underline dotted}
+
+/* Subcategory chips in category manager */
+.cat-subcats{padding:2px 8px 8px 28px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.subcat-chip{display:inline-flex;align-items:center;gap:3px;background:rgba(255,255,255,.06);
+  border-radius:999px;padding:2px 6px 2px 9px;font-size:.72rem;color:var(--muted)}
+.subcat-chip-del{background:none;border:none;color:var(--muted);cursor:pointer;
+  font-size:.8rem;padding:0 1px;line-height:1;border-radius:3px}
+.subcat-chip-del:hover{color:var(--red)}
+.subcat-add-input{background:transparent;border:1px dashed var(--border);color:var(--muted);
+  border-radius:999px;padding:2px 8px;font-size:.72rem;outline:none;width:130px}
+.subcat-add-input:focus{border-color:var(--accent);color:var(--text)}
 
 /* ── Toast ──────────────────────────────────────────────────────────────── */
 #toast-container{position:fixed;top:24px;right:24px;z-index:1000;
@@ -401,9 +423,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <div class="icon">📄</div>
     <div class="text">
       <strong>Drop PDF or CSV statements here</strong>
-      <span>Supports Chase, Apple Card, Citi, Coinbase, Bank of America ·
-        <span class="pick-link">or click to browse</span>
-      </span>
+      <span class="pick-link">or click to browse</span>
     </div>
   </div>
   <input type="file" id="reimport-file-input" accept=".pdf,.csv" multiple style="display:none">
@@ -438,7 +458,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   <!-- Charts -->
   <div class="charts">
     <div class="chart-box">
-      <h3>By Category</h3>
+      <h3><span id="donut-title">By Category</span> <span id="donut-filter" onclick="clearCatFilter()" style="display:none">(filtered – click to clear)</span></h3>
       <canvas id="donutChart" height="260"></canvas>
     </div>
     <div class="chart-box">
@@ -453,8 +473,11 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <select id="filter-source" onchange="applyFilters()">
       <option value="">All Cards</option>
     </select>
-    <select id="filter-cat" onchange="applyFilters()">
+    <select id="filter-cat" onchange="onCatFilterChange()">
       <option value="">All Categories</option>
+    </select>
+    <select id="filter-subcat" onchange="applyFilters()" disabled>
+      <option value="">All Subcategories</option>
     </select>
     <select id="filter-card" onchange="applyFilters()">
       <option value="">All Card #s</option>
@@ -499,11 +522,12 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
         <tr>
           <th class="col-check"><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this.checked)"></th>
           <th onclick="sortBy('date')">Date</th>
+          <th onclick="sortBy('amount')" style="text-align:right">Amount</th>
           <th onclick="sortBy('description')">Description</th>
           <th onclick="sortBy('category')">Category</th>
+          <th>Subcategory</th>
           <th onclick="sortBy('source')">Card</th>
           <th>Import</th>
-          <th onclick="sortBy('amount')" style="text-align:right">Amount</th>
           <th id="col-actions-header" style="display:none"></th>
         </tr>
       </thead>
@@ -521,8 +545,11 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 <!-- Bulk action bar -->
 <div id="bulk-bar">
   <span id="bulk-count">0 selected</span>
-  <select id="bulk-cat-select"><option value="">Set category…</option></select>
+  <select id="bulk-cat-select" onchange="refreshBulkSubcatOptions()"><option value="">Set category…</option></select>
   <button class="bulk-apply" onclick="applyBulkCategory()">Apply</button>
+  <div class="bulk-sep"></div>
+  <input id="bulk-subcat-input" type="text" list="subcat-datalist" placeholder="Set subcategory…" autocomplete="off">
+  <button class="bulk-apply" onclick="applyBulkSubcategory()">Apply</button>
   <div class="bulk-sep"></div>
   <button class="bulk-delete" id="bulk-delete-btn" onclick="deleteSelected()">🗑 Delete</button>
   <button class="bulk-restore-btn" id="bulk-restore-btn" style="display:none" onclick="restoreSelected()">↩ Restore</button>
@@ -567,18 +594,22 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
-let currentPage = 1;
-let totalPages  = 1;
-let sortCol     = 'date';
-let sortDir     = 'desc';
-let stats       = null;
-let categories  = [];
-let donutChart  = null;
-let barChart    = null;
-let catFilter   = '';  // category filter set by clicking donut
-let monthFilter = '';  // month filter set by clicking bar chart
-let selectedIds = new Set();
-let viewStatus  = 'active';  // 'active' | 'deleted' | 'deduped'
+let currentPage  = 1;
+let totalPages   = 1;
+let sortCol      = 'date';
+let sortDir      = 'desc';
+let stats        = null;
+let fileCardMap  = {};  // {filename: card_last4}
+let categories   = [];
+let subcategories = {};  // {category: [name, ...]}
+let currentTxs   = [];
+let donutChart   = null;
+let barChart     = null;
+let catFilter    = '';  // category filter set by clicking donut
+let subcatFilter = '';  // subcategory filter set by clicking donut drill-down
+let monthFilter  = '';  // month filter set by clicking bar chart
+let selectedIds  = new Set();
+let viewStatus   = 'active';  // 'active' | 'deleted' | 'deduped'
 
 const SOURCE_COLORS = {
   'Amazon':         { bg:'#ff9900', text:'#000' },
@@ -616,7 +647,7 @@ async function checkAuth() {
       return r.json();
     });
     showUserHeader(user);
-    await Promise.all([loadCategories(), loadStats(), loadTransactions(), loadUploadHistory()]);
+    await Promise.all([loadCategories(), loadSubcategories(), loadStats(), loadTransactions(), loadUploadHistory()]);
   } catch(e) {
     document.getElementById('login-overlay').classList.add('visible');
   }
@@ -673,6 +704,7 @@ function buildFilterParams(extra = {}) {
   const p = new URLSearchParams({
     source:      document.getElementById('filter-source').value,
     category:    catFilter || document.getElementById('filter-cat').value,
+    subcategory: subcatFilter || document.getElementById('filter-subcat').value,
     date_from:   document.getElementById('filter-date-from').value,
     date_to:     document.getElementById('filter-date-to').value,
     search:      document.getElementById('search').value,
@@ -682,6 +714,23 @@ function buildFilterParams(extra = {}) {
     ...extra
   });
   return p.toString();
+}
+
+function updateSubcatFilterOptions() {
+  const activeCat = catFilter || document.getElementById('filter-cat').value;
+  const sel = document.getElementById('filter-subcat');
+  const subs = activeCat ? (subcategories[activeCat] || []) : [];
+  sel.innerHTML = '<option value="">All Subcategories</option>' +
+    (activeCat ? '<option value="__none__">Other (no subcategory)</option>' : '') +
+    subs.map(s => `<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('');
+  sel.disabled = !activeCat;
+  if (subcatFilter) sel.value = subcatFilter;
+}
+
+function onCatFilterChange() {
+  subcatFilter = '';
+  updateSubcatFilterOptions();
+  applyFilters();
 }
 
 // ── Status view ────────────────────────────────────────────────────────────────
@@ -744,7 +793,16 @@ async function loadCategories() {
     const sel = document.getElementById('filter-cat');
     sel.innerHTML = '<option value="">All Categories</option>' +
       categories.map(c => `<option value="${escHtml(c.name)}">${escHtml(c.name)}</option>`).join('');
+    const dl = document.getElementById('cat-datalist');
+    if (dl) dl.innerHTML = categories.map(c => `<option value="${escHtml(c.name)}">`).join('');
   } catch(e) { console.error('loadCategories', e); }
+}
+
+async function loadSubcategories() {
+  try {
+    const data = await api('/api/subcategories');
+    subcategories = data.subcategories || {};
+  } catch(e) { console.error('loadSubcategories', e); }
 }
 
 async function loadUploadHistory() {
@@ -755,7 +813,7 @@ async function loadUploadHistory() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadCategories(), loadStats(), loadTransactions(), loadUploadHistory()]);
+  await Promise.all([loadCategories(), loadSubcategories(), loadStats(), loadTransactions(), loadUploadHistory()]);
 }
 
 // ── Render: cards ──────────────────────────────────────────────────────────────
@@ -773,16 +831,33 @@ function renderCards(s) {
 
 // ── Render: charts ─────────────────────────────────────────────────────────────
 function renderCharts(s) {
-  // Donut
-  const cats = s.by_category || [];
+  // Donut — shows subcategories when a category is filtered, otherwise categories
+  const drillMode = !!(catFilter || document.getElementById('filter-cat').value);
+  const subcats = s.by_subcategory || [];
+  const cats    = s.by_category    || [];
+  const slices  = drillMode && subcats.length ? subcats : cats;
+  const total   = slices.reduce((a, c) => a + c.total, 0);
+
+  // Color: in drill mode use a fixed palette per subcategory, else per category
+  const sliceColor = drillMode
+    ? (_, i) => CAT_PALETTE[i % CAT_PALETTE.length]
+    : (c)    => catColor(c.category);
+
+  document.getElementById('donut-title').textContent = drillMode
+    ? (catFilter || document.getElementById('filter-cat').value)
+    : 'By Category';
+  const activeCat = catFilter || document.getElementById('filter-cat').value;
+  const activeSubcat = subcatFilter || document.getElementById('filter-subcat').value;
+  document.getElementById('donut-filter').style.display = (activeCat || activeSubcat) ? '' : 'none';
+
   if (donutChart) donutChart.destroy();
   donutChart = new Chart(document.getElementById('donutChart').getContext('2d'), {
     type: 'doughnut',
     data: {
-      labels: cats.map(c => c.category),
+      labels: slices.map(c => drillMode ? (c.subcategory || 'Other (no subcategory)') : c.category),
       datasets: [{
-        data: cats.map(c => c.total),
-        backgroundColor: cats.map(c => catColor(c.category)),
+        data: slices.map(c => c.total),
+        backgroundColor: slices.map((c, i) => sliceColor(c, i)),
         borderWidth: 2, borderColor: '#1a1d27'
       }]
     },
@@ -794,18 +869,33 @@ function renderCharts(s) {
           callbacks: {
             label: ctx => {
               const v = ctx.parsed;
-              const pct = ((v / cats.reduce((a,c)=>a+c.total,0))*100).toFixed(1);
+              const pct = total ? ((v / total) * 100).toFixed(1) : '0';
               return ` $${v.toLocaleString('en-US',{minimumFractionDigits:2})} (${pct}%)`;
             }
           }
         }
       },
       onClick: (_, elems) => {
-        if (elems.length) {
+        if (!elems.length) return;
+        if (drillMode) {
+          // Click subcategory slice → set/clear subcategory filter (null "Other" → '__none__')
+          const raw = slices[elems[0].index].subcategory;
+          const clicked = raw === null ? '__none__' : raw;
+          subcatFilter = subcatFilter === clicked ? '' : clicked;
+          document.getElementById('filter-subcat').value = subcatFilter;
+          document.getElementById('active-filter').style.display =
+            catFilter || subcatFilter || monthFilter ? '' : 'none';
+          applyFilters();
+        } else {
+          // Click category slice → drill into that category
           const clicked = cats[elems[0].index].category;
           catFilter = catFilter === clicked ? '' : clicked;
+          subcatFilter = '';
           document.getElementById('filter-cat').value = catFilter;
-          document.getElementById('active-filter').style.display = catFilter || monthFilter ? '' : 'none';
+          document.getElementById('filter-subcat').value = '';
+          updateSubcatFilterOptions();
+          document.getElementById('active-filter').style.display =
+            catFilter || monthFilter ? '' : 'none';
           applyFilters();
         }
       }
@@ -849,7 +939,7 @@ function renderCharts(s) {
             document.getElementById('filter-date-to').value = `${clicked}-${String(lastDay).padStart(2,'0')}`;
           }
           highlightPreset(null);
-          document.getElementById('active-filter').style.display = catFilter || monthFilter ? '' : 'none';
+          document.getElementById('active-filter').style.display = catFilter || subcatFilter || monthFilter ? '' : 'none';
           applyFilters();
         }
       }
@@ -859,6 +949,7 @@ function renderCharts(s) {
 
 // ── Render: table ──────────────────────────────────────────────────────────────
 function renderTable(txs) {
+  currentTxs = txs || [];
   const tbody = document.getElementById('tx-body');
   const selectAllCb = document.getElementById('select-all-cb');
   const showActions = viewStatus !== 'active';
@@ -869,7 +960,7 @@ function renderTable(txs) {
       : viewStatus === 'deduped'
         ? 'No cross-statement duplicates found.'
         : 'No transactions found. Drop statement files above to get started.';
-    tbody.innerHTML = `<tr><td colspan="${showActions ? 8 : 7}">
+    tbody.innerHTML = `<tr><td colspan="${showActions ? 9 : 8}">
       <div class="empty-state">
         <div class="big">${viewStatus === 'active' ? '📭' : '✓'}</div>
         <div>${emptyMsg}</div>
@@ -894,6 +985,7 @@ function renderTable(txs) {
                onchange="toggleRow(this)">
       </td>
       <td>${t.date}</td>
+      <td class="amount">$${(+t.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td>
       <td class="description-cell">${escHtml(t.description)}</td>
       <td>
         <span class="pill${t.manually_corrected ? ' edited' : ''}"
@@ -903,12 +995,9 @@ function renderTable(txs) {
           ${escHtml(t.category)}
         </span>
       </td>
-      <td><span class="source-tag-wrap" data-id="${t.id}" data-source="${escHtml(t.source)}"
-               onclick="startSourceEdit(this)" style="cursor:pointer" title="Click to edit issuer">
-            ${sourceTag(t.source)}
-          </span></td>
+      <td>${subcatCell(t)}</td>
+      <td style="font-size:.8rem;white-space:nowrap">${(() => { const last4 = fileCardMap[t.import_file]; const src = t.source; if (src && last4) return `${sourceTag(src)} <span style="color:var(--muted);font-variant-numeric:tabular-nums">•••• ${escHtml(last4)}</span>`; if (src) return sourceTag(src); if (last4) return `<span style="color:var(--muted);font-variant-numeric:tabular-nums">•••• ${escHtml(last4)}</span>`; return '<span style="color:var(--border)">—</span>'; })()}</td>
       <td class="import-file" title="${escHtml(t.import_file||'')}">${escHtml(fname)}</td>
-      <td class="amount">$${(+t.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td>
       ${actionsCell}
     </tr>`;
   }).join('');
@@ -1005,6 +1094,10 @@ function renderUploadHistory(uploads) {
   const uniqueSources = [...new Set((uploads || []).map(u => u.source).filter(Boolean))].sort();
   sourceSel.innerHTML = '<option value="">All Cards</option>' +
     uniqueSources.map(s => `<option ${s === curSource ? 'selected' : ''}>${escHtml(s)}</option>`).join('');
+
+  // Build filename → card_last4 lookup for table rows
+  fileCardMap = {};
+  (uploads || []).forEach(u => { if (u.card_last4) fileCardMap[u.filename] = u.card_last4; });
 
   // Populate card filter dropdown — dedupe by last4, show source of first match
   const cardSel = document.getElementById('filter-card');
@@ -1214,15 +1307,69 @@ function reimportFile(filename) {
 function startEdit(pillEl) {
   const txId   = pillEl.dataset.id;
   const curCat = pillEl.dataset.cat;
-  const opts   = categories.map(c =>
-    `<option ${c.name===curCat?'selected':''}>${c.name}</option>`).join('');
-  const sel = document.createElement('select');
-  sel.className = 'pill-select';
-  sel.innerHTML = opts;
-  sel.onchange = () => saveCategory(txId, sel.value, pillEl);
-  sel.onblur   = () => { sel.replaceWith(pillEl); };
-  pillEl.replaceWith(sel);
-  sel.focus();
+
+  const wrap = document.createElement('span');
+  wrap.style.cssText = 'position:relative;display:inline-block';
+
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.className = 'pill-select';
+  inp.value = curCat;
+  inp.setAttribute('list', 'cat-datalist');
+  inp.style.width = '130px';
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'position:absolute;top:100%;left:0;z-index:999;background:var(--bg-soft);' +
+    'border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:.68rem;' +
+    'color:var(--accent2);white-space:nowrap;display:none;pointer-events:none';
+
+  inp.oninput = () => {
+    const v = inp.value.trim();
+    const isNew = v && !categories.some(c => c.name === v);
+    hint.textContent = isNew ? `✦ New category "${v}" will be created` : '';
+    hint.style.display = isNew ? 'block' : 'none';
+  };
+
+  let committed = false;
+  const commit = async () => {
+    if (committed) return;
+    committed = true;
+    hint.style.display = 'none';
+    const newCat = inp.value.trim();
+    if (!newCat || newCat === curCat) { wrap.replaceWith(pillEl); return; }
+    const isNew = !categories.some(c => c.name === newCat);
+    if (isNew) {
+      try {
+        await api('/api/categories', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ name: newCat })
+        });
+        await loadCategories();
+        showToast('Category created', `"${newCat}" added`, 'success');
+      } catch(e) {
+        if (!e.message.includes('409')) {
+          showToast('Failed to create category', e.message, 'error');
+          wrap.replaceWith(pillEl);
+          return;
+        }
+      }
+    }
+    await saveCategory(txId, newCat, pillEl);
+    wrap.replaceWith(pillEl);
+  };
+
+  inp.onkeydown = e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { committed = true; wrap.replaceWith(pillEl); }
+  };
+  inp.onblur = () => setTimeout(commit, 200);
+
+  wrap.appendChild(inp);
+  wrap.appendChild(hint);
+  pillEl.replaceWith(wrap);
+  inp.focus();
+  inp.select();
 }
 
 async function saveCategory(txId, newCat, pillEl) {
@@ -1246,6 +1393,108 @@ async function saveCategory(txId, newCat, pillEl) {
   }
 }
 
+function subcatCell(t) {
+  const cur = t.subcategory || '';
+  const tag = cur
+    ? `<span class="subcat-tag">${escHtml(cur)}</span>`
+    : `<span class="subcat-none">—</span>`;
+  return `<span class="subcat-cell clickable" data-id="${t.id}"
+    data-cat="${escHtml(t.category)}" data-subcat="${escHtml(cur)}"
+    onclick="startSubcatEdit(this)" title="Click to set subcategory">${tag}</span>`;
+}
+
+function startSubcatEdit(el) {
+  const txId = el.dataset.id;
+  const cat  = el.dataset.cat;
+  const cur  = el.dataset.subcat;
+  const subs = subcategories[cat] || [];
+
+  const dl = document.getElementById('subcat-datalist');
+  if (dl) dl.innerHTML = subs.map(s => `<option value="${escHtml(s)}">`).join('');
+
+  const wrap = document.createElement('span');
+  wrap.style.cssText = 'position:relative;display:inline-block';
+
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.className = 'pill-select';
+  inp.value = cur;
+  inp.setAttribute('list', 'subcat-datalist');
+  inp.placeholder = '— none —';
+  inp.style.width = '120px';
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'position:absolute;top:100%;left:0;z-index:999;background:var(--bg-soft);' +
+    'border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:.68rem;' +
+    'color:var(--accent2);white-space:nowrap;display:none;pointer-events:none';
+
+  inp.oninput = () => {
+    const v = inp.value.trim();
+    const isNew = v && !subs.includes(v);
+    hint.textContent = isNew ? `✦ New subcategory "${v}" will be created` : '';
+    hint.style.display = isNew ? 'block' : 'none';
+  };
+
+  let committed = false;
+  const commit = async () => {
+    if (committed) return;
+    committed = true;
+    hint.style.display = 'none';
+    const newSubcat = inp.value.trim();
+    if (newSubcat === cur) { wrap.replaceWith(el); return; }
+    const isNew = newSubcat && !subs.includes(newSubcat);
+    if (isNew) {
+      try {
+        await api('/api/subcategories', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ category: cat, name: newSubcat })
+        });
+        await loadSubcategories();
+        showToast('Subcategory created', `"${newSubcat}" added to ${cat}`, 'success');
+      } catch(e) {
+        if (!e.message.includes('409')) {
+          showToast('Failed to create subcategory', e.message, 'error');
+          wrap.replaceWith(el);
+          return;
+        }
+      }
+    }
+    await saveSubcategory(txId, newSubcat, el);
+    wrap.replaceWith(el);
+  };
+
+  inp.onkeydown = e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { committed = true; wrap.replaceWith(el); }
+  };
+  inp.onblur = () => setTimeout(commit, 200);
+
+  wrap.appendChild(inp);
+  wrap.appendChild(hint);
+  el.replaceWith(wrap);
+  inp.focus();
+  inp.select();
+}
+
+async function saveSubcategory(txId, newSubcat, el) {
+  try {
+    await api(`/api/transactions/${txId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ subcategory: newSubcat })
+    });
+    el.dataset.subcat = newSubcat;
+    el.innerHTML = newSubcat
+      ? `<span class="subcat-tag">${escHtml(newSubcat)}</span>`
+      : `<span class="subcat-none">—</span>`;
+    const sel = el.parentElement?.querySelector('select');
+    sel?.replaceWith(el);
+  } catch(e) {
+    showToast('Update failed', e.message, 'error');
+  }
+}
+
 // ── Filters & sorting ──────────────────────────────────────────────────────────
 function applyFilters() {
   currentPage = 1;
@@ -1254,10 +1503,22 @@ function applyFilters() {
   loadTransactions();
 }
 
+function clearCatFilter() {
+  catFilter = '';
+  subcatFilter = '';
+  document.getElementById('filter-cat').value = '';
+  document.getElementById('filter-subcat').value = '';
+  updateSubcatFilterOptions();
+  document.getElementById('active-filter').style.display = monthFilter ? '' : 'none';
+  applyFilters();
+}
+
 function clearFilter() {
   catFilter = '';
+  subcatFilter = '';
   monthFilter = '';
   document.getElementById('filter-cat').value = '';
+  document.getElementById('filter-subcat').value = '';
   document.getElementById('filter-source').value = '';
   document.getElementById('filter-date-from').value = '';
   document.getElementById('filter-date-to').value = '';
@@ -1265,6 +1526,7 @@ function clearFilter() {
   document.getElementById('filter-card').value = '';
   document.getElementById('filter-import').value = '';
   document.getElementById('active-filter').style.display = 'none';
+  updateSubcatFilterOptions();
   highlightPreset(null);
   applyFilters();
 }
@@ -1274,7 +1536,7 @@ function sortBy(col) {
   else { sortCol = col; sortDir = 'desc'; }
   // Update header indicators
   document.querySelectorAll('thead th').forEach(th => th.classList.remove('asc','desc'));
-  const colMap = {date:1,description:2,category:3,source:4,amount:6};
+  const colMap = {date:1,description:2,category:3,source:5,amount:7};
   const th = document.querySelectorAll('thead th')[colMap[col]];
   if (th) th.classList.add(sortDir);
   currentPage = 1;
@@ -1479,7 +1741,24 @@ function updateBulkBar() {
     const sel = document.getElementById('bulk-cat-select');
     sel.innerHTML = '<option value="">Set category…</option>' +
       categories.map(c => `<option>${escHtml(c.name)}</option>`).join('');
+    refreshBulkSubcatOptions();
   }
+}
+
+function refreshBulkSubcatOptions() {
+  let cat = document.getElementById('bulk-cat-select').value;
+  if (!cat) {
+    const cats = new Set(
+      [...selectedIds].map(id => {
+        const tx = currentTxs.find(t => t.id === id);
+        return tx ? tx.category : null;
+      }).filter(Boolean)
+    );
+    cat = cats.size === 1 ? [...cats][0] : null;
+  }
+  const options = cat ? (subcategories[cat] || []) : [];
+  const dl = document.getElementById('subcat-datalist');
+  if (dl) dl.innerHTML = options.map(n => `<option value="${escHtml(n)}">`).join('');
 }
 
 async function applyBulkCategory() {
@@ -1495,6 +1774,61 @@ async function applyBulkCategory() {
               `→ ${cat}`, 'success');
     clearSelection();
     loadStats();
+    loadTransactions();
+  } catch(e) { showToast('Update failed', e.message, 'error'); }
+}
+
+async function applyBulkSubcategory() {
+  const inp = document.getElementById('bulk-subcat-input');
+  const subcatValue = inp.value.trim();
+
+  // Determine effective category for new subcategory creation
+  let effectiveCat = document.getElementById('bulk-cat-select').value;
+  if (!effectiveCat) {
+    const cats = new Set(
+      [...selectedIds].map(id => {
+        const tx = currentTxs.find(t => t.id === id);
+        return tx ? tx.category : null;
+      }).filter(Boolean)
+    );
+    effectiveCat = cats.size === 1 ? [...cats][0] : null;
+  }
+
+  // If new subcategory name, create it (requires a known category)
+  const existingSubs = effectiveCat ? (subcategories[effectiveCat] || []) : [];
+  const isNew = subcatValue && !existingSubs.includes(subcatValue);
+  if (isNew) {
+    if (!effectiveCat) {
+      showToast('Category required', 'Select a category first to create a new subcategory.', 'warn');
+      return;
+    }
+    try {
+      await api('/api/subcategories', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ category: effectiveCat, name: subcatValue })
+      });
+      await loadSubcategories();
+    } catch(e) {
+      if (!e.message.includes('409')) {
+        showToast('Failed to create subcategory', e.message, 'error');
+        return;
+      }
+    }
+  }
+
+  try {
+    const data = await api('/api/transactions', {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ids: [...selectedIds], subcategory: subcatValue })
+    });
+    const label = subcatValue || '(cleared)';
+    showToast(`Updated ${data.updated} transaction${data.updated!==1?'s':''}`,
+              isNew ? `Created & applied subcategory "${subcatValue}"` : `Subcategory → ${label}`,
+              'success');
+    inp.value = '';
+    clearSelection();
     loadTransactions();
   } catch(e) { showToast('Update failed', e.message, 'error'); }
 }
@@ -1551,7 +1885,7 @@ async function restoreSelected() {
 async function openCatModal() {
   document.getElementById('cat-modal-overlay').classList.add('open');
   document.getElementById('cat-new-input').value = '';
-  await renderCatList();
+  await Promise.all([loadSubcategories(), renderCatList()]);
 }
 
 function closeCatModal() {
@@ -1561,21 +1895,36 @@ function closeCatModal() {
 async function renderCatList() {
   const data = await api('/api/categories');
   const list = document.getElementById('cat-list');
-  list.innerHTML = data.categories.map(c => `
-    <div class="cat-row" data-name="${escHtml(c.name)}">
-      <span class="cat-row-name" data-original="${escHtml(c.name)}">${escHtml(c.name)}</span>
-      <div class="cat-row-actions">
-        <button class="cat-btn excl-btn${c.excluded_from_spending ? ' excl-on' : ''}"
-                title="${c.excluded_from_spending ? 'Excluded from spending — click to include' : 'Click to exclude from spending totals'}"
-                onclick="toggleExclusion('${escHtml(c.name)}', ${!c.excluded_from_spending})">
-          ${c.excluded_from_spending ? '⊘ excl' : '⊘'}
-        </button>
-        <button class="cat-btn" title="Rename" onclick="startRename(this)">✏</button>
-        <button class="cat-btn save" title="Save rename" onclick="saveRename(this)" style="display:none">✓ Save</button>
-        <button class="cat-btn del" title="Delete" onclick="deleteCategory('${escHtml(c.name)}')"
-                ${c.name === 'Other' ? 'disabled' : ''}>✕</button>
+  list.innerHTML = data.categories.map(c => {
+    const subs = subcategories[c.name] || [];
+    const subChips = subs.map(s =>
+      `<span class="subcat-chip">${escHtml(s)}<button class="subcat-chip-del" title="Remove subcategory"
+        onclick="deleteSubcategory('${escHtml(c.name)}','${escHtml(s)}')">×</button></span>`
+    ).join('');
+    return `
+    <div data-name="${escHtml(c.name)}">
+      <div class="cat-row">
+        <span class="cat-row-name" data-original="${escHtml(c.name)}">${escHtml(c.name)}</span>
+        <div class="cat-row-actions">
+          <button class="cat-btn excl-btn${c.excluded_from_spending ? ' excl-on' : ''}"
+                  title="${c.excluded_from_spending ? 'Excluded from spending — click to include' : 'Click to exclude from spending totals'}"
+                  onclick="toggleExclusion('${escHtml(c.name)}', ${!c.excluded_from_spending})">
+            ${c.excluded_from_spending ? '⊘ excl' : '⊘'}
+          </button>
+          <button class="cat-btn" title="Rename" onclick="startRename(this)">✏</button>
+          <button class="cat-btn save" title="Save rename" onclick="saveRename(this)" style="display:none">✓ Save</button>
+          <button class="cat-btn del" title="Delete" onclick="deleteCategory('${escHtml(c.name)}')"
+                  ${c.name === 'Other' ? 'disabled' : ''}>✕</button>
+        </div>
       </div>
-    </div>`).join('');
+      <div class="cat-subcats">
+        ${subChips}
+        <input class="subcat-add-input" placeholder="+ subcategory"
+               onkeydown="if(event.key==='Enter'&&this.value.trim())addSubcategory('${escHtml(c.name)}',this)"
+               onblur="if(this.value.trim())addSubcategory('${escHtml(c.name)}',this)">
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function startRename(btn) {
@@ -1695,6 +2044,37 @@ async function toggleExclusion(name, excluded) {
   }
 }
 
+// ── Subcategory management (in category modal) ─────────────────────────────────
+async function addSubcategory(category, input) {
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    await api('/api/subcategories', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ category, name })
+    });
+    input.value = '';
+    await loadSubcategories();
+    await renderCatList();
+    loadTransactions();
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+  }
+}
+
+async function deleteSubcategory(category, name) {
+  try {
+    await api(`/api/subcategories?category=${encodeURIComponent(category)}&name=${encodeURIComponent(name)}`,
+              { method: 'DELETE' });
+    await loadSubcategories();
+    await renderCatList();
+    loadTransactions();
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+  }
+}
+
 // ── Invite / Access management ─────────────────────────────────────────────────
 async function openInviteModal() {
   document.getElementById('invite-modal-overlay').classList.add('open');
@@ -1779,5 +2159,7 @@ async function revokeInvite(email) {
   }
 }
 </script>
+<datalist id="cat-datalist"></datalist>
+<datalist id="subcat-datalist"></datalist>
 </body>
 </html>

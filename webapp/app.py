@@ -123,6 +123,14 @@ CREATE TABLE IF NOT EXISTS categories (
     UNIQUE (user_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS subcategories (
+    id      SERIAL  PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    category TEXT    NOT NULL,
+    name    TEXT    NOT NULL,
+    UNIQUE (user_id, category, name)
+);
+
 CREATE TABLE IF NOT EXISTS uploaded_files (
     id          SERIAL      PRIMARY KEY,
     user_id     INTEGER     REFERENCES users(id) ON DELETE CASCADE,
@@ -266,6 +274,19 @@ def init_db():
         ("rename BofA Checking source to Bank of America", """
             UPDATE transactions SET source = 'Bank of America' WHERE source = 'BofA Checking';
             UPDATE uploaded_files SET source = 'Bank of America' WHERE source = 'BofA Checking'
+        """),
+
+        ("add subcategory to transactions",
+         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS subcategory TEXT"),
+
+        ("add subcategories table", """
+            CREATE TABLE IF NOT EXISTS subcategories (
+                id      SERIAL  PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                category TEXT    NOT NULL,
+                name    TEXT    NOT NULL,
+                UNIQUE (user_id, category, name)
+            )
         """),
     ]
 
@@ -1086,7 +1107,7 @@ def index():
 @app.get("/api/transactions")
 def get_transactions(
     page: int = 1, per_page: int = 100,
-    source: str = "", category: str = "", search: str = "",
+    source: str = "", category: str = "", subcategory: str = "", search: str = "",
     date_from: str = "", date_to: str = "",
     import_file: str = "", card_last4: str = "",
     sort_by: str = "date", sort_dir: str = "desc",
@@ -1098,6 +1119,10 @@ def get_transactions(
         where.append("status = %s"); params.append(status)
     if source:      where.append("source = %s");          params.append(source)
     if category:    where.append("category = %s");        params.append(category)
+    if subcategory == "__none__":
+        where.append("subcategory IS NULL")
+    elif subcategory:
+        where.append("subcategory = %s");                 params.append(subcategory)
     if date_from:   where.append("date >= %s");           params.append(date_from)
     if date_to:     where.append("date <= %s");           params.append(date_to)
     if search:      where.append("description ILIKE %s"); params.append(f"%{search}%")
@@ -1117,7 +1142,7 @@ def get_transactions(
             cur.execute(f"SELECT COUNT(*) as n FROM transactions WHERE {wc}", params)
             total = cur.fetchone()["n"]
             cur.execute(f"""
-                SELECT id, date::text, description, category,
+                SELECT id, date::text, description, category, subcategory,
                        amount::float, source, manually_corrected, import_file,
                        status, dedup_of
                 FROM transactions WHERE {wc}
@@ -1131,14 +1156,18 @@ def get_transactions(
 
 @app.get("/api/stats")
 def get_stats(
-    source: str = "", category: str = "", date_from: str = "",
-    date_to: str = "", import_file: str = "", card_last4: str = "",
-    user: dict = Depends(get_current_user)
+    source: str = "", category: str = "", subcategory: str = "",
+    date_from: str = "", date_to: str = "", import_file: str = "",
+    card_last4: str = "", user: dict = Depends(get_current_user)
 ):
     uid = user["id"]
     where, params = ["status = 'active'", "user_id = %s"], [uid]
     if source:      where.append("source = %s");      params.append(source)
     if category:    where.append("category = %s");    params.append(category)
+    if subcategory == "__none__":
+        where.append("subcategory IS NULL")
+    elif subcategory:
+        where.append("subcategory = %s"); params.append(subcategory)
     if date_from:   where.append("date >= %s");       params.append(date_from)
     if date_to:     where.append("date <= %s");       params.append(date_to)
     if import_file: where.append("import_file = %s"); params.append(import_file)
@@ -1148,7 +1177,6 @@ def get_stats(
 
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Always exclude categories marked as excluded from spending
             cur.execute(
                 "SELECT name FROM categories WHERE user_id=%s AND excluded_from_spending=TRUE",
                 (uid,)
@@ -1167,12 +1195,23 @@ def get_stats(
             by_source = [dict(r) for r in cur.fetchall()]
             cur.execute(f"SELECT COALESCE(SUM(amount),0)::float AS total, COUNT(*)::int AS count FROM transactions WHERE {wc}", params)
             summary = dict(cur.fetchone())
+            # Subcategory breakdown when a category is active
+            if category:
+                cur.execute(
+                    f"SELECT subcategory, SUM(amount)::float AS total, COUNT(*)::int AS count FROM transactions WHERE {wc} GROUP BY subcategory ORDER BY total DESC NULLS LAST",
+                    params
+                )
+                by_subcategory = [dict(r) for r in cur.fetchall()]
+            else:
+                by_subcategory = []
 
-    return {**summary, "by_category": by_category, "by_month": by_month, "by_source": by_source}
+    return {**summary, "by_category": by_category, "by_month": by_month,
+            "by_source": by_source, "by_subcategory": by_subcategory}
 
-# ── Category update ───────────────────────────────────────────────────────────────
+# ── Category / subcategory / source update ────────────────────────────────────────
 class CategoryUpdate(BaseModel):
-    category: str
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
     source: Optional[str] = None
 
 @app.patch("/api/transactions/{tx_id}")
@@ -1184,30 +1223,48 @@ def update_transaction(tx_id: int, body: CategoryUpdate, user: dict = Depends(re
                     UPDATE transactions SET source = %s
                     WHERE id = %s AND user_id = %s RETURNING id
                 """, (body.source, tx_id, user["id"]))
-            else:
+            elif body.subcategory is not None:
+                subcat = body.subcategory.strip() or None
+                cur.execute("""
+                    UPDATE transactions SET subcategory = %s
+                    WHERE id = %s AND user_id = %s RETURNING id
+                """, (subcat, tx_id, user["id"]))
+            elif body.category is not None:
                 cur.execute("""
                     UPDATE transactions SET category = %s, manually_corrected = TRUE
                     WHERE id = %s AND user_id = %s RETURNING id
                 """, (body.category, tx_id, user["id"]))
+            else:
+                raise HTTPException(400, "Nothing to update")
             if cur.rowcount == 0:
                 raise HTTPException(404, "Transaction not found")
     return {"ok": True, "id": tx_id}
 
 class BulkCategoryUpdate(BaseModel):
-    ids: List[int]; category: str
+    ids: List[int]
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
 
 @app.patch("/api/transactions")
 def bulk_update_category(body: BulkCategoryUpdate, user: dict = Depends(require_edit)):
     if not body.ids:
         raise HTTPException(400, "No IDs provided")
+    if body.category is None and body.subcategory is None:
+        raise HTTPException(400, "Nothing to update")
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE transactions SET category = %s, manually_corrected = TRUE
-                WHERE id = ANY(%s) AND user_id = %s
-            """, (body.category, body.ids, user["id"]))
+            sets, vals = [], []
+            if body.category is not None:
+                sets.append("category = %s"); vals.append(body.category)
+            if body.subcategory is not None:
+                sets.append("subcategory = %s"); vals.append(body.subcategory or None)
+            sets.append("manually_corrected = TRUE")
+            cur.execute(
+                f"UPDATE transactions SET {', '.join(sets)} WHERE id = ANY(%s) AND user_id = %s",
+                vals + [body.ids, user["id"]]
+            )
             updated = cur.rowcount
-    return {"ok": True, "updated": updated, "category": body.category}
+    return {"ok": True, "updated": updated}
 
 # ── Soft-delete ───────────────────────────────────────────────────────────────────
 @app.delete("/api/transactions/{tx_id}")
@@ -1409,6 +1466,8 @@ def rename_category(body: CategoryRename, user: dict = Depends(require_edit)):
             cur.execute("UPDATE transactions SET category=%s WHERE user_id=%s AND category=%s",
                         (new, uid, old))
             updated = cur.rowcount
+            cur.execute("UPDATE subcategories SET category=%s WHERE user_id=%s AND category=%s",
+                        (new, uid, old))
     return {"ok": True, "old_name": old, "new_name": new, "updated": updated}
 
 @app.delete("/api/categories")
@@ -1417,13 +1476,68 @@ def delete_category(name: str, user: dict = Depends(require_edit)):
     uid = user["id"]
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE transactions SET category='Other' WHERE user_id=%s AND category=%s",
+            cur.execute("UPDATE transactions SET category='Other', subcategory=NULL WHERE user_id=%s AND category=%s",
                         (uid, name))
             reassigned = cur.rowcount
+            cur.execute("DELETE FROM subcategories WHERE user_id=%s AND category=%s", (uid, name))
             cur.execute("DELETE FROM categories WHERE user_id=%s AND name=%s RETURNING name",
                         (uid, name))
             if cur.rowcount == 0: raise HTTPException(404, "Category not found")
     return {"ok": True, "name": name, "reassigned": reassigned}
+
+# ── Subcategories ─────────────────────────────────────────────────────────────────
+@app.get("/api/subcategories")
+def get_subcategories(user: dict = Depends(get_current_user)):
+    uid = user["id"]
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT category, name FROM subcategories WHERE user_id=%s ORDER BY category, name",
+                (uid,)
+            )
+            rows = cur.fetchall()
+    result: dict = {}
+    for row in rows:
+        cat = row["category"]
+        result.setdefault(cat, []).append(row["name"])
+    return {"subcategories": result}
+
+class SubcategoryCreate(BaseModel):
+    category: str
+    name: str
+
+@app.post("/api/subcategories", status_code=201)
+def create_subcategory(body: SubcategoryCreate, user: dict = Depends(require_edit)):
+    category = body.category.strip()
+    name = body.name.strip()
+    if not category: raise HTTPException(400, "Category cannot be empty")
+    if not name: raise HTTPException(400, "Subcategory name cannot be empty")
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO subcategories (user_id, category, name) VALUES (%s,%s,%s) "
+                "ON CONFLICT DO NOTHING RETURNING name",
+                (user["id"], category, name)
+            )
+            if cur.rowcount == 0: raise HTTPException(409, "Subcategory already exists")
+    return {"ok": True, "category": category, "name": name}
+
+@app.delete("/api/subcategories")
+def delete_subcategory(category: str, name: str, user: dict = Depends(require_edit)):
+    uid = user["id"]
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE transactions SET subcategory = NULL "
+                "WHERE user_id=%s AND category=%s AND subcategory=%s",
+                (uid, category, name)
+            )
+            cur.execute(
+                "DELETE FROM subcategories WHERE user_id=%s AND category=%s AND name=%s RETURNING name",
+                (uid, category, name)
+            )
+            if cur.rowcount == 0: raise HTTPException(404, "Subcategory not found")
+    return {"ok": True, "category": category, "name": name}
 
 # ── Upload history ────────────────────────────────────────────────────────────────
 @app.get("/api/uploads")
