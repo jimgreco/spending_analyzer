@@ -123,12 +123,17 @@ CREATE TABLE IF NOT EXISTS categories (
     UNIQUE (user_id, name)
 );
 
-CREATE TABLE IF NOT EXISTS subcategories (
+CREATE TABLE IF NOT EXISTS tags (
     id      SERIAL  PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-    category TEXT    NOT NULL,
     name    TEXT    NOT NULL,
-    UNIQUE (user_id, category, name)
+    UNIQUE (user_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS transaction_tags (
+    transaction_id INTEGER REFERENCES transactions(id) ON DELETE CASCADE,
+    tag_id         INTEGER REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (transaction_id, tag_id)
 );
 
 CREATE TABLE IF NOT EXISTS uploaded_files (
@@ -276,18 +281,29 @@ def init_db():
             UPDATE uploaded_files SET source = 'Bank of America' WHERE source = 'BofA Checking'
         """),
 
-        ("add subcategory to transactions",
-         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS subcategory TEXT"),
-
-        ("add subcategories table", """
-            CREATE TABLE IF NOT EXISTS subcategories (
+        # ── tags (replaces subcategories) ────────────────────────────────────────
+        ("add tags table", """
+            CREATE TABLE IF NOT EXISTS tags (
                 id      SERIAL  PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                category TEXT    NOT NULL,
                 name    TEXT    NOT NULL,
-                UNIQUE (user_id, category, name)
+                UNIQUE (user_id, name)
             )
         """),
+
+        ("add transaction_tags table", """
+            CREATE TABLE IF NOT EXISTS transaction_tags (
+                transaction_id INTEGER REFERENCES transactions(id) ON DELETE CASCADE,
+                tag_id         INTEGER REFERENCES tags(id) ON DELETE CASCADE,
+                PRIMARY KEY (transaction_id, tag_id)
+            )
+        """),
+
+        ("drop subcategory column from transactions",
+         "ALTER TABLE transactions DROP COLUMN IF EXISTS subcategory"),
+
+        ("drop subcategories table",
+         "DROP TABLE IF EXISTS subcategories CASCADE"),
     ]
 
     for label, sql in migrations:
@@ -1107,46 +1123,52 @@ def index():
 @app.get("/api/transactions")
 def get_transactions(
     page: int = 1, per_page: int = 100,
-    source: str = "", category: str = "", subcategory: str = "", search: str = "",
+    source: str = "", category: str = "", tag: str = "", search: str = "",
     date_from: str = "", date_to: str = "",
     import_file: str = "", card_last4: str = "",
     sort_by: str = "date", sort_dir: str = "desc",
     status: str = "active",
     user: dict = Depends(get_current_user)
 ):
-    where, params = ["user_id = %s"], [user["id"]]
+    uid = user["id"]
+    where, params = ["t.user_id = %s"], [uid]
     if status in ("active", "deleted", "deduped"):
-        where.append("status = %s"); params.append(status)
-    if source:      where.append("source = %s");          params.append(source)
-    if category:    where.append("category = %s");        params.append(category)
-    if subcategory == "__none__":
-        where.append("subcategory IS NULL")
-    elif subcategory:
-        where.append("subcategory = %s");                 params.append(subcategory)
-    if date_from:   where.append("date >= %s");           params.append(date_from)
-    if date_to:     where.append("date <= %s");           params.append(date_to)
-    if search:      where.append("description ILIKE %s"); params.append(f"%{search}%")
-    if import_file: where.append("import_file = %s");     params.append(import_file)
+        where.append("t.status = %s"); params.append(status)
+    if source:      where.append("t.source = %s");          params.append(source)
+    if category:    where.append("t.category = %s");        params.append(category)
+    if tag:
+        where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = %s)")
+        params.extend([uid, tag])
+    if date_from:   where.append("t.date >= %s");           params.append(date_from)
+    if date_to:     where.append("t.date <= %s");           params.append(date_to)
+    if search:      where.append("t.description ILIKE %s"); params.append(f"%{search}%")
+    if import_file: where.append("t.import_file = %s");     params.append(import_file)
     if card_last4:
-        where.append("import_file IN (SELECT filename FROM uploaded_files WHERE user_id=%s AND card_last4=%s)")
-        params.extend([user["id"], card_last4])
+        where.append("t.import_file IN (SELECT filename FROM uploaded_files WHERE user_id=%s AND card_last4=%s)")
+        params.extend([uid, card_last4])
     wc = " AND ".join(where)
 
     valid_cols = {"date", "amount", "description", "category", "source"}
-    sc = sort_by if sort_by in valid_cols else "date"
+    sc = "t." + (sort_by if sort_by in valid_cols else "date")
     sd = "DESC" if sort_dir == "desc" else "ASC"
     offset = (page - 1) * per_page
 
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(f"SELECT COUNT(*) as n FROM transactions WHERE {wc}", params)
+            cur.execute(f"SELECT COUNT(*) as n FROM transactions t WHERE {wc}", params)
             total = cur.fetchone()["n"]
             cur.execute(f"""
-                SELECT id, date::text, description, category, subcategory,
-                       amount::float, source, manually_corrected, import_file,
-                       status, dedup_of
-                FROM transactions WHERE {wc}
-                ORDER BY {sc} {sd}, id {sd}
+                SELECT t.id, t.date::text, t.description, t.category,
+                       t.amount::float, t.source, t.manually_corrected, t.import_file,
+                       t.status, t.dedup_of,
+                       COALESCE(ARRAY(
+                           SELECT tg.name FROM transaction_tags tt
+                           JOIN tags tg ON tg.id = tt.tag_id
+                           WHERE tt.transaction_id = t.id
+                           ORDER BY tg.name
+                       ), '{{}}') AS tags
+                FROM transactions t WHERE {wc}
+                ORDER BY {sc} {sd}, t.id {sd}
                 LIMIT %s OFFSET %s
             """, params + [per_page, offset])
             rows = [dict(r) for r in cur.fetchall()]
@@ -1156,23 +1178,22 @@ def get_transactions(
 
 @app.get("/api/stats")
 def get_stats(
-    source: str = "", category: str = "", subcategory: str = "",
+    source: str = "", category: str = "", tag: str = "",
     date_from: str = "", date_to: str = "", import_file: str = "",
     card_last4: str = "", user: dict = Depends(get_current_user)
 ):
     uid = user["id"]
-    where, params = ["status = 'active'", "user_id = %s"], [uid]
-    if source:      where.append("source = %s");      params.append(source)
-    if category:    where.append("category = %s");    params.append(category)
-    if subcategory == "__none__":
-        where.append("subcategory IS NULL")
-    elif subcategory:
-        where.append("subcategory = %s"); params.append(subcategory)
-    if date_from:   where.append("date >= %s");       params.append(date_from)
-    if date_to:     where.append("date <= %s");       params.append(date_to)
-    if import_file: where.append("import_file = %s"); params.append(import_file)
+    where, params = ["t.status = 'active'", "t.user_id = %s"], [uid]
+    if source:      where.append("t.source = %s");      params.append(source)
+    if category:    where.append("t.category = %s");    params.append(category)
+    if tag:
+        where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = %s)")
+        params.extend([uid, tag])
+    if date_from:   where.append("t.date >= %s");       params.append(date_from)
+    if date_to:     where.append("t.date <= %s");       params.append(date_to)
+    if import_file: where.append("t.import_file = %s"); params.append(import_file)
     if card_last4:
-        where.append("import_file IN (SELECT filename FROM uploaded_files WHERE user_id=%s AND card_last4=%s)")
+        where.append("t.import_file IN (SELECT filename FROM uploaded_files WHERE user_id=%s AND card_last4=%s)")
         params.extend([uid, card_last4])
 
     with db() as conn:
@@ -1183,35 +1204,36 @@ def get_stats(
             )
             excluded = [r["name"] for r in cur.fetchall()]
             if excluded:
-                where.append("NOT (category = ANY(%s))")
+                where.append("NOT (t.category = ANY(%s))")
                 params.append(excluded)
 
             wc = " AND ".join(where)
-            cur.execute(f"SELECT category, SUM(amount)::float AS total, COUNT(*)::int AS count FROM transactions WHERE {wc} GROUP BY category ORDER BY total DESC", params)
+            cur.execute(f"SELECT t.category, SUM(t.amount)::float AS total, COUNT(*)::int AS count FROM transactions t WHERE {wc} GROUP BY t.category ORDER BY total DESC", params)
             by_category = [dict(r) for r in cur.fetchall()]
-            cur.execute(f"SELECT TO_CHAR(date,'YYYY-MM') AS month, SUM(amount)::float AS total FROM transactions WHERE {wc} GROUP BY month ORDER BY month", params)
+            cur.execute(f"SELECT TO_CHAR(t.date,'YYYY-MM') AS month, SUM(t.amount)::float AS total FROM transactions t WHERE {wc} GROUP BY month ORDER BY month", params)
             by_month = [dict(r) for r in cur.fetchall()]
-            cur.execute(f"SELECT source, SUM(amount)::float AS total, COUNT(*)::int AS count FROM transactions WHERE {wc} GROUP BY source ORDER BY total DESC", params)
+            cur.execute(f"SELECT t.source, SUM(t.amount)::float AS total, COUNT(*)::int AS count FROM transactions t WHERE {wc} GROUP BY t.source ORDER BY total DESC", params)
             by_source = [dict(r) for r in cur.fetchall()]
-            cur.execute(f"SELECT COALESCE(SUM(amount),0)::float AS total, COUNT(*)::int AS count FROM transactions WHERE {wc}", params)
+            cur.execute(f"SELECT COALESCE(SUM(t.amount),0)::float AS total, COUNT(*)::int AS count FROM transactions t WHERE {wc}", params)
             summary = dict(cur.fetchone())
-            # Subcategory breakdown when a category is active
-            if category:
-                cur.execute(
-                    f"SELECT subcategory, SUM(amount)::float AS total, COUNT(*)::int AS count FROM transactions WHERE {wc} GROUP BY subcategory ORDER BY total DESC NULLS LAST",
-                    params
-                )
-                by_subcategory = [dict(r) for r in cur.fetchall()]
-            else:
-                by_subcategory = []
+            # Tag breakdown — always compute
+            cur.execute(f"""
+                SELECT tg.name AS tag, SUM(t.amount)::float AS total, COUNT(DISTINCT t.id)::int AS count
+                FROM transactions t
+                JOIN transaction_tags tt ON tt.transaction_id = t.id
+                JOIN tags tg ON tg.id = tt.tag_id
+                WHERE {wc}
+                GROUP BY tg.name
+                ORDER BY total DESC
+            """, params)
+            by_tag = [dict(r) for r in cur.fetchall()]
 
     return {**summary, "by_category": by_category, "by_month": by_month,
-            "by_source": by_source, "by_subcategory": by_subcategory}
+            "by_source": by_source, "by_tag": by_tag}
 
-# ── Category / subcategory / source update ────────────────────────────────────────
+# ── Category / source update ──────────────────────────────────────────────────────
 class CategoryUpdate(BaseModel):
     category: Optional[str] = None
-    subcategory: Optional[str] = None
     source: Optional[str] = None
 
 @app.patch("/api/transactions/{tx_id}")
@@ -1223,12 +1245,6 @@ def update_transaction(tx_id: int, body: CategoryUpdate, user: dict = Depends(re
                     UPDATE transactions SET source = %s
                     WHERE id = %s AND user_id = %s RETURNING id
                 """, (body.source, tx_id, user["id"]))
-            elif body.subcategory is not None:
-                subcat = body.subcategory.strip() or None
-                cur.execute("""
-                    UPDATE transactions SET subcategory = %s
-                    WHERE id = %s AND user_id = %s RETURNING id
-                """, (subcat, tx_id, user["id"]))
             elif body.category is not None:
                 cur.execute("""
                     UPDATE transactions SET category = %s, manually_corrected = TRUE
@@ -1243,25 +1259,18 @@ def update_transaction(tx_id: int, body: CategoryUpdate, user: dict = Depends(re
 class BulkCategoryUpdate(BaseModel):
     ids: List[int]
     category: Optional[str] = None
-    subcategory: Optional[str] = None
 
 @app.patch("/api/transactions")
 def bulk_update_category(body: BulkCategoryUpdate, user: dict = Depends(require_edit)):
     if not body.ids:
         raise HTTPException(400, "No IDs provided")
-    if body.category is None and body.subcategory is None:
+    if body.category is None:
         raise HTTPException(400, "Nothing to update")
     with db() as conn:
         with conn.cursor() as cur:
-            sets, vals = [], []
-            if body.category is not None:
-                sets.append("category = %s"); vals.append(body.category)
-            if body.subcategory is not None:
-                sets.append("subcategory = %s"); vals.append(body.subcategory or None)
-            sets.append("manually_corrected = TRUE")
             cur.execute(
-                f"UPDATE transactions SET {', '.join(sets)} WHERE id = ANY(%s) AND user_id = %s",
-                vals + [body.ids, user["id"]]
+                "UPDATE transactions SET category = %s, manually_corrected = TRUE WHERE id = ANY(%s) AND user_id = %s",
+                [body.category, body.ids, user["id"]]
             )
             updated = cur.rowcount
     return {"ok": True, "updated": updated}
@@ -1466,8 +1475,6 @@ def rename_category(body: CategoryRename, user: dict = Depends(require_edit)):
             cur.execute("UPDATE transactions SET category=%s WHERE user_id=%s AND category=%s",
                         (new, uid, old))
             updated = cur.rowcount
-            cur.execute("UPDATE subcategories SET category=%s WHERE user_id=%s AND category=%s",
-                        (new, uid, old))
     return {"ok": True, "old_name": old, "new_name": new, "updated": updated}
 
 @app.delete("/api/categories")
@@ -1476,68 +1483,135 @@ def delete_category(name: str, user: dict = Depends(require_edit)):
     uid = user["id"]
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE transactions SET category='Other', subcategory=NULL WHERE user_id=%s AND category=%s",
+            cur.execute("UPDATE transactions SET category='Other' WHERE user_id=%s AND category=%s",
                         (uid, name))
             reassigned = cur.rowcount
-            cur.execute("DELETE FROM subcategories WHERE user_id=%s AND category=%s", (uid, name))
             cur.execute("DELETE FROM categories WHERE user_id=%s AND name=%s RETURNING name",
                         (uid, name))
             if cur.rowcount == 0: raise HTTPException(404, "Category not found")
     return {"ok": True, "name": name, "reassigned": reassigned}
 
-# ── Subcategories ─────────────────────────────────────────────────────────────────
-@app.get("/api/subcategories")
-def get_subcategories(user: dict = Depends(get_current_user)):
-    uid = user["id"]
+# ── Tags ──────────────────────────────────────────────────────────────────────────
+@app.get("/api/tags")
+def get_tags(user: dict = Depends(get_current_user)):
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT category, name FROM subcategories WHERE user_id=%s ORDER BY category, name",
-                (uid,)
+                "SELECT name FROM tags WHERE user_id=%s ORDER BY name",
+                (user["id"],)
             )
-            rows = cur.fetchall()
-    result: dict = {}
-    for row in rows:
-        cat = row["category"]
-        result.setdefault(cat, []).append(row["name"])
-    return {"subcategories": result}
+            return {"tags": [r["name"] for r in cur.fetchall()]}
 
-class SubcategoryCreate(BaseModel):
-    category: str
+class TagCreate(BaseModel):
     name: str
 
-@app.post("/api/subcategories", status_code=201)
-def create_subcategory(body: SubcategoryCreate, user: dict = Depends(require_edit)):
-    category = body.category.strip()
+@app.post("/api/tags", status_code=201)
+def create_tag(body: TagCreate, user: dict = Depends(require_edit)):
     name = body.name.strip()
-    if not category: raise HTTPException(400, "Category cannot be empty")
-    if not name: raise HTTPException(400, "Subcategory name cannot be empty")
+    if not name: raise HTTPException(400, "Tag name cannot be empty")
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO subcategories (user_id, category, name) VALUES (%s,%s,%s) "
-                "ON CONFLICT DO NOTHING RETURNING name",
-                (user["id"], category, name)
+                "INSERT INTO tags (user_id, name) VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING name",
+                (user["id"], name)
             )
-            if cur.rowcount == 0: raise HTTPException(409, "Subcategory already exists")
-    return {"ok": True, "category": category, "name": name}
+            if cur.rowcount == 0: raise HTTPException(409, "Tag already exists")
+    return {"ok": True, "name": name}
 
-@app.delete("/api/subcategories")
-def delete_subcategory(category: str, name: str, user: dict = Depends(require_edit)):
+@app.delete("/api/tags")
+def delete_tag(name: str, user: dict = Depends(require_edit)):
     uid = user["id"]
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE transactions SET subcategory = NULL "
-                "WHERE user_id=%s AND category=%s AND subcategory=%s",
-                (uid, category, name)
+                "DELETE FROM tags WHERE user_id=%s AND name=%s RETURNING name",
+                (uid, name)
             )
+            if cur.rowcount == 0: raise HTTPException(404, "Tag not found")
+    return {"ok": True, "name": name}
+
+class TagRename(BaseModel):
+    old_name: str
+    new_name: str
+
+@app.patch("/api/tags")
+def rename_tag(body: TagRename, user: dict = Depends(require_edit)):
+    uid = user["id"]
+    old_name = body.old_name.strip()
+    new_name = body.new_name.strip()
+    if not new_name: raise HTTPException(400, "Tag name cannot be empty")
+    if old_name == new_name: return {"ok": True, "name": new_name}
+    with db() as conn:
+        with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM subcategories WHERE user_id=%s AND category=%s AND name=%s RETURNING name",
-                (uid, category, name)
+                "UPDATE tags SET name=%s WHERE user_id=%s AND name=%s RETURNING id",
+                (new_name, uid, old_name)
             )
-            if cur.rowcount == 0: raise HTTPException(404, "Subcategory not found")
-    return {"ok": True, "category": category, "name": name}
+            if cur.rowcount == 0: raise HTTPException(404, "Tag not found")
+    return {"ok": True, "old_name": old_name, "name": new_name}
+
+class TagsUpdate(BaseModel):
+    tags: List[str]
+
+@app.put("/api/transactions/{tx_id}/tags")
+def update_transaction_tags(tx_id: int, body: TagsUpdate, user: dict = Depends(require_edit)):
+    uid = user["id"]
+    tag_names = [t.strip() for t in body.tags if t.strip()]
+    with db() as conn:
+        with conn.cursor() as cur:
+            # Verify ownership
+            cur.execute("SELECT id FROM transactions WHERE id=%s AND user_id=%s", (tx_id, uid))
+            if not cur.fetchone():
+                raise HTTPException(404, "Transaction not found")
+            # Upsert tags and resolve IDs
+            tag_ids = []
+            for name in tag_names:
+                cur.execute(
+                    "INSERT INTO tags (user_id, name) VALUES (%s,%s) ON CONFLICT (user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
+                    (uid, name)
+                )
+                tag_ids.append(cur.fetchone()[0])
+            # Replace all tags for this transaction
+            cur.execute("DELETE FROM transaction_tags WHERE transaction_id=%s", (tx_id,))
+            for tag_id in tag_ids:
+                cur.execute(
+                    "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                    (tx_id, tag_id)
+                )
+    return {"ok": True, "id": tx_id, "tags": tag_names}
+
+@app.post("/api/transactions/bulk-tag")
+def bulk_tag_transactions(body: dict, user: dict = Depends(require_edit)):
+    ids = body.get("ids", [])
+    tag_name = (body.get("tag") or "").strip()
+    action = body.get("action", "add")  # "add" or "remove"
+    if not ids: raise HTTPException(400, "No IDs provided")
+    if not tag_name: raise HTTPException(400, "Tag name required")
+    uid = user["id"]
+    with db() as conn:
+        with conn.cursor() as cur:
+            if action == "remove":
+                cur.execute("""
+                    DELETE FROM transaction_tags tt
+                    USING tags tg
+                    WHERE tg.id = tt.tag_id
+                      AND tg.user_id = %s
+                      AND tg.name = %s
+                      AND tt.transaction_id = ANY(%s)
+                """, (uid, tag_name, ids))
+            else:
+                # Upsert tag
+                cur.execute(
+                    "INSERT INTO tags (user_id, name) VALUES (%s,%s) ON CONFLICT (user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
+                    (uid, tag_name)
+                )
+                tag_id = cur.fetchone()[0]
+                for tx_id in ids:
+                    cur.execute(
+                        "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                        (tx_id, tag_id)
+                    )
+    return {"ok": True, "updated": len(ids)}
 
 # ── Upload history ────────────────────────────────────────────────────────────────
 @app.get("/api/uploads")

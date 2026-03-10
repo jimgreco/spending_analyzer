@@ -9,3 +9,8 @@ __pycache__/
 venv/
 .venv/
 webapp/run.sh
+
+# Elastic Beanstalk Files
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml

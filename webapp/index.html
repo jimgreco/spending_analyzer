@@ -63,7 +63,7 @@ a{color:var(--accent2);text-decoration:none}
 .card .sub{font-size:.8rem;color:var(--muted);margin-top:4px}
 
 /* ── Charts ─────────────────────────────────────────────────────────────── */
-.charts{display:grid;grid-template-columns:380px 1fr;gap:16px;margin-bottom:24px}
+.charts{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px}
 .chart-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
 .chart-box h3{font-size:.85rem;color:var(--muted);text-transform:uppercase;
   letter-spacing:.05em;margin-bottom:16px}
@@ -86,8 +86,8 @@ a{color:var(--accent2);text-decoration:none}
   color:var(--accent);border-radius:6px;padding:4px 11px;font-size:.78rem;
   cursor:pointer;white-space:nowrap;transition:all .15s}
 .preset-btn:hover,.preset-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-#active-filter,#donut-filter{font-size:.8rem;color:var(--accent2);cursor:pointer}
-#active-filter:hover,#donut-filter:hover{text-decoration:underline}
+#active-filter,#donut-filter,#tag-filter{font-size:.8rem;color:var(--accent2);cursor:pointer}
+#active-filter:hover,#donut-filter:hover,#tag-filter:hover{text-decoration:underline}
 
 /* ── Status tabs ─────────────────────────────────────────────────────────── */
 .status-tabs{display:flex;gap:6px;margin-bottom:10px;align-items:center}
@@ -166,9 +166,9 @@ tbody tr.selected{background:rgba(99,102,241,.1) !important}
   background:var(--bg);border:1px solid var(--border);color:var(--text);
   border-radius:8px;padding:6px 10px;font-size:.875rem;outline:none}
 #bulk-cat-select:focus{border-color:var(--accent)}
-#bulk-subcat-input{background:var(--bg);border:1px solid var(--border);color:var(--text);
+#bulk-tag-input{background:var(--bg);border:1px solid var(--border);color:var(--text);
   border-radius:8px;padding:6px 10px;font-size:.875rem;outline:none;width:140px}
-#bulk-subcat-input:focus{border-color:var(--accent)}
+#bulk-tag-input:focus{border-color:var(--accent)}
 .bulk-apply{background:var(--accent);border:none;color:#fff;border-radius:8px;
   padding:6px 14px;font-size:.875rem;cursor:pointer}
 .bulk-apply:hover{opacity:.85}
@@ -187,24 +187,27 @@ tbody tr.selected{background:rgba(99,102,241,.1) !important}
 td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-/* ── Subcategory ─────────────────────────────────────────────────────────── */
-.subcat-tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:.7rem;
-  background:rgba(255,255,255,.06);color:var(--muted)}
-.subcat-cell.clickable{cursor:pointer}
-.subcat-cell.clickable:hover .subcat-tag{opacity:.7}
-.subcat-none{color:var(--border);font-size:.75rem}
-.subcat-cell.clickable:hover .subcat-none{color:var(--muted);text-decoration:underline dotted}
+/* ── Tags ────────────────────────────────────────────────────────────────── */
+.tags-cell{display:flex;flex-wrap:wrap;gap:3px;align-items:center;min-height:22px}
+.tag-chip{display:inline-flex;align-items:center;gap:2px;background:rgba(99,102,241,.18);
+  color:var(--accent);border-radius:999px;padding:1px 3px 1px 7px;font-size:.7rem;white-space:nowrap}
+.tag-chip-del{background:none;border:none;color:var(--accent);cursor:pointer;opacity:.6;
+  font-size:.75rem;padding:0 2px;line-height:1;border-radius:50%}
+.tag-chip-del:hover{opacity:1;background:rgba(99,102,241,.3)}
+.tag-add-btn{background:none;border:1px dashed rgba(99,102,241,.4);color:var(--muted);
+  border-radius:999px;padding:0 5px;font-size:.7rem;cursor:pointer;line-height:18px;
+  transition:all .15s}
+.tag-add-btn:hover{border-color:var(--accent);color:var(--accent)}
 
-/* Subcategory chips in category manager */
-.cat-subcats{padding:2px 8px 8px 28px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
-.subcat-chip{display:inline-flex;align-items:center;gap:3px;background:rgba(255,255,255,.06);
-  border-radius:999px;padding:2px 6px 2px 9px;font-size:.72rem;color:var(--muted)}
-.subcat-chip-del{background:none;border:none;color:var(--muted);cursor:pointer;
-  font-size:.8rem;padding:0 1px;line-height:1;border-radius:3px}
-.subcat-chip-del:hover{color:var(--red)}
-.subcat-add-input{background:transparent;border:1px dashed var(--border);color:var(--muted);
-  border-radius:999px;padding:2px 8px;font-size:.72rem;outline:none;width:130px}
-.subcat-add-input:focus{border-color:var(--accent);color:var(--text)}
+/* ── Tag autocomplete dropdown ──────────────────────────────────────────── */
+.tag-ac-dropdown{
+  position:fixed;z-index:9999;
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  box-shadow:0 6px 24px rgba(0,0,0,.5);min-width:140px;max-height:200px;overflow-y:auto}
+.tag-ac-item{
+  padding:7px 12px;font-size:.8rem;color:var(--text);cursor:pointer;white-space:nowrap}
+.tag-ac-item:hover,.tag-ac-item.ac-active{
+  background:rgba(99,102,241,.2);color:var(--accent)}
 
 /* ── Toast ──────────────────────────────────────────────────────────────── */
 #toast-container{position:fixed;top:24px;right:24px;z-index:1000;
@@ -264,6 +267,18 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   background:var(--border);border:none;color:var(--text);
   border-radius:8px;padding:7px 20px;font-size:.875rem;cursor:pointer}
 .cat-modal-footer button:hover{background:var(--accent);color:#fff}
+
+/* ── Tag manager modal ──────────────────────────────────────────────────── */
+#tag-modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:400;
+  display:none;align-items:center;justify-content:center}
+#tag-modal-overlay.open{display:flex}
+#tag-modal{
+  background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:28px;width:440px;max-width:95vw;max-height:80vh;
+  display:flex;flex-direction:column;gap:14px}
+#tag-modal h2{font-size:1rem;font-weight:700}
+#tag-list{overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:3px;min-height:80px}
 
 /* ── Login overlay ──────────────────────────────────────────────────────── */
 #login-overlay{
@@ -462,6 +477,10 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
       <canvas id="donutChart" height="260"></canvas>
     </div>
     <div class="chart-box">
+      <h3><span id="tag-title">By Tag</span> <span id="tag-filter" onclick="clearTagFilter()" style="display:none">(filtered – click to clear)</span></h3>
+      <canvas id="tagChart" height="260"></canvas>
+    </div>
+    <div class="chart-box">
       <h3>Monthly Spending <span id="active-filter" onclick="clearFilter()" style="display:none">(filtered – click to clear)</span></h3>
       <canvas id="barChart" height="100"></canvas>
     </div>
@@ -476,8 +495,8 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <select id="filter-cat" onchange="onCatFilterChange()">
       <option value="">All Categories</option>
     </select>
-    <select id="filter-subcat" onchange="applyFilters()" disabled>
-      <option value="">All Subcategories</option>
+    <select id="filter-tag" onchange="applyFilters()">
+      <option value="">All Tags</option>
     </select>
     <select id="filter-card" onchange="applyFilters()">
       <option value="">All Card #s</option>
@@ -486,7 +505,10 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
       <option value="">All Imports</option>
     </select>
     <button class="btn" onclick="clearFilter()">Clear</button>
-    <button class="btn" onclick="openCatModal()" style="margin-left:auto">⚙ Categories</button>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      <button class="btn" onclick="openCatModal()">⚙ Categories</button>
+      <button class="btn" onclick="openTagModal()">⚙ Tags</button>
+    </div>
     <!-- Date range row -->
     <div class="filter-row">
       <span class="filter-row-label">Date</span>
@@ -525,7 +547,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
           <th onclick="sortBy('amount')" style="text-align:right">Amount</th>
           <th onclick="sortBy('description')">Description</th>
           <th onclick="sortBy('category')">Category</th>
-          <th>Subcategory</th>
+          <th>Tags</th>
           <th onclick="sortBy('source')">Card</th>
           <th>Import</th>
           <th id="col-actions-header" style="display:none"></th>
@@ -545,11 +567,12 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 <!-- Bulk action bar -->
 <div id="bulk-bar">
   <span id="bulk-count">0 selected</span>
-  <select id="bulk-cat-select" onchange="refreshBulkSubcatOptions()"><option value="">Set category…</option></select>
+  <select id="bulk-cat-select"><option value="">Set category…</option></select>
   <button class="bulk-apply" onclick="applyBulkCategory()">Apply</button>
   <div class="bulk-sep"></div>
-  <input id="bulk-subcat-input" type="text" list="subcat-datalist" placeholder="Set subcategory…" autocomplete="off">
-  <button class="bulk-apply" onclick="applyBulkSubcategory()">Apply</button>
+  <input id="bulk-tag-input" type="text" placeholder="Add tag…">
+  <button class="bulk-apply" onclick="applyBulkTag('add')">+ Tag</button>
+  <button class="bulk-apply" style="background:rgba(239,68,68,.7)" onclick="applyBulkTag('remove')">− Tag</button>
   <div class="bulk-sep"></div>
   <button class="bulk-delete" id="bulk-delete-btn" onclick="deleteSelected()">🗑 Delete</button>
   <button class="bulk-restore-btn" id="bulk-restore-btn" style="display:none" onclick="restoreSelected()">↩ Restore</button>
@@ -592,6 +615,22 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   </div>
 </div>
 
+<!-- Tag manager modal -->
+<div id="tag-modal-overlay" onclick="if(event.target===this)closeTagModal()">
+  <div id="tag-modal">
+    <h2>⚙ Manage Tags</h2>
+    <div class="cat-add-row">
+      <input id="tag-new-input" placeholder="New tag name…"
+             onkeydown="if(event.key==='Enter')addTagFromInput()">
+      <button onclick="addTagFromInput()">+ Add</button>
+    </div>
+    <div id="tag-list"></div>
+    <div class="cat-modal-footer">
+      <button onclick="closeTagModal()">Done</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
 let currentPage  = 1;
@@ -601,12 +640,13 @@ let sortDir      = 'desc';
 let stats        = null;
 let fileCardMap  = {};  // {filename: card_last4}
 let categories   = [];
-let subcategories = {};  // {category: [name, ...]}
+let tags         = [];  // ['tag1', 'tag2', ...]
 let currentTxs   = [];
 let donutChart   = null;
 let barChart     = null;
+let tagChart     = null;
 let catFilter    = '';  // category filter set by clicking donut
-let subcatFilter = '';  // subcategory filter set by clicking donut drill-down
+let tagFilter    = '';  // tag filter set by clicking tag chart
 let monthFilter  = '';  // month filter set by clicking bar chart
 let selectedIds  = new Set();
 let viewStatus   = 'active';  // 'active' | 'deleted' | 'deduped'
@@ -638,6 +678,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   setupDragDrop();
   highlightPreset('all');
   await checkAuth();
+  // Attach tag autocomplete to persistent inputs
+  attachTagAutocomplete(document.getElementById('bulk-tag-input'));
 });
 
 async function checkAuth() {
@@ -647,7 +689,7 @@ async function checkAuth() {
       return r.json();
     });
     showUserHeader(user);
-    await Promise.all([loadCategories(), loadSubcategories(), loadStats(), loadTransactions(), loadUploadHistory()]);
+    await Promise.all([loadCategories(), loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
   } catch(e) {
     document.getElementById('login-overlay').classList.add('visible');
   }
@@ -704,7 +746,7 @@ function buildFilterParams(extra = {}) {
   const p = new URLSearchParams({
     source:      document.getElementById('filter-source').value,
     category:    catFilter || document.getElementById('filter-cat').value,
-    subcategory: subcatFilter || document.getElementById('filter-subcat').value,
+    tag:         tagFilter || document.getElementById('filter-tag').value,
     date_from:   document.getElementById('filter-date-from').value,
     date_to:     document.getElementById('filter-date-to').value,
     search:      document.getElementById('search').value,
@@ -716,20 +758,8 @@ function buildFilterParams(extra = {}) {
   return p.toString();
 }
 
-function updateSubcatFilterOptions() {
-  const activeCat = catFilter || document.getElementById('filter-cat').value;
-  const sel = document.getElementById('filter-subcat');
-  const subs = activeCat ? (subcategories[activeCat] || []) : [];
-  sel.innerHTML = '<option value="">All Subcategories</option>' +
-    (activeCat ? '<option value="__none__">Other (no subcategory)</option>' : '') +
-    subs.map(s => `<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('');
-  sel.disabled = !activeCat;
-  if (subcatFilter) sel.value = subcatFilter;
-}
-
 function onCatFilterChange() {
-  subcatFilter = '';
-  updateSubcatFilterOptions();
+  catFilter = document.getElementById('filter-cat').value;
   applyFilters();
 }
 
@@ -798,11 +828,15 @@ async function loadCategories() {
   } catch(e) { console.error('loadCategories', e); }
 }
 
-async function loadSubcategories() {
+async function loadTags() {
   try {
-    const data = await api('/api/subcategories');
-    subcategories = data.subcategories || {};
-  } catch(e) { console.error('loadSubcategories', e); }
+    const data = await api('/api/tags');
+    tags = data.tags || [];
+    const sel = document.getElementById('filter-tag');
+    const cur = tagFilter || sel.value;
+    sel.innerHTML = '<option value="">All Tags</option>' +
+      tags.map(t => `<option value="${escHtml(t)}" ${t===cur?'selected':''}>${escHtml(t)}</option>`).join('');
+  } catch(e) { console.error('loadTags', e); }
 }
 
 async function loadUploadHistory() {
@@ -813,7 +847,7 @@ async function loadUploadHistory() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadCategories(), loadSubcategories(), loadStats(), loadTransactions(), loadUploadHistory()]);
+  await Promise.all([loadCategories(), loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
 }
 
 // ── Render: cards ──────────────────────────────────────────────────────────────
@@ -831,33 +865,18 @@ function renderCards(s) {
 
 // ── Render: charts ─────────────────────────────────────────────────────────────
 function renderCharts(s) {
-  // Donut — shows subcategories when a category is filtered, otherwise categories
-  const drillMode = !!(catFilter || document.getElementById('filter-cat').value);
-  const subcats = s.by_subcategory || [];
-  const cats    = s.by_category    || [];
-  const slices  = drillMode && subcats.length ? subcats : cats;
-  const total   = slices.reduce((a, c) => a + c.total, 0);
-
-  // Color: in drill mode use a fixed palette per subcategory, else per category
-  const sliceColor = drillMode
-    ? (_, i) => CAT_PALETTE[i % CAT_PALETTE.length]
-    : (c)    => catColor(c.category);
-
-  document.getElementById('donut-title').textContent = drillMode
-    ? (catFilter || document.getElementById('filter-cat').value)
-    : 'By Category';
-  const activeCat = catFilter || document.getElementById('filter-cat').value;
-  const activeSubcat = subcatFilter || document.getElementById('filter-subcat').value;
-  document.getElementById('donut-filter').style.display = (activeCat || activeSubcat) ? '' : 'none';
+  const cats   = s.by_category || [];
+  const total  = cats.reduce((a, c) => a + c.total, 0);
+  updateFilterBadges();
 
   if (donutChart) donutChart.destroy();
   donutChart = new Chart(document.getElementById('donutChart').getContext('2d'), {
     type: 'doughnut',
     data: {
-      labels: slices.map(c => drillMode ? (c.subcategory || 'Other (no subcategory)') : c.category),
+      labels: cats.map(c => c.category),
       datasets: [{
-        data: slices.map(c => c.total),
-        backgroundColor: slices.map((c, i) => sliceColor(c, i)),
+        data: cats.map(c => c.total),
+        backgroundColor: cats.map(c => catColor(c.category)),
         borderWidth: 2, borderColor: '#1a1d27'
       }]
     },
@@ -877,27 +896,11 @@ function renderCharts(s) {
       },
       onClick: (_, elems) => {
         if (!elems.length) return;
-        if (drillMode) {
-          // Click subcategory slice → set/clear subcategory filter (null "Other" → '__none__')
-          const raw = slices[elems[0].index].subcategory;
-          const clicked = raw === null ? '__none__' : raw;
-          subcatFilter = subcatFilter === clicked ? '' : clicked;
-          document.getElementById('filter-subcat').value = subcatFilter;
-          document.getElementById('active-filter').style.display =
-            catFilter || subcatFilter || monthFilter ? '' : 'none';
-          applyFilters();
-        } else {
-          // Click category slice → drill into that category
-          const clicked = cats[elems[0].index].category;
-          catFilter = catFilter === clicked ? '' : clicked;
-          subcatFilter = '';
-          document.getElementById('filter-cat').value = catFilter;
-          document.getElementById('filter-subcat').value = '';
-          updateSubcatFilterOptions();
-          document.getElementById('active-filter').style.display =
-            catFilter || monthFilter ? '' : 'none';
-          applyFilters();
-        }
+        const clicked = cats[elems[0].index].category;
+        catFilter = catFilter === clicked ? '' : clicked;
+        document.getElementById('filter-cat').value = catFilter;
+        updateFilterBadges();
+        applyFilters();
       }
     }
   });
@@ -926,7 +929,7 @@ function renderCharts(s) {
       },
       onClick: (_, elems) => {
         if (elems.length) {
-          const clicked = months[elems[0].index].month; // 'YYYY-MM'
+          const clicked = months[elems[0].index].month;
           if (monthFilter === clicked) {
             monthFilter = '';
             document.getElementById('filter-date-from').value = '';
@@ -939,12 +942,82 @@ function renderCharts(s) {
             document.getElementById('filter-date-to').value = `${clicked}-${String(lastDay).padStart(2,'0')}`;
           }
           highlightPreset(null);
-          document.getElementById('active-filter').style.display = catFilter || subcatFilter || monthFilter ? '' : 'none';
+          updateFilterBadges();
           applyFilters();
         }
       }
     }
   });
+
+  // Tag bar chart
+  const tagData   = s.by_tag || [];
+
+  if (tagChart) tagChart.destroy();
+  const tagCanvas = document.getElementById('tagChart');
+  if (tagData.length) {
+    // Scale canvas height to number of tags (min 120, ~28px per bar)
+    tagCanvas.height = Math.max(120, tagData.length * 28);
+    tagChart = new Chart(tagCanvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: tagData.map(t => t.tag),
+        datasets: [{
+          data: tagData.map(t => t.total),
+          backgroundColor: tagData.map((_, i) =>
+            CAT_PALETTE[i % CAT_PALETTE.length] + 'cc'),
+          borderColor: tagData.map((_, i) => CAT_PALETTE[i % CAT_PALETTE.length]),
+          borderWidth: 1,
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                const row = tagData[ctx.dataIndex];
+                const amt = ctx.parsed.x.toLocaleString('en-US', {minimumFractionDigits:2});
+                return ` $${amt} · ${row.count} tx${row.count !== 1 ? 's' : ''}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: '#8b8fa8',
+              callback: v => '$' + (v >= 1000 ? (v/1000).toFixed(0)+'k' : v)
+            },
+            grid: { color: 'rgba(255,255,255,.05)' }
+          },
+          y: {
+            ticks: { color: '#c9cde0', font: { size: 11 } },
+            grid: { display: false }
+          }
+        },
+        onClick: (_, elems) => {
+          if (!elems.length) return;
+          const clicked = tagData[elems[0].index].tag;
+          tagFilter = tagFilter === clicked ? '' : clicked;
+          document.getElementById('filter-tag').value = tagFilter;
+          updateFilterBadges();
+          applyFilters();
+        }
+      }
+    });
+  } else {
+    tagChart = null;
+    tagCanvas.height = 120;
+    const ctx2d = tagCanvas.getContext('2d');
+    ctx2d.clearRect(0, 0, tagCanvas.width, tagCanvas.height);
+    ctx2d.fillStyle = '#8b8fa8';
+    ctx2d.font = '12px -apple-system, sans-serif';
+    ctx2d.textAlign = 'center';
+    ctx2d.fillText('No tags assigned yet', tagCanvas.width / 2, tagCanvas.height / 2);
+  }
 }
 
 // ── Render: table ──────────────────────────────────────────────────────────────
@@ -960,7 +1033,7 @@ function renderTable(txs) {
       : viewStatus === 'deduped'
         ? 'No cross-statement duplicates found.'
         : 'No transactions found. Drop statement files above to get started.';
-    tbody.innerHTML = `<tr><td colspan="${showActions ? 9 : 8}">
+    tbody.innerHTML = `<tr><td colspan="${showActions ? 9 : 8}" style="padding:0">
       <div class="empty-state">
         <div class="big">${viewStatus === 'active' ? '📭' : '✓'}</div>
         <div>${emptyMsg}</div>
@@ -995,7 +1068,7 @@ function renderTable(txs) {
           ${escHtml(t.category)}
         </span>
       </td>
-      <td>${subcatCell(t)}</td>
+      <td>${tagsCell(t)}</td>
       <td style="font-size:.8rem;white-space:nowrap">${(() => { const last4 = fileCardMap[t.import_file]; const src = t.source; if (src && last4) return `${sourceTag(src)} <span style="color:var(--muted);font-variant-numeric:tabular-nums">•••• ${escHtml(last4)}</span>`; if (src) return sourceTag(src); if (last4) return `<span style="color:var(--muted);font-variant-numeric:tabular-nums">•••• ${escHtml(last4)}</span>`; return '<span style="color:var(--border)">—</span>'; })()}</td>
       <td class="import-file" title="${escHtml(t.import_file||'')}">${escHtml(fname)}</td>
       ${actionsCell}
@@ -1393,109 +1466,182 @@ async function saveCategory(txId, newCat, pillEl) {
   }
 }
 
-function subcatCell(t) {
-  const cur = t.subcategory || '';
-  const tag = cur
-    ? `<span class="subcat-tag">${escHtml(cur)}</span>`
-    : `<span class="subcat-none">—</span>`;
-  return `<span class="subcat-cell clickable" data-id="${t.id}"
-    data-cat="${escHtml(t.category)}" data-subcat="${escHtml(cur)}"
-    onclick="startSubcatEdit(this)" title="Click to set subcategory">${tag}</span>`;
+// ── Tag autocomplete helper ─────────────────────────────────────────────────────
+function attachTagAutocomplete(inp, { onPick, exclude = [] } = {}) {
+  let dropdown = null;
+  let activeIdx = -1;
+
+  function getFiltered() {
+    const q = inp.value.trim().toLowerCase();
+    return tags.filter(t => !exclude.includes(t) && (!q || t.toLowerCase().includes(q)));
+  }
+
+  function openDropdown() {
+    closeDropdown();
+    const filtered = getFiltered();
+    if (!filtered.length) return;
+    dropdown = document.createElement('div');
+    dropdown.className = 'tag-ac-dropdown';
+    filtered.forEach(tag => {
+      const item = document.createElement('div');
+      item.className = 'tag-ac-item';
+      item.textContent = tag;
+      item.onmousedown = e => { e.preventDefault(); pick(tag); };
+      dropdown.appendChild(item);
+    });
+    const rect = inp.getBoundingClientRect();
+    dropdown.style.top  = (rect.bottom + 2) + 'px';
+    dropdown.style.left = rect.left + 'px';
+    dropdown.style.minWidth = rect.width + 'px';
+    document.body.appendChild(dropdown);
+    activeIdx = -1;
+  }
+
+  function closeDropdown() {
+    dropdown?.remove(); dropdown = null; activeIdx = -1;
+  }
+
+  function pick(tag) {
+    inp.value = tag;
+    closeDropdown();
+    onPick?.(tag);
+  }
+
+  function setActive(idx) {
+    if (!dropdown) return;
+    const items = dropdown.querySelectorAll('.tag-ac-item');
+    items.forEach((el, i) => el.classList.toggle('ac-active', i === idx));
+    activeIdx = idx;
+  }
+
+  // Suppress browser autocomplete
+  inp.setAttribute('autocomplete', 'off');
+  inp.setAttribute('name', '_tagac_' + Math.random().toString(36).slice(2));
+
+  inp.addEventListener('input',  openDropdown);
+  inp.addEventListener('focus',  openDropdown);
+  inp.addEventListener('blur',   () => setTimeout(closeDropdown, 150));
+  inp.addEventListener('keydown', e => {
+    if (!dropdown) return;
+    const items = dropdown.querySelectorAll('.tag-ac-item');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault(); setActive(Math.min(activeIdx + 1, items.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault(); setActive(Math.max(activeIdx - 1, 0));
+    } else if (e.key === 'Enter' && activeIdx >= 0) {
+      e.preventDefault(); pick(items[activeIdx].textContent);
+    } else if (e.key === 'Escape') {
+      closeDropdown();
+    }
+  });
+
+  return { closeDropdown };
 }
 
-function startSubcatEdit(el) {
-  const txId = el.dataset.id;
-  const cat  = el.dataset.cat;
-  const cur  = el.dataset.subcat;
-  const subs = subcategories[cat] || [];
+function tagsCell(t) {
+  const txTags = t.tags || [];
+  const chips = txTags.map(tag =>
+    `<span class="tag-chip">${escHtml(tag)}<button class="tag-chip-del" onclick="removeTagFromTx(${t.id},'${escHtml(tag)}',event)" title="Remove tag">×</button></span>`
+  ).join('');
+  const addBtn = `<button class="tag-add-btn" onclick="startTagAdd(${t.id},this,event)" title="Add tag">+</button>`;
+  return `<span class="tags-cell">${chips}${addBtn}</span>`;
+}
 
-  const dl = document.getElementById('subcat-datalist');
-  if (dl) dl.innerHTML = subs.map(s => `<option value="${escHtml(s)}">`).join('');
+function startTagAdd(txId, btn, evt) {
+  evt.stopPropagation();
+  const cell = btn.closest('.tags-cell') || btn.parentElement;
+  const tx   = currentTxs.find(t => t.id === txId);
+  const inp  = document.createElement('input');
+  inp.type        = 'text';
+  inp.className   = 'pill-select';
+  inp.placeholder = 'tag…';
+  inp.style.width = '90px';
+  btn.replaceWith(inp);
+  inp.focus();
 
-  const wrap = document.createElement('span');
-  wrap.style.cssText = 'position:relative;display:inline-block';
-
-  const inp = document.createElement('input');
-  inp.type = 'text';
-  inp.className = 'pill-select';
-  inp.value = cur;
-  inp.setAttribute('list', 'subcat-datalist');
-  inp.placeholder = '— none —';
-  inp.style.width = '120px';
-
-  const hint = document.createElement('div');
-  hint.style.cssText = 'position:absolute;top:100%;left:0;z-index:999;background:var(--bg-soft);' +
-    'border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:.68rem;' +
-    'color:var(--accent2);white-space:nowrap;display:none;pointer-events:none';
-
-  inp.oninput = () => {
-    const v = inp.value.trim();
-    const isNew = v && !subs.includes(v);
-    hint.textContent = isNew ? `✦ New subcategory "${v}" will be created` : '';
-    hint.style.display = isNew ? 'block' : 'none';
-  };
+  const ac = attachTagAutocomplete(inp, {
+    exclude: tx?.tags || [],
+    onPick: tag => { committed = true; inp.replaceWith(btn); addTagToTx(txId, tag, cell); }
+  });
 
   let committed = false;
   const commit = async () => {
     if (committed) return;
     committed = true;
-    hint.style.display = 'none';
-    const newSubcat = inp.value.trim();
-    if (newSubcat === cur) { wrap.replaceWith(el); return; }
-    const isNew = newSubcat && !subs.includes(newSubcat);
-    if (isNew) {
-      try {
-        await api('/api/subcategories', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ category: cat, name: newSubcat })
-        });
-        await loadSubcategories();
-        showToast('Subcategory created', `"${newSubcat}" added to ${cat}`, 'success');
-      } catch(e) {
-        if (!e.message.includes('409')) {
-          showToast('Failed to create subcategory', e.message, 'error');
-          wrap.replaceWith(el);
-          return;
-        }
-      }
-    }
-    await saveSubcategory(txId, newSubcat, el);
-    wrap.replaceWith(el);
+    ac.closeDropdown();
+    const name = inp.value.trim();
+    inp.replaceWith(btn);
+    if (!name) return;
+    await addTagToTx(txId, name, cell);
   };
-
-  inp.onkeydown = e => {
-    if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { committed = true; wrap.replaceWith(el); }
-  };
-  inp.onblur = () => setTimeout(commit, 200);
-
-  wrap.appendChild(inp);
-  wrap.appendChild(hint);
-  el.replaceWith(wrap);
-  inp.focus();
-  inp.select();
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { committed = true; ac.closeDropdown(); inp.replaceWith(btn); }
+  }, true);
+  inp.addEventListener('blur', () => setTimeout(commit, 200));
 }
 
-async function saveSubcategory(txId, newSubcat, el) {
+async function addTagToTx(txId, tagName, cell) {
+  const tx = currentTxs.find(t => t.id === txId);
+  if (!tx) return;
+  const newTags = [...new Set([...(tx.tags || []), tagName])];
   try {
-    await api(`/api/transactions/${txId}`, {
-      method: 'PATCH',
+    await api(`/api/transactions/${txId}/tags`, {
+      method: 'PUT',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ subcategory: newSubcat })
+      body: JSON.stringify({ tags: newTags })
     });
-    el.dataset.subcat = newSubcat;
-    el.innerHTML = newSubcat
-      ? `<span class="subcat-tag">${escHtml(newSubcat)}</span>`
-      : `<span class="subcat-none">—</span>`;
-    const sel = el.parentElement?.querySelector('select');
-    sel?.replaceWith(el);
+    tx.tags = newTags;
+    if (!tags.includes(tagName)) { tags.push(tagName); tags.sort(); }
+    // Re-render just this cell
+    const td = cell.closest('td');
+    if (td) td.innerHTML = tagsCell(tx);
+    await loadTags();
+    loadStats();
   } catch(e) {
-    showToast('Update failed', e.message, 'error');
+    showToast('Failed to add tag', e.message, 'error');
+  }
+}
+
+async function removeTagFromTx(txId, tagName, evt) {
+  evt.stopPropagation();
+  const tx = currentTxs.find(t => t.id === txId);
+  if (!tx) return;
+  const newTags = (tx.tags || []).filter(t => t !== tagName);
+  try {
+    await api(`/api/transactions/${txId}/tags`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ tags: newTags })
+    });
+    tx.tags = newTags;
+    const chip = evt.target.closest('.tag-chip');
+    if (chip) {
+      const cell = chip.closest('.tags-cell');
+      chip.remove();
+      // Make sure add btn is still there
+      if (cell && !cell.querySelector('.tag-add-btn')) {
+        const addBtn = document.createElement('button');
+        addBtn.className = 'tag-add-btn';
+        addBtn.title = 'Add tag';
+        addBtn.textContent = '+';
+        addBtn.onclick = (e) => startTagAdd(txId, addBtn, e);
+        cell.appendChild(addBtn);
+      }
+    }
+    loadStats();
+  } catch(e) {
+    showToast('Failed to remove tag', e.message, 'error');
   }
 }
 
 // ── Filters & sorting ──────────────────────────────────────────────────────────
+function updateFilterBadges() {
+  document.getElementById('donut-filter').style.display  = catFilter   ? '' : 'none';
+  document.getElementById('tag-filter').style.display    = tagFilter   ? '' : 'none';
+  document.getElementById('active-filter').style.display = monthFilter ? '' : 'none';
+}
+
 function applyFilters() {
   currentPage = 1;
   clearSelection();
@@ -1505,28 +1651,31 @@ function applyFilters() {
 
 function clearCatFilter() {
   catFilter = '';
-  subcatFilter = '';
   document.getElementById('filter-cat').value = '';
-  document.getElementById('filter-subcat').value = '';
-  updateSubcatFilterOptions();
-  document.getElementById('active-filter').style.display = monthFilter ? '' : 'none';
+  updateFilterBadges();
+  applyFilters();
+}
+
+function clearTagFilter() {
+  tagFilter = '';
+  document.getElementById('filter-tag').value = '';
+  updateFilterBadges();
   applyFilters();
 }
 
 function clearFilter() {
   catFilter = '';
-  subcatFilter = '';
+  tagFilter = '';
   monthFilter = '';
   document.getElementById('filter-cat').value = '';
-  document.getElementById('filter-subcat').value = '';
+  document.getElementById('filter-tag').value = '';
   document.getElementById('filter-source').value = '';
   document.getElementById('filter-date-from').value = '';
   document.getElementById('filter-date-to').value = '';
   document.getElementById('search').value = '';
   document.getElementById('filter-card').value = '';
   document.getElementById('filter-import').value = '';
-  document.getElementById('active-filter').style.display = 'none';
-  updateSubcatFilterOptions();
+  updateFilterBadges();
   highlightPreset(null);
   applyFilters();
 }
@@ -1536,7 +1685,7 @@ function sortBy(col) {
   else { sortCol = col; sortDir = 'desc'; }
   // Update header indicators
   document.querySelectorAll('thead th').forEach(th => th.classList.remove('asc','desc'));
-  const colMap = {date:1,description:2,category:3,source:5,amount:7};
+  const colMap = {date:1,amount:2,description:3,category:4,source:6};
   const th = document.querySelectorAll('thead th')[colMap[col]];
   if (th) th.classList.add(sortDir);
   currentPage = 1;
@@ -1741,24 +1890,7 @@ function updateBulkBar() {
     const sel = document.getElementById('bulk-cat-select');
     sel.innerHTML = '<option value="">Set category…</option>' +
       categories.map(c => `<option>${escHtml(c.name)}</option>`).join('');
-    refreshBulkSubcatOptions();
   }
-}
-
-function refreshBulkSubcatOptions() {
-  let cat = document.getElementById('bulk-cat-select').value;
-  if (!cat) {
-    const cats = new Set(
-      [...selectedIds].map(id => {
-        const tx = currentTxs.find(t => t.id === id);
-        return tx ? tx.category : null;
-      }).filter(Boolean)
-    );
-    cat = cats.size === 1 ? [...cats][0] : null;
-  }
-  const options = cat ? (subcategories[cat] || []) : [];
-  const dl = document.getElementById('subcat-datalist');
-  if (dl) dl.innerHTML = options.map(n => `<option value="${escHtml(n)}">`).join('');
 }
 
 async function applyBulkCategory() {
@@ -1778,57 +1910,24 @@ async function applyBulkCategory() {
   } catch(e) { showToast('Update failed', e.message, 'error'); }
 }
 
-async function applyBulkSubcategory() {
-  const inp = document.getElementById('bulk-subcat-input');
-  const subcatValue = inp.value.trim();
-
-  // Determine effective category for new subcategory creation
-  let effectiveCat = document.getElementById('bulk-cat-select').value;
-  if (!effectiveCat) {
-    const cats = new Set(
-      [...selectedIds].map(id => {
-        const tx = currentTxs.find(t => t.id === id);
-        return tx ? tx.category : null;
-      }).filter(Boolean)
-    );
-    effectiveCat = cats.size === 1 ? [...cats][0] : null;
-  }
-
-  // If new subcategory name, create it (requires a known category)
-  const existingSubs = effectiveCat ? (subcategories[effectiveCat] || []) : [];
-  const isNew = subcatValue && !existingSubs.includes(subcatValue);
-  if (isNew) {
-    if (!effectiveCat) {
-      showToast('Category required', 'Select a category first to create a new subcategory.', 'warn');
-      return;
-    }
-    try {
-      await api('/api/subcategories', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ category: effectiveCat, name: subcatValue })
-      });
-      await loadSubcategories();
-    } catch(e) {
-      if (!e.message.includes('409')) {
-        showToast('Failed to create subcategory', e.message, 'error');
-        return;
-      }
-    }
-  }
-
+async function applyBulkTag(action) {
+  const inp = document.getElementById('bulk-tag-input');
+  const tagName = inp.value.trim();
+  if (!tagName) { showToast('Enter a tag name', '', 'warn'); return; }
   try {
-    const data = await api('/api/transactions', {
-      method: 'PATCH',
+    const data = await api('/api/transactions/bulk-tag', {
+      method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ ids: [...selectedIds], subcategory: subcatValue })
+      body: JSON.stringify({ ids: [...selectedIds], tag: tagName, action })
     });
-    const label = subcatValue || '(cleared)';
-    showToast(`Updated ${data.updated} transaction${data.updated!==1?'s':''}`,
-              isNew ? `Created & applied subcategory "${subcatValue}"` : `Subcategory → ${label}`,
-              'success');
+    showToast(
+      `${action === 'remove' ? 'Removed' : 'Added'} tag on ${data.updated} transaction${data.updated!==1?'s':''}`,
+      `"${tagName}"`, 'success'
+    );
     inp.value = '';
     clearSelection();
+    await loadTags();
+    loadStats();
     loadTransactions();
   } catch(e) { showToast('Update failed', e.message, 'error'); }
 }
@@ -1885,7 +1984,7 @@ async function restoreSelected() {
 async function openCatModal() {
   document.getElementById('cat-modal-overlay').classList.add('open');
   document.getElementById('cat-new-input').value = '';
-  await Promise.all([loadSubcategories(), renderCatList()]);
+  await renderCatList();
 }
 
 function closeCatModal() {
@@ -1895,13 +1994,7 @@ function closeCatModal() {
 async function renderCatList() {
   const data = await api('/api/categories');
   const list = document.getElementById('cat-list');
-  list.innerHTML = data.categories.map(c => {
-    const subs = subcategories[c.name] || [];
-    const subChips = subs.map(s =>
-      `<span class="subcat-chip">${escHtml(s)}<button class="subcat-chip-del" title="Remove subcategory"
-        onclick="deleteSubcategory('${escHtml(c.name)}','${escHtml(s)}')">×</button></span>`
-    ).join('');
-    return `
+  list.innerHTML = data.categories.map(c => `
     <div data-name="${escHtml(c.name)}">
       <div class="cat-row">
         <span class="cat-row-name" data-original="${escHtml(c.name)}">${escHtml(c.name)}</span>
@@ -1917,14 +2010,8 @@ async function renderCatList() {
                   ${c.name === 'Other' ? 'disabled' : ''}>✕</button>
         </div>
       </div>
-      <div class="cat-subcats">
-        ${subChips}
-        <input class="subcat-add-input" placeholder="+ subcategory"
-               onkeydown="if(event.key==='Enter'&&this.value.trim())addSubcategory('${escHtml(c.name)}',this)"
-               onblur="if(this.value.trim())addSubcategory('${escHtml(c.name)}',this)">
-      </div>
-    </div>`;
-  }).join('');
+    </div>`
+  ).join('');
 }
 
 function startRename(btn) {
@@ -2044,32 +2131,124 @@ async function toggleExclusion(name, excluded) {
   }
 }
 
-// ── Subcategory management (in category modal) ─────────────────────────────────
-async function addSubcategory(category, input) {
-  const name = input.value.trim();
+// ── Tag manager ────────────────────────────────────────────────────────────────
+async function openTagModal() {
+  document.getElementById('tag-modal-overlay').classList.add('open');
+  document.getElementById('tag-new-input').value = '';
+  await renderTagList();
+}
+
+function closeTagModal() {
+  document.getElementById('tag-modal-overlay').classList.remove('open');
+}
+
+async function renderTagList() {
+  const data = await api('/api/tags');
+  const list = document.getElementById('tag-list');
+  if (!data.tags.length) {
+    list.innerHTML = '<div style="color:var(--muted);font-size:.875rem;padding:12px 8px">No tags yet — add one above.</div>';
+    return;
+  }
+  list.innerHTML = data.tags.map(name => `
+    <div data-name="${escHtml(name)}">
+      <div class="cat-row">
+        <span class="cat-row-name" data-original="${escHtml(name)}">${escHtml(name)}</span>
+        <div class="cat-row-actions">
+          <button class="cat-btn" title="Rename" onclick="startTagRename(this)">✏</button>
+          <button class="cat-btn save" title="Save rename" onclick="saveTagRename(this)" style="display:none">✓ Save</button>
+          <button class="cat-btn del" title="Delete" onclick="deleteTagFromModal('${escHtml(name)}')">✕</button>
+        </div>
+      </div>
+    </div>`
+  ).join('');
+}
+
+function startTagRename(btn) {
+  const row  = btn.closest('.cat-row');
+  const span = row.querySelector('.cat-row-name');
+  span.contentEditable = 'true';
+  span.style.cursor = 'text';
+  span.focus();
+  const range = document.createRange();
+  range.selectNodeContents(span);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+  btn.style.display = 'none';
+  row.querySelector('.cat-btn.save').style.display = '';
+  span.onkeydown = e => {
+    if (e.key === 'Enter') { e.preventDefault(); saveTagRename(row.querySelector('.cat-btn.save')); }
+    if (e.key === 'Escape') { cancelTagRename(row); }
+  };
+}
+
+function cancelTagRename(row) {
+  const span = row.querySelector('.cat-row-name');
+  span.textContent = span.dataset.original;
+  span.contentEditable = 'false';
+  row.querySelector('.cat-btn:not(.save):not(.del)').style.display = '';
+  row.querySelector('.cat-btn.save').style.display = 'none';
+}
+
+async function saveTagRename(btn) {
+  const row     = btn.closest('.cat-row');
+  const span    = row.querySelector('.cat-row-name');
+  const oldName = span.dataset.original;
+  const newName = span.textContent.trim();
+  if (!newName || newName === oldName) { cancelTagRename(row); return; }
+  try {
+    await api('/api/tags', {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ old_name: oldName, new_name: newName })
+    });
+    showToast('Tag renamed', `"${oldName}" → "${newName}"`, 'success');
+    await renderTagList();
+    await loadTags();
+    if (tagFilter === oldName) {
+      tagFilter = newName;
+      document.getElementById('filter-tag').value = newName;
+    }
+    loadStats();
+    loadTransactions();
+  } catch(e) {
+    showToast('Rename failed', e.message, 'error');
+    cancelTagRename(row);
+  }
+}
+
+async function addTagFromInput() {
+  const input = document.getElementById('tag-new-input');
+  const name  = input.value.trim();
   if (!name) return;
   try {
-    await api('/api/subcategories', {
+    await api('/api/tags', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ category, name })
+      body: JSON.stringify({ name })
     });
     input.value = '';
-    await loadSubcategories();
-    await renderCatList();
-    loadTransactions();
+    await renderTagList();
+    await loadTags();
+    showToast('Tag added', name, 'success');
   } catch(e) {
     showToast('Error', e.message, 'error');
   }
 }
 
-async function deleteSubcategory(category, name) {
+async function deleteTagFromModal(name) {
+  if (!confirm(`Delete tag "${name}"?\n\nIt will be removed from all transactions.`)) return;
   try {
-    await api(`/api/subcategories?category=${encodeURIComponent(category)}&name=${encodeURIComponent(name)}`,
-              { method: 'DELETE' });
-    await loadSubcategories();
-    await renderCatList();
+    await api('/api/tags?name=' + encodeURIComponent(name), { method: 'DELETE' });
+    await renderTagList();
+    await loadTags();
+    if (tagFilter === name || document.getElementById('filter-tag').value === name) {
+      tagFilter = '';
+      document.getElementById('filter-tag').value = '';
+      updateFilterBadges();
+    }
+    loadStats();
     loadTransactions();
+    showToast('Tag deleted', `"${name}" removed from all transactions`, 'warn');
   } catch(e) {
     showToast('Error', e.message, 'error');
   }
@@ -2160,6 +2339,5 @@ async function revokeInvite(email) {
 }
 </script>
 <datalist id="cat-datalist"></datalist>
-<datalist id="subcat-datalist"></datalist>
 </body>
 </html>
