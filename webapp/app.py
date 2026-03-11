@@ -334,6 +334,12 @@ def init_db():
 
         ("add card_id to uploaded_files",
          "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS card_id INTEGER REFERENCES cards(id) ON DELETE SET NULL"),
+
+        ("strip AplPay from transaction descriptions", """
+            UPDATE transactions
+            SET description = TRIM(REGEXP_REPLACE(description, '(?i)\\mAplPay\\s*', '', 'g'))
+            WHERE description ~* 'AplPay'
+        """),
     ]
 
     for label, sql in migrations:
@@ -561,6 +567,11 @@ def categorize_with_gpt(descriptions: list, categories: list) -> dict:
     except Exception as e:
         print(f"[GPT categorize] {type(e).__name__}: {e}")
         return {}
+
+# ── Description cleaning ──────────────────────────────────────────────────────────
+def clean_description(desc: str) -> str:
+    """Remove payment-method prefixes that add no useful information."""
+    return re.sub(r'(?i)\bAplPay\s*', '', desc).strip()
 
 # ── Dedup key ─────────────────────────────────────────────────────────────────────
 def make_dedup_key(date: str, source: str, amount: float, description: str, seq: int = 1) -> str:
@@ -1073,6 +1084,9 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
             set_status("done", {"filename": filename, "status": "error",
                                 "message": error, "new": 0, "dupes": 0})
             return
+
+        for r in rows:
+            r["description"] = clean_description(r["description"])
 
         # 2. Load reference data — release connection before fuzzy/GPT
         with db() as conn:
