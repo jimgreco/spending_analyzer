@@ -340,6 +340,12 @@ def init_db():
             SET description = TRIM(REGEXP_REPLACE(description, '(?i)\\mAplPay\\s*', '', 'g'))
             WHERE description ~* 'AplPay'
         """),
+
+        ("strip SP prefix from transaction descriptions", """
+            UPDATE transactions
+            SET description = TRIM(REGEXP_REPLACE(description, '^SP\\s+', '', 'i'))
+            WHERE description ~* '^SP\\s+'
+        """),
     ]
 
     for label, sql in migrations:
@@ -571,7 +577,9 @@ def categorize_with_gpt(descriptions: list, categories: list) -> dict:
 # ── Description cleaning ──────────────────────────────────────────────────────────
 def clean_description(desc: str) -> str:
     """Remove payment-method prefixes that add no useful information."""
-    return re.sub(r'(?i)\bAplPay\s*', '', desc).strip()
+    desc = re.sub(r'(?i)\bAplPay\s*', '', desc)
+    desc = re.sub(r'(?i)^SP\s+', '', desc)
+    return desc.strip()
 
 # ── Dedup key ─────────────────────────────────────────────────────────────────────
 def make_dedup_key(date: str, source: str, amount: float, description: str, seq: int = 1) -> str:
