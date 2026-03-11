@@ -9,7 +9,7 @@ Auth:
   - Local dev:   Set LOCAL_DEV=true in .env to bypass OAuth and auto-login as a
                  local test user.  No Google credentials needed.
 """
-import os, re, io, json, hashlib, secrets
+import os, re, io, json, hashlib, secrets, uuid, threading, subprocess
 from collections import Counter
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -71,7 +71,7 @@ _pool: Optional[psycopg2.pool.SimpleConnectionPool] = None
 def _get_pool():
     global _pool
     if _pool is None:
-        _pool = psycopg2.pool.SimpleConnectionPool(1, 10, DATABASE_URL)
+        _pool = psycopg2.pool.ThreadedConnectionPool(1, 10, DATABASE_URL)
     return _pool
 
 @contextmanager
@@ -304,6 +304,36 @@ def init_db():
 
         ("drop subcategories table",
          "DROP TABLE IF EXISTS subcategories CASCADE"),
+
+        ("create upload_jobs table", """
+            CREATE TABLE IF NOT EXISTS upload_jobs (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER,
+                filename TEXT,
+                status TEXT DEFAULT 'pending',
+                result_json TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """),
+
+        ("delete activity-4 uploads and transactions 2026-03-11", """
+            DELETE FROM transactions
+            WHERE import_file IN ('activity-4.csv', 'activity-4-part2.csv', 'activity-4-part3.csv');
+            DELETE FROM uploaded_files
+            WHERE filename IN ('activity-4.csv', 'activity-4-part2.csv', 'activity-4-part3.csv')
+        """),
+
+        ("create cards table", """
+            CREATE TABLE IF NOT EXISTS cards (
+                id      SERIAL  PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                name    TEXT    NOT NULL,
+                UNIQUE(user_id, name)
+            )
+        """),
+
+        ("add card_id to uploaded_files",
+         "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS card_id INTEGER REFERENCES cards(id) ON DELETE SET NULL"),
     ]
 
     for label, sql in migrations:
@@ -488,36 +518,45 @@ def find_db_match(description: str, manual: list, all_tx: list,
     return None
 
 # ── GPT batch categorization ──────────────────────────────────────────────────────
+def _gpt_chunk(client, model, cat_list, cat_set, chunk):
+    items = "\n".join(f"{i}: {d}" for i, d in enumerate(chunk))
+    prompt = (
+        f"Categorize these credit card transactions. "
+        f"Pick ONLY from: {cat_list}. Use 'Other' if nothing fits.\n\n"
+        f"Transactions:\n{items}\n\n"
+        f'Respond with JSON only: {{"results": [{{"index": 0, "category": "..."}}]}}'
+    )
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        response_format={"type": "json_object"},
+    )
+    data = json.loads(resp.choices[0].message.content)
+    return {chunk[item["index"]]: item["category"] if item["category"] in cat_set else "Other"
+            for item in data.get("results", [])
+            if 0 <= item.get("index", -1) < len(chunk)}
+
+
 def categorize_with_gpt(descriptions: list, categories: list) -> dict:
     if not OPENAI_API_KEY or not descriptions:
         return {}
     try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         client   = OpenAI(api_key=OPENAI_API_KEY)
         cat_set  = set(categories)
         cat_list = ", ".join(sorted(categories))
-        result   = {}
         CHUNK    = 80
-        for offset in range(0, len(descriptions), CHUNK):
-            chunk = descriptions[offset:offset + CHUNK]
-            items = "\n".join(f"{i}: {d}" for i, d in enumerate(chunk))
-            prompt = (
-                f"Categorize these credit card transactions. "
-                f"Pick ONLY from: {cat_list}. Use 'Other' if nothing fits.\n\n"
-                f"Transactions:\n{items}\n\n"
-                f'Respond with JSON only: {{"results": [{{"index": 0, "category": "..."}}]}}'
-            )
-            resp = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                response_format={"type": "json_object"},
-            )
-            data = json.loads(resp.choices[0].message.content)
-            for item in data.get("results", []):
-                idx = item.get("index", -1)
-                cat = item.get("category", "Other")
-                if 0 <= idx < len(chunk):
-                    result[chunk[idx]] = cat if cat in cat_set else "Other"
+        chunks   = [descriptions[i:i+CHUNK] for i in range(0, len(descriptions), CHUNK)]
+        result   = {}
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = {pool.submit(_gpt_chunk, client, OPENAI_MODEL, cat_list, cat_set, ch): ch
+                       for ch in chunks}
+            for fut in as_completed(futures):
+                try:
+                    result.update(fut.result())
+                except Exception as e:
+                    print(f"[GPT chunk] {type(e).__name__}: {e}")
         return result
     except Exception as e:
         print(f"[GPT categorize] {type(e).__name__}: {e}")
@@ -555,381 +594,18 @@ def parse_date(d: str) -> str:
             pass
     return d.strip()
 
-def infer_year(mo: int, day: int, open_dt: datetime, close_dt: datetime) -> Optional[datetime]:
-    for yr in [open_dt.year, close_dt.year]:
-        try:
-            d = datetime(yr, mo, day)
-            if open_dt - timedelta(days=5) <= d <= close_dt + timedelta(days=5):
-                return d
-        except ValueError:
-            pass
-    try:
-        return datetime(close_dt.year, mo, day)
-    except ValueError:
-        return None
-
-# ── PDF parsers ───────────────────────────────────────────────────────────────────
-APPLE_TX = re.compile(
-    r'^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+\d+%\s+\$[\d,.]+\s+(\$[\d,]+\.\d{2})\s*$')
-APPLE_INSTALL_HDR = re.compile(
-    r'^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+\$[\d,]+\.\d{2}\s*$')
-APPLE_INSTALL_AMT = re.compile(
-    r"This month.s installment:\s+\$(-?[\d,]+\.\d{2})")
-APPLE_PERIOD = re.compile(
-    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2}\s*[—–-]+\s*'
-    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},\s*(\d{4})', re.I)
-
-def parse_apple_pdf(text: str) -> list:
-    # Find statement closing month for dating installment payments
-    stmt_month_start = None
-    mp = APPLE_PERIOD.search(text)
-    if mp:
-        try:
-            stmt_month_start = datetime.strptime(f"{mp.group(2)} 1 {mp.group(3)}", "%b 1 %Y")
-        except ValueError:
-            pass
-
-    rows, in_tx, in_install = [], False, False
-    install_desc = None
-    for line in text.split("\n"):
-        s = line.strip()
-        if s == "Transactions":                          in_tx = True;  in_install = False; continue
-        if s == "Apple Card Monthly Installments":       in_install = True; in_tx = False; install_desc = None; continue
-        if s.startswith(("Total Daily Cash", "Total charges", "Total financed")):
-            in_tx = False; in_install = False; continue
-        if not (in_tx or in_install) or (s.startswith("Date") and "Description" in s): continue
-
-        if in_install:
-            mh = APPLE_INSTALL_HDR.match(s)
-            if mh:
-                install_desc = mh.group(2).strip()
-                continue
-            ma = APPLE_INSTALL_AMT.search(s)
-            if ma and install_desc:
-                amt = float(ma.group(1).replace(",", ""))
-                if amt != 0:
-                    date = stmt_month_start.strftime("%Y-%m-%d") if stmt_month_start else datetime.now().strftime("%Y-%m-%d")
-                    rows.append({"date": date, "description": install_desc,
-                                 "amount": amt, "source": "Apple Card"})
-                install_desc = None
-        else:
-            m = APPLE_TX.match(s)
-            if m:
-                amt = float(m.group(3).replace("$", "").replace(",", ""))
-                if amt != 0:
-                    rows.append({"date": parse_date(m.group(1)),
-                                 "description": m.group(2).strip(),
-                                 "amount": amt, "source": "Apple Card"})
-    return rows
-
-COINBASE_TX = re.compile(
-    r'^((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4})\s+'
-    r'(.+?)\s+(-?\$[\d,]+\.\d{2})\s*$')
-COINBASE_SKIP = re.compile(
-    r'Coinbase One Card is offered|@gmail\.com|^Jim Greco|^Page \d+ of \d+|^Date\s+Description|Credit Limit')
-
-COINBASE_PERIOD = re.compile(
-    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2}[, ]+(\d{4})\s*[-–]\s*'
-    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2}[, ]+(\d{4})', re.I)
-
-def parse_coinbase_pdf(text: str) -> list:
-    # Determine statement closing month to use as date for credits/returns
-    stmt_month_start = None
-    mp = COINBASE_PERIOD.search(text)
-    if mp:
-        try:
-            stmt_month_start = datetime.strptime(f"{mp.group(3)} 1 {mp.group(4)}", "%b 1 %Y")
-        except ValueError:
-            pass
-
-    rows, in_tx, in_credits = [], False, False
-    latest_tx_date = None
-    for line in text.split("\n"):
-        s = line.strip()
-        if s == "Transactions":                          in_tx = True;  in_credits = False; continue
-        if s.startswith("Total new charges"):            in_tx = False;                     continue
-        if re.search(r'Payments and Credits', s, re.I): in_credits = True; in_tx = False;  continue
-        if re.search(r'Total payments', s, re.I):        in_credits = False;                continue
-        if not (in_tx or in_credits) or COINBASE_SKIP.search(s): continue
-        if re.search(r'Credit Limit', s, re.I): continue
-        if in_credits and re.search(r'PAYMENT', s, re.I): continue  # skip payments, keep returns
-        m = COINBASE_TX.match(s)
-        if m:
-            amt = float(m.group(3).replace("$", "").replace(",", ""))
-            if amt == 0: continue
-            desc = re.sub(r'\s+\d{3}\s+\d{3}$', '', m.group(2)).strip()
-            if in_credits:
-                amt = -abs(amt)
-                # Use 1st of statement closing month; fall back to 1st of latest tx month
-                ref = stmt_month_start or latest_tx_date
-                tx_date = ref.replace(day=1).strftime("%Y-%m-%d") if ref else parse_date(m.group(1))
-            else:
-                tx_date = parse_date(m.group(1))
-                try:    latest_tx_date = datetime.strptime(tx_date, "%Y-%m-%d")
-                except ValueError: pass
-            rows.append({"date": tx_date, "description": desc,
-                         "amount": amt, "source": "Coinbase"})
-    return rows
-
-CHASE_PERIOD = re.compile(r'Opening/Closing Date\s+([\d/]+)\s*-\s*([\d/]+)')
-CHASE_TX     = re.compile(r'^(\d{2}/\d{2})\s+(.+?)\s+(-?[\d,]+\.\d{2})$')
-CHASE_POINTS = re.compile(r'^(\d{2}/\d{2})\s+(.+?)\s+[\d,]+\.\d{2}\s+[\d,]+$')
-CHASE_SKIP   = re.compile(
-    r'^(Order Number|Date of|Transaction Merchant|WILMINGTON|Pay by phone|Send Inquiries)')
-
-def parse_chase_pdf(text: str) -> list:
-    m = CHASE_PERIOD.search(text)
-    if not m: return []
-    open_dt  = datetime.strptime(m.group(1), "%m/%d/%y")
-    close_dt = datetime.strptime(m.group(2), "%m/%d/%y")
-    rows, in_p = [], False
-    for line in text.split("\n"):
-        s = line.strip()
-        sc = re.sub(r'(.)\1+', r'\1', s).upper()
-        if re.search(r'PURCHASE', sc) and not re.search(r'TOTAL|YEAR|2026', sc):
-            in_p = True; continue
-        if re.search(r'PAYMENT.*CREDIT|AUTOMATIC PAYMENT|INTEREST CHARGE|SHOP WITH POINTS|YEAR.TO.DATE', sc):
-            in_p = False; continue
-        if not in_p or CHASE_SKIP.match(s) or CHASE_POINTS.match(s): continue
-        m2 = CHASE_TX.match(s)
-        if m2:
-            mo, day = int(m2.group(1)[:2]), int(m2.group(1)[3:])
-            amt = float(m2.group(3).replace(",", ""))
-            if amt == 0: continue
-            d = infer_year(mo, day, open_dt, close_dt)
-            if d:
-                rows.append({"date": d.strftime("%Y-%m-%d"),
-                             "description": m2.group(2).strip(),
-                             "amount": amt, "source": "Amazon"})
-    return rows
-
-CITI_BALANCE = re.compile(r'balance as of (\d{2}/\d{2}/\d{2})', re.I)
-CITI_TX      = re.compile(r'^(\d{2}/\d{2})(?:\s+\d{2}/\d{2})?\s+(.+?)\s+\$?(-?[\d,]+\.\d{2})')
-
-def parse_citi_pdf(text: str) -> list:
-    m = CITI_BALANCE.search(text)
-    close_dt = datetime.strptime(m.group(1), "%m/%d/%y") if m else datetime.now()
-    open_dt  = close_dt - timedelta(days=35)
-    rows, in_tx, in_credits = [], False, False
-    for line in text.split("\n"):
-        s = line.strip()
-        if re.search(r'Standard Purchases', s, re.I):
-            in_tx = True; in_credits = False; continue
-        if re.search(r'Payments, Credits, and Adjustments', s, re.I):
-            in_credits = True; in_tx = False; continue
-        if re.search(r'Total fees|Interest charged|202[56] totals', s, re.I):
-            in_tx = False; in_credits = False; continue
-        if not (in_tx or in_credits): continue
-        if re.search(r'^Trans\.|^Post\s|^ThankYou Points|^Bonus Points', s): continue
-        if in_credits and re.search(r'AUTOPAY', s, re.I): continue  # skip payments
-        m2 = CITI_TX.match(s)
-        if m2:
-            mo, day = int(m2.group(1)[:2]), int(m2.group(1)[3:])
-            amt = float(m2.group(3).replace(",", ""))
-            if amt == 0: continue
-            if in_credits: amt = -abs(amt)  # credits section: negate to mark as refund
-            d = infer_year(mo, day, open_dt, close_dt)
-            if d:
-                desc = re.sub(r'\s+[A-Z]{2,3}\s*$', '', m2.group(2).strip()).strip()
-                rows.append({"date": d.strftime("%Y-%m-%d"), "description": desc,
-                             "amount": amt, "source": "Citi"})
-    return rows
-
-BOFA_YEAREND_TX = re.compile(r'^(\d{2}/\d{2}/\d{2})\s+(.+?)\s+([\d,]+\.\d{2})(CR)?\s*$')
-
-def parse_bofa_yearend(text: str) -> list:
-    rows = []
-    for line in text.split("\n"):
-        s = line.strip()
-        m = BOFA_YEAREND_TX.match(s)
-        if not m: continue
-        try:    dt = datetime.strptime(m.group(1), "%m/%d/%y")
-        except ValueError: continue
-        amt = float(m.group(3).replace(",", ""))
-        if m.group(4): amt = -amt  # CR suffix = credit/refund
-        if amt == 0: continue
-        desc_raw = m.group(2).strip()
-        desc = re.sub(r'\s+\S+,\s+[A-Z]{2}$', '', desc_raw).strip() or desc_raw
-        rows.append({"date": dt.strftime("%Y-%m-%d"), "description": desc,
-                     "amount": amt, "source": "Bank of America"})
-    return rows
-
-BOFA_PERIOD = re.compile(
-    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d+\s*[-–]\s*'
-    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d+),\s*(\d{4})', re.I)
-BOFA_ESTMT_TX = re.compile(
-    r'^(\d{2}/\d{2})\s+\d{2}/\d{2}\s+(.+?)\s+\d{4}\s+\d{4}\s+(-?[\d,]+\.\d{2})\s*$')
-
-def parse_bofa_estmt(text: str) -> list:
-    m = BOFA_PERIOD.search(text)
-    if m:
-        close_str = f"{m.group(2)} {m.group(3)}, {m.group(4)}"
-        try:    close_dt = datetime.strptime(close_str, "%B %d, %Y")
-        except ValueError: close_dt = datetime.strptime(close_str, "%b %d, %Y")
-        open_dt = close_dt - timedelta(days=35)
-    else:
-        close_dt = datetime.now(); open_dt = close_dt - timedelta(days=35)
-    rows, in_p = [], False
-    for line in text.split("\n"):
-        s = line.strip()
-        if re.search(r'^Purchases and Adjustments$', s, re.I): in_p = True; continue
-        if re.search(r'TOTAL PURCHASES AND ADJUSTMENTS|Interest Charged|Fees Charged|202[56] Totals', s, re.I):
-            in_p = False; continue
-        if not in_p: continue
-        m2 = BOFA_ESTMT_TX.match(s)
-        if m2:
-            mo, day = int(m2.group(1)[:2]), int(m2.group(1)[3:])
-            amt = float(m2.group(3).replace(",", ""))
-            if amt == 0: continue
-            d = infer_year(mo, day, open_dt, close_dt)
-            if d:
-                rows.append({"date": d.strftime("%Y-%m-%d"),
-                             "description": m2.group(2).strip(),
-                             "amount": amt, "source": "Bank of America"})
-    return rows
-
-def parse_bofa_pdf(text: str) -> list:
-    return parse_bofa_yearend(text) if re.search(r'year.end summary', text, re.I) else parse_bofa_estmt(text)
-
-# ── Bank of America parser ───────────────────────────────────────────────────────────
-BOFA_CHECKING_TX = re.compile(r'^(\d{2}/\d{2}/\d{2})\s+(.+?)\s+(-?[\d,]+\.\d{2})\s*$')
-BOFA_CHECKING_SKIP = re.compile(
-    r'APPLECARD\s*GSBANK'
-    r'|CITI\s*AUTOPAY'
-    r'|AMERICAN\s*EXPRESS.{0,15}ACH\s*PMT'
-    r'|COINBASE\s*CARD.{0,15}PAYMENT'
-    r'|CHASE\s+CREDIT\s+CRD'
-    r'|ONLINE\s+BANKING\s+TRANSFER'
-    r'|AGENT\s+ASSISTED\s+TRANSFER'
-    r'|INTEREST\s+EARNED'
-    r'|PREFERRED\s+REWARDS'
-    r'|MERRILL\s+LYNCH'
-    r'|\b529\b',
-    re.I,
-)
-
-def parse_bofa_checking(text: str) -> list:
-    rows = []
-    for line in text.split("\n"):
-        s = line.strip()
-        m = BOFA_CHECKING_TX.match(s)
-        if not m:
-            continue
-        try:
-            dt = datetime.strptime(m.group(1), "%m/%d/%y")
-        except ValueError:
-            continue
-        desc = m.group(2).strip()
-        amt_raw = float(m.group(3).replace(",", ""))
-        if amt_raw >= 0:          # skip deposits / income
-            continue
-        if BOFA_CHECKING_SKIP.search(desc):
-            continue
-        # Clean up ACH / wire description noise
-        desc = re.sub(r'\s+DES:.*$', '', desc, flags=re.I).strip() or desc
-        desc = re.sub(r'\s+(Conf|Confirmation)#\s*\S+.*$', '', desc, flags=re.I).strip() or desc
-        # Negate: withdrawals are negative in PDF → positive (expense)
-        #         deposits are positive in PDF → negative (income)
-        rows.append({"date": dt.strftime("%Y-%m-%d"), "description": desc,
-                     "amount": -amt_raw, "source": "Bank of America"})
-    return rows
-
-PDF_PARSERS = {
-    "Apple Card":      parse_apple_pdf,
-    "Coinbase":        parse_coinbase_pdf,
-    "Amazon":          parse_chase_pdf,
-    "Citi":            parse_citi_pdf,
-    "Bank of America": parse_bofa_pdf,
-    "Bank of America":   parse_bofa_checking,
-}
-
-# ── CSV parsers ───────────────────────────────────────────────────────────────────
-def parse_csv_bytes(content: bytes, filename: str) -> tuple:
-    text = content.decode("utf-8", errors="replace")
-    rows, source = [], None
-    header_line = text.split("\n")[0].lower()
-
-    if "amount (usd)" in header_line:
-        source = "Apple Card"
-        df = pd.read_csv(io.StringIO(text))
-        for _, row in df.iterrows():
-            if str(row.get("Type", "")).strip() in ("Purchase", "Credit"):
-                rows.append({"date": parse_date(str(row["Transaction Date"])),
-                             "description": str(row["Description"]).strip(),
-                             "category": str(row.get("Category", "Other")).strip(),
-                             "amount": float(row["Amount (USD)"]), "source": source})
-
-    elif "amount" in header_line and "type" in header_line and "debit" not in header_line:
-        source = "Amazon"
-        df = pd.read_csv(io.StringIO(text))
-        for _, row in df.iterrows():
-            tx_type = str(row.get("Type", "")).strip()
-            if tx_type in ("Sale", "Refund", "Return"):
-                amt = -float(row["Amount"])  # CSV: negative=debit, positive=credit; invert to our convention
-                rows.append({"date": parse_date(str(row["Transaction Date"])),
-                             "description": str(row["Description"]).strip(),
-                             "category": str(row.get("Category", "Other")).strip(),
-                             "amount": amt, "source": source})
-
-    else:
-        # Citi CSVs may have preamble rows before the real header — scan all lines
-        citi_start = next(
-            (i for i, l in enumerate(text.split("\n"))
-             if l.strip().lower().startswith("date,description,debit")), None)
-        if citi_start is None:
-            return rows, source
-        source = "Citi"
-        start = citi_start
-        df = pd.read_csv(io.StringIO("\n".join(text.split("\n")[start:])))
-        for _, row in df.iterrows():
-            debit = row.get("Debit", "")
-            credit = row.get("Credit", "")
-            if pd.notna(debit) and str(debit).strip() not in ("", "nan"):
-                try:
-                    amt = float(str(debit).replace(",", "").replace('"', "").strip())
-                    if amt > 0:
-                        rows.append({"date": parse_date(str(row["Date"]).strip()),
-                                     "description": str(row["Description"]).strip(),
-                                     "category": str(row.get("Category", "Other")).strip(),
-                                     "amount": amt, "source": source})
-                except (ValueError, TypeError):
-                    pass
-            elif pd.notna(credit) and str(credit).strip() not in ("", "nan"):
-                try:
-                    amt = float(str(credit).replace(",", "").replace('"', "").strip())
-                    if amt != 0:  # already negative in CSV, store as-is
-                        rows.append({"date": parse_date(str(row["Date"]).strip()),
-                                     "description": str(row["Description"]).strip(),
-                                     "category": str(row.get("Category", "Other")).strip(),
-                                     "amount": amt, "source": source})
-                except (ValueError, TypeError):
-                    pass
-
-    return rows, source
-
 # ── GPT-based parser ──────────────────────────────────────────────────────────────
-GPT_PARSE_PROMPT = """You are a financial statement parser. Extract all transactions from the statement.
+GPT_PARSE_PROMPT = """You are a financial statement parser. Extract ALL rows that have a date, description, and non-zero dollar amount.
 
 Return JSON in this exact format:
-{"transactions": [{"date": "YYYY-MM-DD", "description": "merchant name", "amount": 0.00, "source": "card name"}, ...]}
+{"transactions": [{"date": "YYYY-MM-DD", "description": "merchant name or description", "amount": 0.00}, ...]}
 
 Rules:
-- amount: positive for purchases/charges/outflows, negative for refunds/credits/income
+- Include EVERY row that has a date and a non-zero amount — purchases, fees, interest, payments, refunds, credits, transfers, everything
+- amount: positive for charges/purchases/fees/outflows, negative for refunds/credits/payments received
 - date: YYYY-MM-DD format
-- source: account name (e.g. "Apple Card", "Citi", "Amazon", "Bank of America", "Coinbase", "Bank of America")
-- SKIP on ALL statement types: interest charges, fees, credit limit lines, balance summaries, $0 amounts
-- SKIP on credit card statements: card payments to your account (autopay, payment received, payment thank you)
-- Apple Card Monthly Installments: use the monthly installment amount (NOT the original purchase price); set date to the 1st of the statement month
-- Include merchant refunds and credits as negative amounts
-
-Bank of America account rules (source = "Bank of America"):
-- SKIP ALL incoming deposits / income (positive amounts: wire transfers in, ACH credits, mobile deposits, interest earned, any money coming INTO the account)
-- SKIP: payments to credit cards (Apple Card / APPLECARD GSBANK, Citi / CITI AUTOPAY, American Express / ACH PMT, Coinbase Card, Chase / CHASE CREDIT CRD)
-- SKIP: internal bank transfers (Online Banking transfer to/from other accounts)
-- SKIP: transfers to investment/brokerage accounts (Merrill Lynch, Fidelity, Vanguard, Agent Assisted transfer, etc.)
-- SKIP: 529 college savings contributions
-- INCLUDE ALL other outgoing payments as positive amounts: utilities (electric, gas, water), insurance, mortgage/loan payments, car payments, phone/internet bills, taxes (IRS, property tax), HOA/condo fees, payroll services, subscriptions, Venmo, Zelle, PayPal, and any other real spending
-- Use clean merchant/payee names; strip ACH noise (DES:, INDN:, CO ID:, Conf#, Confirmation#, WEB, PPD suffixes)"""
+- SKIP only: rows with no date, rows with $0.00 amount, pure header/summary/subtotal rows with no transaction meaning
+- Do NOT skip fees, interest, payments, transfers, or anything else — include them all"""
 
 def parse_with_gpt(text: str, filename: str) -> tuple:
     """Parse statement text using GPT. Returns (rows, source, error)."""
@@ -941,29 +617,29 @@ def parse_with_gpt(text: str, filename: str) -> tuple:
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": GPT_PARSE_PROMPT},
-                {"role": "user",   "content": text[:120000]},
+                {"role": "user",   "content": text},
             ],
             response_format={"type": "json_object"},
             temperature=0,
+            max_tokens=32000,
         )
-        data = json.loads(resp.choices[0].message.content)
+        choice = resp.choices[0]
+        if choice.finish_reason == "length":
+            print(f"[GPT parse] WARNING: '{filename}' hit max_tokens — response truncated")
+        data = json.loads(choice.message.content)
         raw_rows = data.get("transactions", [])
-        rows, source = [], None
+        rows = []
         for r in raw_rows:
             try:
-                src = str(r.get("source", "")).strip() or None
-                if src and not source:
-                    source = src
                 rows.append({
                     "date":        str(r["date"]).strip(),
                     "description": str(r["description"]).strip(),
                     "amount":      float(r["amount"]),
-                    "source":      src or "Unknown",
                 })
             except (KeyError, ValueError, TypeError):
                 continue
-        print(f"[GPT parse] '{filename}': {len(rows)} transactions, source={source}")
-        return rows, source, ""
+        print(f"[GPT parse] '{filename}': {len(rows)} transactions, finish={choice.finish_reason}")
+        return rows, None, ""
     except Exception as e:
         return [], None, f"GPT parse error for '{filename}': {e}"
 
@@ -972,10 +648,12 @@ def parse_file_bytes(content: bytes, filename: str) -> tuple:
     fname = filename.lower()
 
     # Extract raw text
+    pages = None  # only set for PDFs
     try:
         if fname.endswith(".pdf"):
             with pdfplumber.open(io.BytesIO(content)) as pdf:
-                text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+                pages = [p.extract_text() or "" for p in pdf.pages]
+            text = "\n".join(pages)
         elif fname.endswith(".csv"):
             text = content.decode("utf-8", errors="replace")
         else:
@@ -983,27 +661,45 @@ def parse_file_bytes(content: bytes, filename: str) -> tuple:
     except Exception as e:
         return [], None, f"Could not read '{filename}': {e}"
 
-    # Try GPT first
-    rows, source, gpt_error = parse_with_gpt(text, filename)
+    CHUNK_CHARS = 30_000  # ~300 rows per chunk; keeps GPT output well under 32k token limit
 
-    # Fall back to regex parsers if GPT fails or returns nothing
+    if len(text) > CHUNK_CHARS:
+        # Chunk large files so GPT output never hits token limits.
+        # PDFs: split by pages. CSVs: split by rows, repeating header in each chunk.
+        if pages is not None:
+            segments = pages
+            def make_chunk(segs): return "\n".join(segs)
+        else:
+            all_lines = text.splitlines()
+            csv_header = all_lines[0] if all_lines else ""
+            segments = [l for l in all_lines[1:] if l.strip()]
+            print(f"[parse] CSV '{filename}': {len(segments)} data rows, {len(text)} chars")
+            def make_chunk(segs): return csv_header + "\n" + "\n".join(segs)
+
+        chunks, cur_seg, cur_len = [], [], 0
+        for seg in segments:
+            if cur_len + len(seg) + 1 > CHUNK_CHARS and cur_seg:
+                chunks.append(make_chunk(cur_seg))
+                cur_seg, cur_len = [], 0
+            cur_seg.append(seg)
+            cur_len += len(seg) + 1
+        if cur_seg:
+            chunks.append(make_chunk(cur_seg))
+
+        rows, gpt_error = [], ""
+        for i, chunk_text in enumerate(chunks):
+            cr, _, ce = parse_with_gpt(chunk_text, f"{filename}[{i+1}/{len(chunks)}]")
+            rows.extend(cr)
+            if ce and not rows:
+                gpt_error = ce
+        print(f"[parse] '{filename}': {len(chunks)} chunks → {len(rows)} rows")
+    else:
+        rows, _, gpt_error = parse_with_gpt(text, filename)
+
     if not rows:
-        print(f"[parse] GPT fallback for '{filename}': {gpt_error or 'no rows returned'}")
-        try:
-            if fname.endswith(".pdf"):
-                source = detect_source(text)
-                if source:
-                    rows = PDF_PARSERS[source](text)
-            else:
-                rows, source = parse_csv_bytes(content, filename)
-        except Exception as e:
-            return [], source, f"Parse error in '{filename}': {e}"
+        return [], None, gpt_error or f"No transactions found in '{filename}'"
 
-    if not rows:
-        return [], source, f"No transactions found in '{filename}'"
-
-    if not source:
-        source = detect_source(text) or "Unknown"
+    source = detect_source(text) or "Unknown"
 
     seq_counts: Counter = Counter()
     for r in rows:
@@ -1022,9 +718,29 @@ app = FastAPI(title="Spending Dashboard")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+def _get_git_version() -> dict:
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(__file__), stderr=subprocess.DEVNULL
+        ).decode().strip()
+        ts = subprocess.check_output(
+            ["git", "log", "-1", "--format=%ci"],
+            cwd=os.path.dirname(__file__), stderr=subprocess.DEVNULL
+        ).decode().strip()
+        return {"sha": sha, "timestamp": ts}
+    except Exception:
+        return {"sha": "unknown", "timestamp": datetime.utcnow().isoformat()}
+
+GIT_VERSION = _get_git_version()
+
 @app.on_event("startup")
 def startup():
     init_db()
+
+@app.get("/api/version")
+def get_version():
+    return GIT_VERSION
 
 # ── Auth routes ───────────────────────────────────────────────────────────────────
 @app.get("/auth/login")
@@ -1328,89 +1044,143 @@ def bulk_restore_transactions(body: BulkRestore, user: dict = Depends(require_ed
     return {"ok": True, "restored": restored}
 
 # ── Upload ────────────────────────────────────────────────────────────────────────
-@app.post("/api/upload")
-async def upload_files(files: List[UploadFile] = File(...),
-                       force: bool = False,
-                       user: dict = Depends(require_edit)):
-    user_id = user["id"]
-    results = []
-    with db() as conn:
-        manual_tx, all_tx = load_all_tx(conn, user_id)
-        with conn.cursor() as cur:
-            cur.execute("SELECT name FROM categories WHERE user_id = %s ORDER BY name", (user_id,))
-            cat_list = [r[0] for r in cur.fetchall()]
-        valid_cats = set(cat_list)
+def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes, force: bool):
+    """Runs in a background thread. Processes one file and updates upload_jobs on completion."""
+    def set_status(status, result=None):
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE upload_jobs SET status=%s, result_json=%s WHERE id=%s",
+                    (status, json.dumps(result) if result is not None else None, job_id))
 
-        for f in files:
-            content   = await f.read()
-            file_hash = hashlib.md5(content).hexdigest()
+    try:
+        set_status("processing")
+        file_hash = hashlib.md5(content).hexdigest()
 
-            if not force:
+        # 1. Quick DB checks — release connection before slow work
+        if not force:
+            with db() as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT id FROM uploaded_files WHERE user_id=%s AND file_hash=%s",
                                 (user_id, file_hash))
                     if cur.fetchone():
-                        results.append({"filename": f.filename, "status": "already_imported",
-                                        "message": "File was already imported", "new": 0, "dupes": 0})
-                        continue
+                        set_status("done", {"filename": filename, "status": "already_imported",
+                                            "message": "File was already imported", "new": 0, "dupes": 0})
+                        return
 
-            rows, source, error = parse_file_bytes(content, f.filename)
-            if error:
-                results.append({"filename": f.filename, "status": "error",
-                                 "message": error, "new": 0, "dupes": 0})
-                continue
+        rows, source, error = parse_file_bytes(content, filename)
+        if error:
+            set_status("done", {"filename": filename, "status": "error",
+                                "message": error, "new": 0, "dupes": 0})
+            return
 
-            needs_gpt = []
-            for r in rows:
-                existing = r.get("category", "Other")
-                if existing and existing not in ("Other", "") and existing in valid_cats:
-                    continue
-                match = find_db_match(r["description"], manual_tx, all_tx, valid_cats)
-                if match:
-                    r["category"] = match
-                else:
-                    r["category"] = "Other"
-                    needs_gpt.append(r)
-            if needs_gpt:
-                gpt_map = categorize_with_gpt([r["description"] for r in needs_gpt], cat_list)
-                for r in needs_gpt:
-                    r["category"] = gpt_map.get(r["description"], "Other")
-
-            new_count = dupe_count = 0
+        # 2. Load reference data — release connection before fuzzy/GPT
+        with db() as conn:
+            manual_tx, all_tx = load_all_tx(conn, user_id)
             with conn.cursor() as cur:
-                # Use existing display name if file was previously renamed
+                cur.execute("SELECT name FROM categories WHERE user_id=%s ORDER BY name", (user_id,))
+                cat_list = [r[0] for r in cur.fetchall()]
+        valid_cats = set(cat_list)
+
+        # 3. Fuzzy match + GPT — no DB connection held
+        fuzzy_cache = {}
+        needs_gpt = []
+        for r in rows:
+            existing = r.get("category", "Other")
+            if existing and existing not in ("Other", "") and existing in valid_cats:
+                continue
+            desc = r["description"]
+            if desc not in fuzzy_cache:
+                fuzzy_cache[desc] = find_db_match(desc, manual_tx, all_tx, valid_cats)
+            match = fuzzy_cache[desc]
+            if match:
+                r["category"] = match
+            else:
+                r["category"] = "Other"
+                needs_gpt.append(r)
+        unique_for_gpt = list({r["description"] for r in needs_gpt})
+        if unique_for_gpt:
+            gpt_map = categorize_with_gpt(unique_for_gpt, cat_list)
+            for r in needs_gpt:
+                r["category"] = gpt_map.get(r["description"], "Other")
+
+        # 4. Insert — use executemany for bulk dedup check + insert
+        dedup_keys = [r["dedup_key"] for r in rows]
+        with db() as conn:
+            with conn.cursor() as cur:
                 cur.execute("SELECT filename FROM uploaded_files WHERE user_id=%s AND file_hash=%s",
                             (user_id, file_hash))
                 row = cur.fetchone()
-                import_name = row[0] if row else f.filename
+                import_name = row[0] if row else filename
 
+                cur.execute("SELECT dedup_key FROM transactions WHERE user_id=%s AND dedup_key=ANY(%s) AND status='active'",
+                            (user_id, dedup_keys))
+                existing_keys = {r[0] for r in cur.fetchall()}
+
+                new_count = dupe_count = 0
+                insert_rows = []
                 for r in rows:
-                    cur.execute(
-                        "SELECT id FROM transactions WHERE user_id=%s AND dedup_key=%s AND status='active' LIMIT 1",
-                        (user_id, r["dedup_key"]))
-                    is_dupe   = cur.fetchone() is not None
+                    is_dupe   = r["dedup_key"] in existing_keys
                     tx_status = "deduped" if is_dupe else "active"
-                    cur.execute("""
-                        INSERT INTO transactions
-                            (user_id, date, description, category, amount, source,
-                             dedup_key, status, dedup_of, import_file)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """, (user_id, r["date"], r["description"], r["category"],
-                          r["amount"], r["source"], r["dedup_key"],
-                          tx_status, r["dedup_key"] if is_dupe else None, import_name))
+                    insert_rows.append((user_id, r["date"], r["description"], r["category"],
+                                        r["amount"], r["source"], r["dedup_key"],
+                                        tx_status, r["dedup_key"] if is_dupe else None, import_name))
                     if tx_status == "active": new_count  += 1
                     else:                     dupe_count += 1
+
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO transactions
+                        (user_id, date, description, category, amount, source,
+                         dedup_key, status, dedup_of, import_file)
+                    VALUES %s
+                """, insert_rows)
 
                 cur.execute("""
                     INSERT INTO uploaded_files (user_id, filename, file_hash, source, tx_new, tx_dupes)
                     VALUES (%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (user_id, file_hash) DO NOTHING
-                """, (user_id, f.filename, file_hash, source, new_count, dupe_count))
+                """, (user_id, filename, file_hash, source, new_count, dupe_count))
 
-            results.append({"filename": f.filename, "status": "ok", "source": source,
+        set_status("done", {"filename": filename, "status": "ok", "source": source,
                             "new": new_count, "dupes": dupe_count})
+    except Exception as e:
+        print(f"[upload_job:{job_id}] {type(e).__name__}: {e}")
+        set_status("error", {"filename": filename, "status": "error",
+                             "message": str(e), "new": 0, "dupes": 0})
 
-    return {"results": results}
+
+@app.post("/api/upload")
+async def upload_files(files: List[UploadFile] = File(...),
+                       force: bool = False,
+                       user: dict = Depends(require_edit)):
+    user_id = user["id"]
+    jobs = []
+    for f in files:
+        content = await f.read()
+        job_id  = str(uuid.uuid4())
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO upload_jobs (id, user_id, filename, status) VALUES (%s,%s,%s,'pending')",
+                    (job_id, user_id, f.filename))
+        threading.Thread(target=_process_upload_job,
+                         args=(job_id, user_id, f.filename, content, force),
+                         daemon=True).start()
+        jobs.append({"job_id": job_id, "filename": f.filename})
+    return {"jobs": jobs}
+
+
+@app.get("/api/upload/status/{job_id}")
+def get_upload_job_status(job_id: str, user: dict = Depends(get_current_user)):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, result_json FROM upload_jobs WHERE id=%s AND user_id=%s",
+                (job_id, user["id"]))
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Job not found")
+    return {"status": row[0], "result": json.loads(row[1]) if row[1] else None}
 
 # ── Categories ────────────────────────────────────────────────────────────────────
 @app.get("/api/categories")
@@ -1693,14 +1463,17 @@ def set_card_last4(body: CardLast4Update, user: dict = Depends(require_edit)):
     return {"ok": True, "filename": body.filename, "card_last4": val}
 
 @app.delete("/api/uploads")
-def delete_upload_record(filename: str, user: dict = Depends(require_edit)):
+def delete_upload(filename: str, user: dict = Depends(require_edit)):
+    uid = user["id"]
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM uploaded_files WHERE user_id=%s AND filename=%s RETURNING id",
-                (user["id"], filename))
+                (uid, filename))
             if cur.rowcount == 0: raise HTTPException(404, "Upload record not found")
-    return {"ok": True, "filename": filename}
+            cur.execute("DELETE FROM transactions WHERE user_id=%s AND import_file=%s", (uid, filename))
+            deleted = cur.rowcount
+    return {"ok": True, "filename": filename, "deleted_transactions": deleted}
 
 # ── Invite management ─────────────────────────────────────────────────────────────
 @app.get("/api/invites")

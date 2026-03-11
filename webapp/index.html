@@ -56,7 +56,7 @@ a{color:var(--accent2);text-decoration:none}
 #history-table th{color:var(--muted);font-weight:600;font-size:.72rem;text-transform:uppercase}
 
 /* ── Summary cards ──────────────────────────────────────────────────────── */
-.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:24px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
 .card .label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
 .card .value{font-size:1.75rem;font-weight:700}
@@ -468,6 +468,11 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
       <div class="value" style="font-size:1rem" id="card-top-cat">—</div>
       <div class="sub" id="card-top-amt"></div>
     </div>
+    <div class="card">
+      <div class="label">Top Tag</div>
+      <div class="value" style="font-size:1rem" id="card-top-tag">—</div>
+      <div class="sub" id="card-top-tag-amt"></div>
+    </div>
   </div>
 
   <!-- Charts -->
@@ -490,7 +495,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   <div class="filter-bar">
     <input type="search" id="search" placeholder="🔍  Search description…" oninput="debounce(applyFilters,300)()">
     <select id="filter-source" onchange="applyFilters()">
-      <option value="">All Cards</option>
+      <option value="">All Issuers</option>
     </select>
     <select id="filter-cat" onchange="onCatFilterChange()">
       <option value="">All Categories</option>
@@ -638,7 +643,6 @@ let totalPages   = 1;
 let sortCol      = 'date';
 let sortDir      = 'desc';
 let stats        = null;
-let fileCardMap  = {};  // {filename: card_last4}
 let categories   = [];
 let tags         = [];  // ['tag1', 'tag2', ...]
 let currentTxs   = [];
@@ -677,6 +681,10 @@ function catColor(cat) {
 window.addEventListener('DOMContentLoaded', async () => {
   setupDragDrop();
   highlightPreset('all');
+  fetch('/api/version').then(r => r.json()).then(v => {
+    const ts = v.timestamp ? v.timestamp.replace('T', ' ').substring(0, 16) : '';
+    document.getElementById('version-footer').textContent = `${v.sha} \u2014 ${ts}`;
+  }).catch(() => {});
   await checkAuth();
   // Attach tag autocomplete to persistent inputs
   attachTagAutocomplete(document.getElementById('bulk-tag-input'));
@@ -860,6 +868,14 @@ function renderCards(s) {
     const top = s.by_category[0];
     document.getElementById('card-top-cat').textContent = top.category;
     document.getElementById('card-top-amt').textContent = fmt(top.total);
+  }
+  if (s.by_tag && s.by_tag.length) {
+    const top = s.by_tag[0];
+    document.getElementById('card-top-tag').textContent = top.tag;
+    document.getElementById('card-top-tag-amt').textContent = fmt(top.total);
+  } else {
+    document.getElementById('card-top-tag').textContent = '—';
+    document.getElementById('card-top-tag-amt').textContent = '';
   }
 }
 
@@ -1069,7 +1085,7 @@ function renderTable(txs) {
         </span>
       </td>
       <td>${tagsCell(t)}</td>
-      <td style="font-size:.8rem;white-space:nowrap">${(() => { const last4 = fileCardMap[t.import_file]; const src = t.source; if (src && last4) return `${sourceTag(src)} <span style="color:var(--muted);font-variant-numeric:tabular-nums">•••• ${escHtml(last4)}</span>`; if (src) return sourceTag(src); if (last4) return `<span style="color:var(--muted);font-variant-numeric:tabular-nums">•••• ${escHtml(last4)}</span>`; return '<span style="color:var(--border)">—</span>'; })()}</td>
+      <td style="font-size:.8rem;white-space:nowrap">${t.source ? sourceTag(t.source) : '<span style="color:var(--border)">—</span>'}</td>
       <td class="import-file" title="${escHtml(t.import_file||'')}">${escHtml(fname)}</td>
       ${actionsCell}
     </tr>`;
@@ -1165,12 +1181,8 @@ function renderUploadHistory(uploads) {
   const sourceSel = document.getElementById('filter-source');
   const curSource = sourceSel.value;
   const uniqueSources = [...new Set((uploads || []).map(u => u.source).filter(Boolean))].sort();
-  sourceSel.innerHTML = '<option value="">All Cards</option>' +
+  sourceSel.innerHTML = '<option value="">All Issuers</option>' +
     uniqueSources.map(s => `<option ${s === curSource ? 'selected' : ''}>${escHtml(s)}</option>`).join('');
-
-  // Build filename → card_last4 lookup for table rows
-  fileCardMap = {};
-  (uploads || []).forEach(u => { if (u.card_last4) fileCardMap[u.filename] = u.card_last4; });
 
   // Populate card filter dropdown — dedupe by last4, show source of first match
   const cardSel = document.getElementById('filter-card');
@@ -1260,9 +1272,11 @@ function renderUploadHistory(uploads) {
           <td style="color:var(--green)">${u.tx_new}</td>
           <td style="color:var(--muted)">${u.tx_dupes}</td>
           <td style="color:var(--muted)">${u.uploaded_at}</td>
-          <td style="white-space:nowrap">
+          <td style="white-space:nowrap;display:flex;gap:4px">
             <button class="btn" style="font-size:.72rem;padding:3px 8px"
                     onclick="reimportFile('${escHtml(u.filename)}')">🔄 Reimport</button>
+            <button class="btn" style="font-size:.72rem;padding:3px 8px;color:var(--red)"
+                    onclick="deleteImport('${escHtml(u.filename)}', ${u.tx_new + u.tx_dupes})">🗑 Delete</button>
           </td>
         </tr>`).join('')}</tbody>
       </table>
@@ -1331,6 +1345,19 @@ async function saveCardLast4(filename, btn) {
   } catch(e) {
     showToast('Error', e.message, 'error');
     cancelCardEdit(btn);
+  }
+}
+
+async function deleteImport(filename, txCount) {
+  if (!confirm(`Delete "${filename}" and all ${txCount} associated transactions?\n\nThis cannot be undone.`)) return;
+  try {
+    const r = await api('/api/uploads?filename=' + encodeURIComponent(filename), { method: 'DELETE' });
+    showToast('Deleted', `"${filename}" and ${r.deleted_transactions} transactions removed`, 'warn');
+    await loadUploadHistory();
+    loadTransactions();
+    loadStats();
+  } catch(e) {
+    showToast('Error', e.message, 'error');
   }
 }
 
@@ -1749,10 +1776,14 @@ async function uploadFiles(files, force = false) {
 
   try {
     const data = await api('/api/upload' + (force ? '?force=true' : ''), { method:'POST', body:formData });
+    const jobs = data.jobs;
+
+    // Poll all jobs until done
+    const results = await pollUploadJobs(jobs, detail);
     prog.classList.remove('visible');
 
     let totalNew = 0, totalDupes = 0;
-    data.results.forEach(r => {
+    results.forEach(r => {
       totalNew   += r.new || 0;
       totalDupes += r.dupes || 0;
       if (r.status === 'error') {
@@ -1763,7 +1794,7 @@ async function uploadFiles(files, force = false) {
     });
 
     if (totalNew > 0 || totalDupes > 0) {
-      const lines = data.results
+      const lines = results
         .filter(r => r.status === 'ok')
         .map(r => `${r.filename}: ${r.new} new, ${r.dupes} dupes`);
       showToast(
@@ -1781,6 +1812,34 @@ async function uploadFiles(files, force = false) {
 
   // Reset file input
   document.getElementById('file-input').value = '';
+}
+
+async function pollUploadJobs(jobs, detailEl) {
+  const results = [];
+  const pending = jobs.map(j => ({ ...j }));
+
+  while (pending.length > 0) {
+    await new Promise(r => setTimeout(r, 2000));
+
+    const done = [];
+    for (const job of pending) {
+      try {
+        const s = await api(`/api/upload/status/${job.job_id}`);
+        if (s.status === 'done' || s.status === 'error') {
+          results.push(s.result || { filename: job.filename, status: 'error', message: 'Unknown error', new: 0, dupes: 0 });
+          done.push(job);
+        } else {
+          const label = s.status === 'processing' ? 'Categorizing' : 'Processing';
+          detailEl.textContent = `${label} ${job.filename}…`;
+        }
+      } catch(e) {
+        results.push({ filename: job.filename, status: 'error', message: e.message, new: 0, dupes: 0 });
+        done.push(job);
+      }
+    }
+    done.forEach(j => pending.splice(pending.indexOf(j), 1));
+  }
+  return results;
 }
 
 // ── Toast ──────────────────────────────────────────────────────────────────────
@@ -2339,5 +2398,6 @@ async function revokeInvite(email) {
 }
 </script>
 <datalist id="cat-datalist"></datalist>
+<footer id="version-footer" style="text-align:center;padding:18px 0 12px;color:var(--muted);font-size:0.75rem"></footer>
 </body>
 </html>

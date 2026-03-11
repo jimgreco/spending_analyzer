@@ -13,8 +13,8 @@ spending/
 ├── .env                    # Secrets (DATABASE_URL, API keys, OAuth creds) — not committed
 ├── samples/                # Sample statement files for testing
 └── webapp/
-    ├── app.py              # FastAPI backend (~1775 lines, single file)
-    ├── index.html          # Single-page frontend — all HTML/CSS/JS inline (~2343 lines)
+    ├── app.py              # FastAPI backend (~1450 lines, single file)
+    ├── index.html          # Single-page frontend — all HTML/CSS/JS inline (~2400 lines)
     ├── requirements.txt
     ├── runtime.txt         # python-3.11.9 (used by EBS)
     ├── run.sh              # Local dev start script (not deployed)
@@ -100,8 +100,7 @@ Environment variables (set via EBS console or `eb setenv`):
 | Database | PostgreSQL via psycopg2 (connection pool) |
 | Auth | Google OAuth 2.0 (or local dev bypass) |
 | Sessions | itsdangerous signed cookies (30-day) |
-| PDF parsing | pdfplumber |
-| CSV parsing | pandas |
+| PDF/CSV parsing | GPT-only (pdfplumber for text extraction, no hand-coded parsers) |
 | AI categorization | OpenAI API (gpt-4.1-mini) |
 | Frontend | Vanilla JS + inline CSS, no frameworks |
 | Charts | Chart.js 4.4.1 |
@@ -175,6 +174,11 @@ Environment variables (set via EBS console or `eb setenv`):
 | PATCH | `/api/uploads/source` | Change source label |
 | PATCH | `/api/uploads/card-last4` | Set card last 4 digits |
 
+### Misc
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/api/version` | Returns `{sha, timestamp}` from git at startup |
+
 ---
 
 ## Frontend Architecture
@@ -231,6 +235,9 @@ Fixed to bottom of viewport, visible when `selectedIds.size > 0`. Contains:
 - **⚙ Categories** — `openCatModal()` — add, rename, delete, toggle exclusion
 - **⚙ Tags** — `openTagModal()` — add, rename (`PATCH /api/tags`), delete tags
 
+### Version Footer
+`GET /api/version` is fetched on boot; populates `#version-footer` with `<sha> — <timestamp>`.
+
 ---
 
 ## Key Patterns & Conventions
@@ -240,6 +247,14 @@ Three dependency levels in `app.py`:
 - `get_current_user` — any authenticated user
 - `require_edit` — must have role 'edit' (or be owner)
 - `require_owner` — must be the OWNER_EMAIL account
+
+### File Parsing Pipeline
+`parse_file_bytes(content, filename)` — GPT-only, no hand-coded parsers:
+1. PDF: extract text with pdfplumber page by page
+2. CSV: decode as UTF-8
+3. If text > 30,000 chars: chunk by pages (PDF) or rows (CSV, repeating header); each chunk sent separately
+4. `parse_with_gpt()` sends each chunk to gpt-4.1-mini with `max_tokens=32000`, `response_format=json_object`
+5. Returns `{date, description, amount}` rows; source detected via `detect_source(text)` regex
 
 ### Categorization Pipeline (on upload)
 1. Exact description match in historical transactions
