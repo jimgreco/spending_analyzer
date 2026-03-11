@@ -189,6 +189,7 @@ Environment variables (set via EBS console or `eb setenv`):
 ```js
 let categories   = [];          // [{name, excluded_from_spending}]
 let tags         = [];          // [name, ...] — global tag names
+let allSources   = [];          // sorted alphabetically; drives sourceColor()
 let currentTxs   = [];          // transactions currently rendered in table
 let selectedIds  = new Set();   // bulk-selected transaction IDs
 let catFilter    = '';          // set by category donut click
@@ -248,6 +249,14 @@ Three dependency levels in `app.py`:
 - `require_edit` — must have role 'edit' (or be owner)
 - `require_owner` — must be the OWNER_EMAIL account
 
+### Description Cleaning
+`clean_description(desc)` is applied to every parsed row before storing. Strips payment-method prefixes that add no useful information:
+- `AplPay` (Apple Pay) — anywhere in the description
+- `SP ` (Square) — leading prefix
+- `*TST*` / `TST*` / `*TST` (Toast POS) — leading prefix
+
+DB migrations run on startup to retroactively clean existing records.
+
 ### File Parsing Pipeline
 `parse_file_bytes(content, filename)` — GPT-only, no hand-coded parsers:
 1. PDF: extract text with pdfplumber page by page
@@ -255,6 +264,7 @@ Three dependency levels in `app.py`:
 3. If text > 30,000 chars: chunk by pages (PDF) or rows (CSV, repeating header); each chunk sent separately
 4. `parse_with_gpt()` sends each chunk to gpt-4.1-mini with `max_tokens=32000`, `response_format=json_object`
 5. Returns `{date, description, amount}` rows; source detected via `detect_source(text)` regex
+6. `clean_description()` applied to all rows before fuzzy/GPT categorization and DB insert
 
 ### Categorization Pipeline (on upload)
 1. Exact description match in historical transactions
@@ -268,6 +278,9 @@ Three dependency levels in `app.py`:
 
 ### Tag Full-Replace Pattern
 `PUT /api/transactions/{id}/tags` uses a full-replace: delete all existing `transaction_tags` for the tx, then re-insert. Tag names are upserted into `tags` with `ON CONFLICT DO NOTHING` to get their IDs.
+
+### Source (Card) Chip Colors
+Card/issuer chips are color-coded dynamically — no hard-coded color map. `allSources` is populated (sorted alphabetically) in `renderUploadHistory()`. `sourceColor(src)` returns a color from `CAT_PALETTE` by alphabetical index. `contrastText(hex)` auto-picks black or white text for readability.
 
 ### CSS Variables (dark theme)
 `--bg`, `--bg-soft`, `--surface`, `--border`, `--text`, `--muted`, `--accent` (#6366f1 indigo), `--accent2` (#22d3ee cyan), `--red`, `--green`
