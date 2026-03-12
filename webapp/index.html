@@ -997,14 +997,14 @@ function renderCharts(s) {
   if (tagData.length) {
     tagData.forEach((row, i) => {
       const color = CAT_PALETTE[i % CAT_PALETTE.length];
-      const amt = '$' + (+row.total||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const amt = '$' + Math.round(+row.total||0).toLocaleString('en-US');
       tagChips.appendChild(makeChip(row.tag, row.tag, color,
         `${row.count} tx${row.count !== 1 ? 's' : ''}`, amt));
     });
     // "No Tag" chip — always shown when there are tags so untagged txs can be found
     const untagged = s.untagged || {};
     if (untagged.count > 0) {
-      const noTagAmt = '$' + (+untagged.total||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const noTagAmt = '$' + Math.round(+untagged.total||0).toLocaleString('en-US');
       tagChips.appendChild(makeChip('No Tag', '__none__', '#6b7280',
         `${untagged.count} tx${untagged.count !== 1 ? 's' : ''}`, noTagAmt));
     }
