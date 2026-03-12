@@ -985,9 +985,18 @@ def get_stats(
                 ORDER BY total DESC
             """, params)
             by_tag = [dict(r) for r in cur.fetchall()]
+            # Untagged total
+            cur.execute(f"""
+                SELECT COALESCE(SUM(t.amount),0)::float AS total, COUNT(*)::int AS count
+                FROM transactions t
+                WHERE {wc}
+                AND t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt
+                                 JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)
+            """, params + [uid])
+            untagged = dict(cur.fetchone())
 
     return {**summary, "by_category": by_category, "by_month": by_month,
-            "by_source": by_source, "by_tag": by_tag}
+            "by_source": by_source, "by_tag": by_tag, "untagged": untagged}
 
 # ── Category / source update ──────────────────────────────────────────────────────
 class CategoryUpdate(BaseModel):

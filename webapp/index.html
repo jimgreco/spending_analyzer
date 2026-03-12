@@ -979,7 +979,7 @@ function renderCharts(s) {
     if (title) chip.title = title;
     chip.style.cssText = `
       display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
-      border-radius:999px;cursor:pointer;font-size:.8rem;user-select:none;
+      border-radius:999px;cursor:pointer;font-size:.8rem;user-select:none;white-space:nowrap;
       background:${active ? color : color + '33'};
       border:1px solid ${color};
       color:${active ? contrastText(color) : '#c9cde0'};
@@ -1004,7 +1004,12 @@ function renderCharts(s) {
         `${row.count} tx${row.count !== 1 ? 's' : ''}`, amt));
     });
     // "No Tag" chip — always shown when there are tags so untagged txs can be found
-    tagChips.appendChild(makeChip('No Tag', '__none__', '#6b7280', null, null));
+    const untagged = s.untagged || {};
+    if (untagged.count > 0) {
+      const noTagAmt = '$' + (+untagged.total||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      tagChips.appendChild(makeChip('No Tag', '__none__', '#6b7280',
+        `${untagged.count} tx${untagged.count !== 1 ? 's' : ''}`, noTagAmt));
+    }
   } else {
     tagChips.innerHTML = '<span style="color:#8b8fa8;font-size:.85rem">No tags assigned yet</span>';
   }
