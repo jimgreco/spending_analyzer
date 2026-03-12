@@ -745,6 +745,15 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 def _get_git_version() -> dict:
+    # Check for baked-in version file first (written by deploy script)
+    version_file = os.path.join(os.path.dirname(__file__), "version.json")
+    if os.path.exists(version_file):
+        try:
+            import json
+            with open(version_file) as f:
+                return json.load(f)
+        except Exception:
+            pass
     try:
         sha = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -920,7 +929,7 @@ def get_transactions(
 
 @app.get("/api/stats")
 def get_stats(
-    source: str = "", category: str = "", tag: str = "",
+    source: str = "", category: str = "", tag: str = "", search: str = "",
     date_from: str = "", date_to: str = "", import_file: str = "",
     card_last4: str = "", user: dict = Depends(get_current_user)
 ):
@@ -933,6 +942,7 @@ def get_stats(
         params.extend([uid, tag])
     if date_from:   where.append("t.date >= %s");       params.append(date_from)
     if date_to:     where.append("t.date <= %s");       params.append(date_to)
+    if search:      where.append("t.description ILIKE %s"); params.append(f"%{search}%")
     if import_file: where.append("t.import_file = %s"); params.append(import_file)
     if card_last4:
         where.append("t.import_file IN (SELECT filename FROM uploaded_files WHERE user_id=%s AND card_last4=%s)")

@@ -483,7 +483,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     </div>
     <div class="chart-box">
       <h3><span id="tag-title">By Tag</span> <span id="tag-filter" onclick="clearTagFilter()" style="display:none">(filtered – click to clear)</span></h3>
-      <canvas id="tagChart" height="260"></canvas>
+      <div id="tagChips" style="display:flex;flex-wrap:wrap;gap:8px;padding:8px 0;min-height:48px;align-content:flex-start"></div>
     </div>
     <div class="chart-box">
       <h3>Monthly Spending <span id="active-filter" onclick="clearFilter()" style="display:none">(filtered – click to clear)</span></h3>
@@ -648,7 +648,6 @@ let tags         = [];  // ['tag1', 'tag2', ...]
 let currentTxs   = [];
 let donutChart   = null;
 let barChart     = null;
-let tagChart     = null;
 let catFilter    = '';  // category filter set by clicking donut
 let tagFilter    = '';  // tag filter set by clicking tag chart
 let monthFilter  = '';  // month filter set by clicking bar chart
@@ -969,74 +968,36 @@ function renderCharts(s) {
     }
   });
 
-  // Tag bar chart
-  const tagData   = s.by_tag || [];
-
-  if (tagChart) tagChart.destroy();
-  const tagCanvas = document.getElementById('tagChart');
+  // Tag chips
+  const tagData = s.by_tag || [];
+  const tagChips = document.getElementById('tagChips');
+  tagChips.innerHTML = '';
   if (tagData.length) {
-    // Scale canvas height to number of tags (min 120, ~28px per bar)
-    tagCanvas.height = Math.max(120, tagData.length * 28);
-    tagChart = new Chart(tagCanvas.getContext('2d'), {
-      type: 'bar',
-      data: {
-        labels: tagData.map(t => t.tag),
-        datasets: [{
-          data: tagData.map(t => t.total),
-          backgroundColor: tagData.map((_, i) =>
-            CAT_PALETTE[i % CAT_PALETTE.length] + 'cc'),
-          borderColor: tagData.map((_, i) => CAT_PALETTE[i % CAT_PALETTE.length]),
-          borderWidth: 1,
-          borderRadius: 4,
-        }]
-      },
-      options: {
-        indexAxis: 'y',
-        responsive: true,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: ctx => {
-                const row = tagData[ctx.dataIndex];
-                const amt = ctx.parsed.x.toLocaleString('en-US', {minimumFractionDigits:2});
-                return ` $${amt} · ${row.count} tx${row.count !== 1 ? 's' : ''}`;
-              }
-            }
-          }
-        },
-        scales: {
-          x: {
-            ticks: {
-              color: '#8b8fa8',
-              callback: v => '$' + (v >= 1000 ? (v/1000).toFixed(0)+'k' : v)
-            },
-            grid: { color: 'rgba(255,255,255,.05)' }
-          },
-          y: {
-            ticks: { color: '#c9cde0', font: { size: 11 } },
-            grid: { display: false }
-          }
-        },
-        onClick: (_, elems) => {
-          if (!elems.length) return;
-          const clicked = tagData[elems[0].index].tag;
-          tagFilter = tagFilter === clicked ? '' : clicked;
-          document.getElementById('filter-tag').value = tagFilter;
-          updateFilterBadges();
-          applyFilters();
-        }
-      }
+    tagData.forEach((row, i) => {
+      const color = CAT_PALETTE[i % CAT_PALETTE.length];
+      const active = tagFilter === row.tag;
+      const chip = document.createElement('div');
+      chip.title = `${row.count} tx${row.count !== 1 ? 's' : ''}`;
+      chip.style.cssText = `
+        display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
+        border-radius:999px;cursor:pointer;font-size:.8rem;user-select:none;
+        background:${active ? color : color + '33'};
+        border:1px solid ${color};
+        color:${active ? contrastText(color) : '#c9cde0'};
+        transition:background .15s,color .15s;
+      `;
+      const amt = '$' + (+row.total||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      chip.innerHTML = `<span>${escHtml(row.tag)}</span><span style="opacity:.8;font-size:.75rem">${amt}</span>`;
+      chip.onclick = () => {
+        tagFilter = tagFilter === row.tag ? '' : row.tag;
+        document.getElementById('filter-tag').value = tagFilter;
+        updateFilterBadges();
+        applyFilters();
+      };
+      tagChips.appendChild(chip);
     });
   } else {
-    tagChart = null;
-    tagCanvas.height = 120;
-    const ctx2d = tagCanvas.getContext('2d');
-    ctx2d.clearRect(0, 0, tagCanvas.width, tagCanvas.height);
-    ctx2d.fillStyle = '#8b8fa8';
-    ctx2d.font = '12px -apple-system, sans-serif';
-    ctx2d.textAlign = 'center';
-    ctx2d.fillText('No tags assigned yet', tagCanvas.width / 2, tagCanvas.height / 2);
+    tagChips.innerHTML = '<span style="color:#8b8fa8;font-size:.85rem">No tags assigned yet</span>';
   }
 }
 
