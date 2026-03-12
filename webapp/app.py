@@ -874,8 +874,8 @@ def index():
 @app.get("/api/transactions")
 def get_transactions(
     page: int = 1, per_page: int = 100,
-    source: str = "", category: str = "", tag: List[str] = Query([]), search: str = "",
-    date_from: str = "", date_to: str = "",
+    source: str = "", category: str = "", tag: List[str] = Query([]), tag_match: str = "any",
+    search: str = "", date_from: str = "", date_to: str = "",
     import_file: str = "", card_last4: str = "",
     sort_by: str = "date", sort_dir: str = "desc",
     status: str = "active",
@@ -890,14 +890,22 @@ def get_transactions(
     if tag:
         named = [t for t in tag if t != "__none__"]
         has_none = "__none__" in tag
-        clauses = []
-        if has_none:
-            clauses.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
-            params.append(uid)
-        if named:
-            clauses.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s))")
-            params.extend([uid, named])
-        where.append("(" + " OR ".join(clauses) + ")")
+        if tag_match == "all" and named:
+            # Every named tag must be present (HAVING COUNT = N)
+            where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s) GROUP BY tt.transaction_id HAVING COUNT(DISTINCT tg.name) = %s)")
+            params.extend([uid, named, len(named)])
+            if has_none:
+                where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
+                params.append(uid)
+        else:
+            clauses = []
+            if has_none:
+                clauses.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
+                params.append(uid)
+            if named:
+                clauses.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s))")
+                params.extend([uid, named])
+            where.append("(" + " OR ".join(clauses) + ")")
     if date_from:   where.append("t.date >= %s");           params.append(date_from)
     if date_to:     where.append("t.date <= %s");           params.append(date_to)
     if search:      where.append("t.description ILIKE %s"); params.append(f"%{search}%")
@@ -937,8 +945,8 @@ def get_transactions(
 
 @app.get("/api/stats")
 def get_stats(
-    source: str = "", category: str = "", tag: List[str] = Query([]), search: str = "",
-    date_from: str = "", date_to: str = "", import_file: str = "",
+    source: str = "", category: str = "", tag: List[str] = Query([]), tag_match: str = "any",
+    search: str = "", date_from: str = "", date_to: str = "", import_file: str = "",
     card_last4: str = "", user: dict = Depends(get_current_user)
 ):
     uid = user["id"]
@@ -948,14 +956,21 @@ def get_stats(
     if tag:
         named = [t for t in tag if t != "__none__"]
         has_none = "__none__" in tag
-        clauses = []
-        if has_none:
-            clauses.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
-            params.append(uid)
-        if named:
-            clauses.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s))")
-            params.extend([uid, named])
-        where.append("(" + " OR ".join(clauses) + ")")
+        if tag_match == "all" and named:
+            where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s) GROUP BY tt.transaction_id HAVING COUNT(DISTINCT tg.name) = %s)")
+            params.extend([uid, named, len(named)])
+            if has_none:
+                where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
+                params.append(uid)
+        else:
+            clauses = []
+            if has_none:
+                clauses.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
+                params.append(uid)
+            if named:
+                clauses.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s))")
+                params.extend([uid, named])
+            where.append("(" + " OR ".join(clauses) + ")")
     if date_from:   where.append("t.date >= %s");       params.append(date_from)
     if date_to:     where.append("t.date <= %s");       params.append(date_to)
     if search:      where.append("t.description ILIKE %s"); params.append(f"%{search}%")

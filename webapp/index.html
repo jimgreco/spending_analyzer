@@ -486,7 +486,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
       <canvas id="donutChart" height="260"></canvas>
     </div>
     <div class="chart-box">
-      <h3><span id="tag-title">By Tag</span> <span id="tag-filter" onclick="clearTagFilter()" style="display:none">(filtered – click to clear)</span></h3>
+      <h3><span id="tag-title">By Tag</span> <button id="tag-match-btn" onclick="toggleTagMatch()" style="display:none;margin-left:6px;padding:1px 7px;border-radius:999px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:.7rem;cursor:pointer;font-weight:600;letter-spacing:.04em">ANY</button> <span id="tag-filter" onclick="clearTagFilter()" style="display:none">(filtered – click to clear)</span></h3>
       <div id="tagChips" style="display:flex;flex-wrap:wrap;gap:8px;padding:8px 0;min-height:48px;align-content:flex-start"></div>
     </div>
     <div class="chart-box">
@@ -650,6 +650,7 @@ let donutChart   = null;
 let barChart     = null;
 let catFilter    = '';        // category filter set by clicking donut
 let tagFilters   = new Set(); // active tag filters (multi-select)
+let tagMatchMode = 'any';     // 'any' (OR) or 'all' (AND)
 let monthFilter  = '';        // month filter set by clicking bar chart
 let selectedIds  = new Set();
 let viewStatus   = 'active';  // 'active' | 'deleted' | 'deduped'
@@ -766,6 +767,7 @@ function buildFilterParams(extra = {}) {
     ...extra
   });
   tagFilters.forEach(t => p.append('tag', t));
+  if (tagFilters.size > 1) p.set('tag_match', tagMatchMode);
   return p.toString();
 }
 
@@ -1645,6 +1647,17 @@ function updateFilterBadges() {
   document.getElementById('donut-filter').style.display  = catFilter   ? '' : 'none';
   document.getElementById('tag-filter').style.display    = tagFilters.size ? '' : 'none';
   document.getElementById('active-filter').style.display = monthFilter ? '' : 'none';
+  const btn = document.getElementById('tag-match-btn');
+  btn.style.display = tagFilters.size > 1 ? '' : 'none';
+  btn.textContent   = tagMatchMode.toUpperCase();
+  btn.style.background = tagMatchMode === 'all' ? 'var(--accent)' : 'transparent';
+  btn.style.color      = tagMatchMode === 'all' ? '#fff' : 'var(--accent)';
+}
+
+function toggleTagMatch() {
+  tagMatchMode = tagMatchMode === 'any' ? 'all' : 'any';
+  updateFilterBadges();
+  applyFilters();
 }
 
 function applyFilters() {
@@ -1674,6 +1687,7 @@ function onTagDropdownChange() {
 
 function clearTagFilter() {
   tagFilters.clear();
+  tagMatchMode = 'any';
   updateFilterBadges();
   applyFilters();
 }
@@ -1681,6 +1695,7 @@ function clearTagFilter() {
 function clearFilter() {
   catFilter = '';
   tagFilters.clear();
+  tagMatchMode = 'any';
   monthFilter = '';
   document.getElementById('filter-cat').value = '';
   document.getElementById('filter-source').value = '';
