@@ -500,8 +500,8 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <select id="filter-cat" onchange="onCatFilterChange()">
       <option value="">All Categories</option>
     </select>
-    <select id="filter-tag" onchange="applyFilters()">
-      <option value="">All Tags</option>
+    <select id="filter-tag" onchange="onTagDropdownChange()">
+      <option value="">Add tag filter…</option>
     </select>
     <select id="filter-card" onchange="applyFilters()">
       <option value="">All Card #s</option>
@@ -648,9 +648,9 @@ let tags         = [];  // ['tag1', 'tag2', ...]
 let currentTxs   = [];
 let donutChart   = null;
 let barChart     = null;
-let catFilter    = '';  // category filter set by clicking donut
-let tagFilter    = '';  // tag filter set by clicking tag chart
-let monthFilter  = '';  // month filter set by clicking bar chart
+let catFilter    = '';        // category filter set by clicking donut
+let tagFilters   = new Set(); // active tag filters (multi-select)
+let monthFilter  = '';        // month filter set by clicking bar chart
 let selectedIds  = new Set();
 let viewStatus   = 'active';  // 'active' | 'deleted' | 'deduped'
 
@@ -757,7 +757,6 @@ function buildFilterParams(extra = {}) {
   const p = new URLSearchParams({
     source:      document.getElementById('filter-source').value,
     category:    catFilter || document.getElementById('filter-cat').value,
-    tag:         tagFilter || document.getElementById('filter-tag').value,
     date_from:   document.getElementById('filter-date-from').value,
     date_to:     document.getElementById('filter-date-to').value,
     search:      document.getElementById('search').value,
@@ -766,6 +765,7 @@ function buildFilterParams(extra = {}) {
     status:      viewStatus,
     ...extra
   });
+  tagFilters.forEach(t => p.append('tag', t));
   return p.toString();
 }
 
@@ -844,10 +844,9 @@ async function loadTags() {
     const data = await api('/api/tags');
     tags = data.tags || [];
     const sel = document.getElementById('filter-tag');
-    const cur = tagFilter || sel.value;
-    sel.innerHTML = '<option value="">All Tags</option>' +
-      `<option value="__none__" ${cur==='__none__'?'selected':''}>No Tag</option>` +
-      tags.map(t => `<option value="${escHtml(t)}" ${t===cur?'selected':''}>${escHtml(t)}</option>`).join('');
+    sel.innerHTML = '<option value="">Add tag filter…</option>' +
+      '<option value="__none__">No Tag</option>' +
+      tags.map(t => `<option value="${escHtml(t)}">${escHtml(t)}</option>`).join('');
   } catch(e) { console.error('loadTags', e); }
 }
 
@@ -974,7 +973,7 @@ function renderCharts(s) {
   const tagChips = document.getElementById('tagChips');
   tagChips.innerHTML = '';
   const makeChip = (label, value, color, title, amt) => {
-    const active = tagFilter === value;
+    const active = tagFilters.has(value);
     const chip = document.createElement('div');
     if (title) chip.title = title;
     chip.style.cssText = `
@@ -988,8 +987,7 @@ function renderCharts(s) {
     chip.innerHTML = `<span>${escHtml(label)}</span>` +
       (amt != null ? `<span style="opacity:.8;font-size:.75rem">${amt}</span>` : '');
     chip.onclick = () => {
-      tagFilter = tagFilter === value ? '' : value;
-      document.getElementById('filter-tag').value = tagFilter;
+      if (tagFilters.has(value)) tagFilters.delete(value); else tagFilters.add(value);
       updateFilterBadges();
       applyFilters();
     };
@@ -1645,7 +1643,7 @@ async function removeTagFromTx(txId, tagName, evt) {
 // ── Filters & sorting ──────────────────────────────────────────────────────────
 function updateFilterBadges() {
   document.getElementById('donut-filter').style.display  = catFilter   ? '' : 'none';
-  document.getElementById('tag-filter').style.display    = tagFilter   ? '' : 'none';
+  document.getElementById('tag-filter').style.display    = tagFilters.size ? '' : 'none';
   document.getElementById('active-filter').style.display = monthFilter ? '' : 'none';
 }
 
@@ -1663,19 +1661,28 @@ function clearCatFilter() {
   applyFilters();
 }
 
+function onTagDropdownChange() {
+  const sel = document.getElementById('filter-tag');
+  const val = sel.value;
+  if (val) {
+    tagFilters.add(val);
+    sel.value = '';  // reset to placeholder
+    updateFilterBadges();
+    applyFilters();
+  }
+}
+
 function clearTagFilter() {
-  tagFilter = '';
-  document.getElementById('filter-tag').value = '';
+  tagFilters.clear();
   updateFilterBadges();
   applyFilters();
 }
 
 function clearFilter() {
   catFilter = '';
-  tagFilter = '';
+  tagFilters.clear();
   monthFilter = '';
   document.getElementById('filter-cat').value = '';
-  document.getElementById('filter-tag').value = '';
   document.getElementById('filter-source').value = '';
   document.getElementById('filter-date-from').value = '';
   document.getElementById('filter-date-to').value = '';
@@ -2243,9 +2250,9 @@ async function saveTagRename(btn) {
     showToast('Tag renamed', `"${oldName}" → "${newName}"`, 'success');
     await renderTagList();
     await loadTags();
-    if (tagFilter === oldName) {
-      tagFilter = newName;
-      document.getElementById('filter-tag').value = newName;
+    if (tagFilters.has(oldName)) {
+      tagFilters.delete(oldName);
+      tagFilters.add(newName);
     }
     loadStats();
     loadTransactions();
@@ -2280,9 +2287,8 @@ async function deleteTagFromModal(name) {
     await api('/api/tags?name=' + encodeURIComponent(name), { method: 'DELETE' });
     await renderTagList();
     await loadTags();
-    if (tagFilter === name || document.getElementById('filter-tag').value === name) {
-      tagFilter = '';
-      document.getElementById('filter-tag').value = '';
+    if (tagFilters.has(name)) {
+      tagFilters.delete(name);
       updateFilterBadges();
     }
     loadStats();

@@ -26,7 +26,7 @@ import psycopg2.pool
 import uvicorn
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from openai import OpenAI
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Response, Depends, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -874,7 +874,7 @@ def index():
 @app.get("/api/transactions")
 def get_transactions(
     page: int = 1, per_page: int = 100,
-    source: str = "", category: str = "", tag: str = "", search: str = "",
+    source: str = "", category: str = "", tag: List[str] = Query([]), search: str = "",
     date_from: str = "", date_to: str = "",
     import_file: str = "", card_last4: str = "",
     sort_by: str = "date", sort_dir: str = "desc",
@@ -887,12 +887,17 @@ def get_transactions(
         where.append("t.status = %s"); params.append(status)
     if source:      where.append("t.source = %s");          params.append(source)
     if category:    where.append("t.category = %s");        params.append(category)
-    if tag == "__none__":
-        where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
-        params.append(uid)
-    elif tag:
-        where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = %s)")
-        params.extend([uid, tag])
+    if tag:
+        named = [t for t in tag if t != "__none__"]
+        has_none = "__none__" in tag
+        clauses = []
+        if has_none:
+            clauses.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
+            params.append(uid)
+        if named:
+            clauses.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s))")
+            params.extend([uid, named])
+        where.append("(" + " OR ".join(clauses) + ")")
     if date_from:   where.append("t.date >= %s");           params.append(date_from)
     if date_to:     where.append("t.date <= %s");           params.append(date_to)
     if search:      where.append("t.description ILIKE %s"); params.append(f"%{search}%")
@@ -932,7 +937,7 @@ def get_transactions(
 
 @app.get("/api/stats")
 def get_stats(
-    source: str = "", category: str = "", tag: str = "", search: str = "",
+    source: str = "", category: str = "", tag: List[str] = Query([]), search: str = "",
     date_from: str = "", date_to: str = "", import_file: str = "",
     card_last4: str = "", user: dict = Depends(get_current_user)
 ):
@@ -940,12 +945,17 @@ def get_stats(
     where, params = ["t.status = 'active'", "t.user_id = %s"], [uid]
     if source:      where.append("t.source = %s");      params.append(source)
     if category:    where.append("t.category = %s");    params.append(category)
-    if tag == "__none__":
-        where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
-        params.append(uid)
-    elif tag:
-        where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = %s)")
-        params.extend([uid, tag])
+    if tag:
+        named = [t for t in tag if t != "__none__"]
+        has_none = "__none__" in tag
+        clauses = []
+        if has_none:
+            clauses.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
+            params.append(uid)
+        if named:
+            clauses.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s))")
+            params.extend([uid, named])
+        where.append("(" + " OR ".join(clauses) + ")")
     if date_from:   where.append("t.date >= %s");       params.append(date_from)
     if date_to:     where.append("t.date <= %s");       params.append(date_to)
     if search:      where.append("t.description ILIKE %s"); params.append(f"%{search}%")
