@@ -405,6 +405,10 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 
 <!-- User header -->
 <div id="user-header">
+  <div style="display:flex;gap:8px;margin-right:auto">
+    <button class="btn" onclick="openCatModal()">⚙ Categories</button>
+    <button class="btn" onclick="openTagModal()">⚙ Tags</button>
+  </div>
   <div id="user-menu-trigger" onclick="toggleUserMenu()">
     <div id="user-avatar-wrap"></div>
     <span id="user-name"></span>
@@ -510,10 +514,6 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
       <option value="">All Imports</option>
     </select>
     <button class="btn" onclick="clearFilter()">Clear</button>
-    <div style="margin-left:auto;display:flex;gap:8px">
-      <button class="btn" onclick="openCatModal()">⚙ Categories</button>
-      <button class="btn" onclick="openTagModal()">⚙ Tags</button>
-    </div>
     <!-- Date range row -->
     <div class="filter-row">
       <span class="filter-row-label">Date</span>
