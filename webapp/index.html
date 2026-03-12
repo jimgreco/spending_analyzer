@@ -846,6 +846,7 @@ async function loadTags() {
     const sel = document.getElementById('filter-tag');
     const cur = tagFilter || sel.value;
     sel.innerHTML = '<option value="">All Tags</option>' +
+      `<option value="__none__" ${cur==='__none__'?'selected':''}>No Tag</option>` +
       tags.map(t => `<option value="${escHtml(t)}" ${t===cur?'selected':''}>${escHtml(t)}</option>`).join('');
   } catch(e) { console.error('loadTags', e); }
 }
@@ -972,30 +973,38 @@ function renderCharts(s) {
   const tagData = s.by_tag || [];
   const tagChips = document.getElementById('tagChips');
   tagChips.innerHTML = '';
+  const makeChip = (label, value, color, title, amt) => {
+    const active = tagFilter === value;
+    const chip = document.createElement('div');
+    if (title) chip.title = title;
+    chip.style.cssText = `
+      display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
+      border-radius:999px;cursor:pointer;font-size:.8rem;user-select:none;
+      background:${active ? color : color + '33'};
+      border:1px solid ${color};
+      color:${active ? contrastText(color) : '#c9cde0'};
+      transition:background .15s,color .15s;
+    `;
+    chip.innerHTML = `<span>${escHtml(label)}</span>` +
+      (amt != null ? `<span style="opacity:.8;font-size:.75rem">${amt}</span>` : '');
+    chip.onclick = () => {
+      tagFilter = tagFilter === value ? '' : value;
+      document.getElementById('filter-tag').value = tagFilter;
+      updateFilterBadges();
+      applyFilters();
+    };
+    return chip;
+  };
+
   if (tagData.length) {
     tagData.forEach((row, i) => {
       const color = CAT_PALETTE[i % CAT_PALETTE.length];
-      const active = tagFilter === row.tag;
-      const chip = document.createElement('div');
-      chip.title = `${row.count} tx${row.count !== 1 ? 's' : ''}`;
-      chip.style.cssText = `
-        display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
-        border-radius:999px;cursor:pointer;font-size:.8rem;user-select:none;
-        background:${active ? color : color + '33'};
-        border:1px solid ${color};
-        color:${active ? contrastText(color) : '#c9cde0'};
-        transition:background .15s,color .15s;
-      `;
       const amt = '$' + (+row.total||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-      chip.innerHTML = `<span>${escHtml(row.tag)}</span><span style="opacity:.8;font-size:.75rem">${amt}</span>`;
-      chip.onclick = () => {
-        tagFilter = tagFilter === row.tag ? '' : row.tag;
-        document.getElementById('filter-tag').value = tagFilter;
-        updateFilterBadges();
-        applyFilters();
-      };
-      tagChips.appendChild(chip);
+      tagChips.appendChild(makeChip(row.tag, row.tag, color,
+        `${row.count} tx${row.count !== 1 ? 's' : ''}`, amt));
     });
+    // "No Tag" chip — always shown when there are tags so untagged txs can be found
+    tagChips.appendChild(makeChip('No Tag', '__none__', '#6b7280', null, null));
   } else {
     tagChips.innerHTML = '<span style="color:#8b8fa8;font-size:.85rem">No tags assigned yet</span>';
   }

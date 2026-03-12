@@ -887,7 +887,10 @@ def get_transactions(
         where.append("t.status = %s"); params.append(status)
     if source:      where.append("t.source = %s");          params.append(source)
     if category:    where.append("t.category = %s");        params.append(category)
-    if tag:
+    if tag == "__none__":
+        where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
+        params.append(uid)
+    elif tag:
         where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = %s)")
         params.extend([uid, tag])
     if date_from:   where.append("t.date >= %s");           params.append(date_from)
@@ -937,7 +940,10 @@ def get_stats(
     where, params = ["t.status = 'active'", "t.user_id = %s"], [uid]
     if source:      where.append("t.source = %s");      params.append(source)
     if category:    where.append("t.category = %s");    params.append(category)
-    if tag:
+    if tag == "__none__":
+        where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
+        params.append(uid)
+    elif tag:
         where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = %s)")
         params.extend([uid, tag])
     if date_from:   where.append("t.date >= %s");       params.append(date_from)
