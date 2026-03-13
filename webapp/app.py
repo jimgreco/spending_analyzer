@@ -352,6 +352,9 @@ def init_db():
             SET description = TRIM(REGEXP_REPLACE(description, '^\\*?TST\\*?\\s*', '', 'i'))
             WHERE description ~* '^\\*?TST\\*?'
         """),
+
+        ("add excluded_from_spending to tags",
+         "ALTER TABLE tags ADD COLUMN IF NOT EXISTS excluded_from_spending BOOLEAN NOT NULL DEFAULT FALSE"),
     ]
 
     for label, sql in migrations:
@@ -366,7 +369,6 @@ def init_db():
     if LOCAL_DEV:
         user = _ensure_local_user()
         uid  = user["id"]
-        _seed_user_categories(uid)
         try:
             with db() as conn:
                 with conn.cursor() as cur:
@@ -392,29 +394,6 @@ def _ensure_local_user() -> dict:
             """)
             _local_user_cache = dict(cur.fetchone())
     return _local_user_cache
-
-def _seed_user_categories(user_id: int):
-    """Seed the default category list — only if the user has no categories yet."""
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM categories WHERE user_id = %s LIMIT 1", (user_id,))
-            if cur.fetchone():
-                return  # already seeded; don't overwrite user's current list
-            for cat in ALL_CATEGORIES:
-                excluded = cat in EXCLUDED_FROM_SPENDING_DEFAULT
-                cur.execute(
-                    "INSERT INTO categories (user_id, name, excluded_from_spending) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                    (user_id, cat, excluded)
-                )
-
-ALL_CATEGORIES = [
-    "Alcohol", "Childcare", "Clothing", "Dining", "Education", "Entertainment",
-    "Fees", "Groceries", "Health & Fitness", "Other", "Services", "Shopping",
-    "Subscriptions", "Taxes", "Transportation", "Transfers", "Travel",
-]
-
-# Categories that are excluded from spending totals by default
-EXCLUDED_FROM_SPENDING_DEFAULT = {"Taxes", "Transfers"}
 
 # ── Auth dependency ───────────────────────────────────────────────────────────────
 def get_current_user(request: Request) -> dict:
@@ -492,57 +471,16 @@ def require_owner(user: dict = Depends(get_current_user)) -> dict:
         raise HTTPException(status_code=403, detail="Owner-only action")
     return user
 
-# ── DB-based category matching ────────────────────────────────────────────────────
-def load_all_tx(conn, user_id: int) -> tuple:
-    """Returns (manually_corrected_rows, all_rows) as lists of (description, category)."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT description, category FROM transactions "
-            "WHERE manually_corrected = TRUE AND status = 'active' AND user_id = %s",
-            (user_id,)
-        )
-        manual = cur.fetchall()
-        cur.execute(
-            "SELECT description, category FROM transactions "
-            "WHERE status = 'active' AND user_id = %s ORDER BY created_at DESC LIMIT 2000",
-            (user_id,)
-        )
-        all_tx = cur.fetchall()
-    return manual, all_tx
-
-def find_db_match(description: str, manual: list, all_tx: list,
-                  valid_cats: Optional[set] = None) -> Optional[str]:
-    if not all_tx and not manual:
-        return None
-    d = description.upper()
-    for h_desc, h_cat in all_tx:
-        if h_desc.upper() == d:
-            return h_cat if (valid_cats is None or h_cat in valid_cats) else None
-    if manual:
-        best_r, best_c = 0.0, None
-        for h_desc, h_cat in manual:
-            r = SequenceMatcher(None, d, h_desc.upper()).ratio()
-            if r > best_r:
-                best_r, best_c = r, h_cat
-        if best_r >= 0.75 and (valid_cats is None or best_c in valid_cats):
-            return best_c
-    best_r, best_c = 0.0, None
-    for h_desc, h_cat in all_tx:
-        r = SequenceMatcher(None, d, h_desc.upper()).ratio()
-        if r > best_r:
-            best_r, best_c = r, h_cat
-    if best_r >= 0.85 and (valid_cats is None or best_c in valid_cats):
-        return best_c
-    return None
-
-# ── GPT batch categorization ──────────────────────────────────────────────────────
-def _gpt_chunk(client, model, cat_list, cat_set, chunk):
+# ── GPT tag assignment ────────────────────────────────────────────────────────────
+def _gpt_tag_chunk(client, model, tag_list, chunk):
+    """Assign zero or more tags to each transaction description in the chunk."""
     items = "\n".join(f"{i}: {d}" for i, d in enumerate(chunk))
     prompt = (
-        f"Categorize these credit card transactions. "
-        f"Pick ONLY from: {cat_list}. Use 'Other' if nothing fits.\n\n"
+        f"For each credit card transaction, pick zero or more matching tags from this list: "
+        f"{', '.join(tag_list)}.\n"
+        f"If none fit, use an empty list.\n\n"
         f"Transactions:\n{items}\n\n"
-        f'Respond with JSON only: {{"results": [{{"index": 0, "category": "..."}}]}}'
+        f'Respond with JSON only: {{"results": [{{"index": 0, "tags": ["tag1", "tag2"]}}]}}'
     )
     resp = client.chat.completions.create(
         model=model,
@@ -551,33 +489,37 @@ def _gpt_chunk(client, model, cat_list, cat_set, chunk):
         response_format={"type": "json_object"},
     )
     data = json.loads(resp.choices[0].message.content)
-    return {chunk[item["index"]]: item["category"] if item["category"] in cat_set else "Other"
-            for item in data.get("results", [])
-            if 0 <= item.get("index", -1) < len(chunk)}
+    tag_set = set(tag_list)
+    result = {}
+    for item in data.get("results", []):
+        idx = item.get("index", -1)
+        if 0 <= idx < len(chunk):
+            assigned = [t for t in (item.get("tags") or []) if t in tag_set]
+            result[chunk[idx]] = assigned
+    return result
 
 
-def categorize_with_gpt(descriptions: list, categories: list) -> dict:
-    if not OPENAI_API_KEY or not descriptions:
+def assign_tags_with_gpt(descriptions: list, tag_list: list) -> dict:
+    """Returns {description: [tag1, tag2, ...]} — assigns zero or more tags per description."""
+    if not OPENAI_API_KEY or not descriptions or not tag_list:
         return {}
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        client   = OpenAI(api_key=OPENAI_API_KEY)
-        cat_set  = set(categories)
-        cat_list = ", ".join(sorted(categories))
-        CHUNK    = 80
-        chunks   = [descriptions[i:i+CHUNK] for i in range(0, len(descriptions), CHUNK)]
-        result   = {}
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        CHUNK  = 80
+        chunks = [descriptions[i:i+CHUNK] for i in range(0, len(descriptions), CHUNK)]
+        result = {}
         with ThreadPoolExecutor(max_workers=5) as pool:
-            futures = {pool.submit(_gpt_chunk, client, OPENAI_MODEL, cat_list, cat_set, ch): ch
+            futures = {pool.submit(_gpt_tag_chunk, client, OPENAI_MODEL, tag_list, ch): ch
                        for ch in chunks}
             for fut in as_completed(futures):
                 try:
                     result.update(fut.result())
                 except Exception as e:
-                    print(f"[GPT chunk] {type(e).__name__}: {e}")
+                    print(f"[GPT tag chunk] {type(e).__name__}: {e}")
         return result
     except Exception as e:
-        print(f"[GPT categorize] {type(e).__name__}: {e}")
+        print(f"[GPT assign tags] {type(e).__name__}: {e}")
         return {}
 
 # ── Description cleaning ──────────────────────────────────────────────────────────
@@ -731,7 +673,6 @@ def parse_file_bytes(content: bytes, filename: str) -> tuple:
     for r in rows:
         r["date"] = parse_date(r["date"])
         r.setdefault("source", source)
-        r.setdefault("category", "Other")
         base = (r["date"], r["source"], r["amount"], r["description"])
         seq_counts[base] += 1
         r["dedup_key"] = make_dedup_key(
@@ -837,8 +778,6 @@ async def auth_callback(code: str, response: Response):
                   userinfo.get("name", ""), userinfo.get("picture")))
             user = dict(cur.fetchone())
 
-    _seed_user_categories(user["id"])
-
     token    = _sign_session(user["id"])
     redirect = RedirectResponse("/", status_code=302)
     redirect.set_cookie(
@@ -874,7 +813,7 @@ def index():
 @app.get("/api/transactions")
 def get_transactions(
     page: int = 1, per_page: int = 100,
-    source: str = "", category: str = "", tag: List[str] = Query([]), tag_match: str = "any",
+    source: str = "", tag: List[str] = Query([]), tag_match: str = "any",
     search: str = "", date_from: str = "", date_to: str = "",
     import_file: str = "", card_last4: str = "",
     sort_by: str = "date", sort_dir: str = "desc",
@@ -886,7 +825,6 @@ def get_transactions(
     if status in ("active", "deleted", "deduped"):
         where.append("t.status = %s"); params.append(status)
     if source:      where.append("t.source = %s");          params.append(source)
-    if category:    where.append("t.category = %s");        params.append(category)
     if tag:
         named = [t for t in tag if t != "__none__"]
         has_none = "__none__" in tag
@@ -915,7 +853,7 @@ def get_transactions(
         params.extend([uid, card_last4])
     wc = " AND ".join(where)
 
-    valid_cols = {"date", "amount", "description", "category", "source"}
+    valid_cols = {"date", "amount", "description", "source"}
     sc = "t." + (sort_by if sort_by in valid_cols else "date")
     sd = "DESC" if sort_dir == "desc" else "ASC"
     offset = (page - 1) * per_page
@@ -925,8 +863,8 @@ def get_transactions(
             cur.execute(f"SELECT COUNT(*) as n FROM transactions t WHERE {wc}", params)
             total = cur.fetchone()["n"]
             cur.execute(f"""
-                SELECT t.id, t.date::text, t.description, t.category,
-                       t.amount::float, t.source, t.manually_corrected, t.import_file,
+                SELECT t.id, t.date::text, t.description,
+                       t.amount::float, t.source, t.import_file,
                        t.status, t.dedup_of,
                        COALESCE(ARRAY(
                            SELECT tg.name FROM transaction_tags tt
@@ -945,14 +883,13 @@ def get_transactions(
 
 @app.get("/api/stats")
 def get_stats(
-    source: str = "", category: str = "", tag: List[str] = Query([]), tag_match: str = "any",
+    source: str = "", tag: List[str] = Query([]), tag_match: str = "any",
     search: str = "", date_from: str = "", date_to: str = "", import_file: str = "",
     card_last4: str = "", user: dict = Depends(get_current_user)
 ):
     uid = user["id"]
     where, params = ["t.status = 'active'", "t.user_id = %s"], [uid]
     if source:      where.append("t.source = %s");      params.append(source)
-    if category:    where.append("t.category = %s");    params.append(category)
     if tag:
         named = [t for t in tag if t != "__none__"]
         has_none = "__none__" in tag
@@ -981,31 +918,30 @@ def get_stats(
 
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Exclude transactions tagged with excluded tags from spending totals
             cur.execute(
-                "SELECT name FROM categories WHERE user_id=%s AND excluded_from_spending=TRUE",
+                "SELECT id FROM tags WHERE user_id=%s AND excluded_from_spending=TRUE",
                 (uid,)
             )
-            excluded = [r["name"] for r in cur.fetchall()]
-            if excluded:
-                where.append("NOT (t.category = ANY(%s))")
-                params.append(excluded)
+            excluded_tag_ids = [r["id"] for r in cur.fetchall()]
+            if excluded_tag_ids:
+                where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt WHERE tt.tag_id = ANY(%s))")
+                params.append(excluded_tag_ids)
 
             wc = " AND ".join(where)
-            cur.execute(f"SELECT t.category, SUM(t.amount)::float AS total, COUNT(*)::int AS count FROM transactions t WHERE {wc} GROUP BY t.category ORDER BY total DESC", params)
-            by_category = [dict(r) for r in cur.fetchall()]
             cur.execute(f"SELECT TO_CHAR(t.date,'YYYY-MM') AS month, SUM(t.amount)::float AS total FROM transactions t WHERE {wc} GROUP BY month ORDER BY month", params)
             by_month = [dict(r) for r in cur.fetchall()]
             cur.execute(f"SELECT t.source, SUM(t.amount)::float AS total, COUNT(*)::int AS count FROM transactions t WHERE {wc} GROUP BY t.source ORDER BY total DESC", params)
             by_source = [dict(r) for r in cur.fetchall()]
             cur.execute(f"SELECT COALESCE(SUM(t.amount),0)::float AS total, COUNT(*)::int AS count FROM transactions t WHERE {wc}", params)
             summary = dict(cur.fetchone())
-            # Tag breakdown — always compute
+            # Tag breakdown — only non-excluded tags
             cur.execute(f"""
                 SELECT tg.name AS tag, SUM(t.amount)::float AS total, COUNT(DISTINCT t.id)::int AS count
                 FROM transactions t
                 JOIN transaction_tags tt ON tt.transaction_id = t.id
                 JOIN tags tg ON tg.id = tt.tag_id
-                WHERE {wc}
+                WHERE {wc} AND tg.excluded_from_spending = FALSE
                 GROUP BY tg.name
                 ORDER BY total DESC
             """, params)
@@ -1020,52 +956,26 @@ def get_stats(
             """, params + [uid])
             untagged = dict(cur.fetchone())
 
-    return {**summary, "by_category": by_category, "by_month": by_month,
+    return {**summary, "by_month": by_month,
             "by_source": by_source, "by_tag": by_tag, "untagged": untagged}
 
-# ── Category / source update ──────────────────────────────────────────────────────
-class CategoryUpdate(BaseModel):
-    category: Optional[str] = None
+# ── Source update ─────────────────────────────────────────────────────────────────
+class SourceUpdate(BaseModel):
     source: Optional[str] = None
 
 @app.patch("/api/transactions/{tx_id}")
-def update_transaction(tx_id: int, body: CategoryUpdate, user: dict = Depends(require_edit)):
-    with db() as conn:
-        with conn.cursor() as cur:
-            if body.source is not None:
-                cur.execute("""
-                    UPDATE transactions SET source = %s
-                    WHERE id = %s AND user_id = %s RETURNING id
-                """, (body.source, tx_id, user["id"]))
-            elif body.category is not None:
-                cur.execute("""
-                    UPDATE transactions SET category = %s, manually_corrected = TRUE
-                    WHERE id = %s AND user_id = %s RETURNING id
-                """, (body.category, tx_id, user["id"]))
-            else:
-                raise HTTPException(400, "Nothing to update")
-            if cur.rowcount == 0:
-                raise HTTPException(404, "Transaction not found")
-    return {"ok": True, "id": tx_id}
-
-class BulkCategoryUpdate(BaseModel):
-    ids: List[int]
-    category: Optional[str] = None
-
-@app.patch("/api/transactions")
-def bulk_update_category(body: BulkCategoryUpdate, user: dict = Depends(require_edit)):
-    if not body.ids:
-        raise HTTPException(400, "No IDs provided")
-    if body.category is None:
+def update_transaction(tx_id: int, body: SourceUpdate, user: dict = Depends(require_edit)):
+    if body.source is None:
         raise HTTPException(400, "Nothing to update")
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE transactions SET category = %s, manually_corrected = TRUE WHERE id = ANY(%s) AND user_id = %s",
-                [body.category, body.ids, user["id"]]
-            )
-            updated = cur.rowcount
-    return {"ok": True, "updated": updated}
+            cur.execute("""
+                UPDATE transactions SET source = %s
+                WHERE id = %s AND user_id = %s RETURNING id
+            """, (body.source, tx_id, user["id"]))
+            if cur.rowcount == 0:
+                raise HTTPException(404, "Transaction not found")
+    return {"ok": True, "id": tx_id}
 
 # ── Soft-delete ───────────────────────────────────────────────────────────────────
 @app.delete("/api/transactions/{tx_id}")
@@ -1153,37 +1063,17 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
         for r in rows:
             r["description"] = clean_description(r["description"])
 
-        # 2. Load reference data — release connection before fuzzy/GPT
+        # 2. Load user's tags for GPT assignment
         with db() as conn:
-            manual_tx, all_tx = load_all_tx(conn, user_id)
             with conn.cursor() as cur:
-                cur.execute("SELECT name FROM categories WHERE user_id=%s ORDER BY name", (user_id,))
-                cat_list = [r[0] for r in cur.fetchall()]
-        valid_cats = set(cat_list)
+                cur.execute("SELECT name FROM tags WHERE user_id=%s ORDER BY name", (user_id,))
+                tag_list = [r[0] for r in cur.fetchall()]
 
-        # 3. Fuzzy match + GPT — no DB connection held
-        fuzzy_cache = {}
-        needs_gpt = []
-        for r in rows:
-            existing = r.get("category", "Other")
-            if existing and existing not in ("Other", "") and existing in valid_cats:
-                continue
-            desc = r["description"]
-            if desc not in fuzzy_cache:
-                fuzzy_cache[desc] = find_db_match(desc, manual_tx, all_tx, valid_cats)
-            match = fuzzy_cache[desc]
-            if match:
-                r["category"] = match
-            else:
-                r["category"] = "Other"
-                needs_gpt.append(r)
-        unique_for_gpt = list({r["description"] for r in needs_gpt})
-        if unique_for_gpt:
-            gpt_map = categorize_with_gpt(unique_for_gpt, cat_list)
-            for r in needs_gpt:
-                r["category"] = gpt_map.get(r["description"], "Other")
+        # 3. GPT tag assignment — no DB connection held
+        unique_descs = list({r["description"] for r in rows})
+        gpt_tag_map = assign_tags_with_gpt(unique_descs, tag_list) if tag_list else {}
 
-        # 4. Insert — use executemany for bulk dedup check + insert
+        # 4. Insert transactions, then tags
         dedup_keys = [r["dedup_key"] for r in rows]
         with db() as conn:
             with conn.cursor() as cur:
@@ -1198,21 +1088,48 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
 
                 new_count = dupe_count = 0
                 insert_rows = []
+                dedup_key_to_desc = {}
                 for r in rows:
                     is_dupe   = r["dedup_key"] in existing_keys
                     tx_status = "deduped" if is_dupe else "active"
-                    insert_rows.append((user_id, r["date"], r["description"], r["category"],
+                    insert_rows.append((user_id, r["date"], r["description"],
                                         r["amount"], r["source"], r["dedup_key"],
                                         tx_status, r["dedup_key"] if is_dupe else None, import_name))
+                    dedup_key_to_desc[r["dedup_key"]] = r["description"]
                     if tx_status == "active": new_count  += 1
                     else:                     dupe_count += 1
 
-                psycopg2.extras.execute_values(cur, """
+                returned = psycopg2.extras.execute_values(cur, """
                     INSERT INTO transactions
-                        (user_id, date, description, category, amount, source,
+                        (user_id, date, description, amount, source,
                          dedup_key, status, dedup_of, import_file)
                     VALUES %s
-                """, insert_rows)
+                    RETURNING id, dedup_key
+                """, insert_rows, fetch=True)
+
+                # Upsert tags needed and build name→id map
+                all_needed_tags = set()
+                for desc in dedup_key_to_desc.values():
+                    all_needed_tags.update(gpt_tag_map.get(desc, []))
+                tag_name_to_id = {}
+                for name in all_needed_tags:
+                    cur.execute(
+                        "INSERT INTO tags (user_id, name) VALUES (%s,%s) "
+                        "ON CONFLICT (user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
+                        (user_id, name)
+                    )
+                    tag_name_to_id[name] = cur.fetchone()[0]
+
+                # Assign tags to newly inserted transactions
+                for (tx_id, dk) in returned:
+                    desc = dedup_key_to_desc.get(dk, "")
+                    for tag_name in gpt_tag_map.get(desc, []):
+                        tag_id = tag_name_to_id.get(tag_name)
+                        if tag_id:
+                            cur.execute(
+                                "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                                (tx_id, tag_id)
+                            )
 
                 cur.execute("""
                     INSERT INTO uploaded_files (user_id, filename, file_hash, source, tx_new, tx_dupes)
@@ -1261,95 +1178,16 @@ def get_upload_job_status(job_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(404, "Job not found")
     return {"status": row[0], "result": json.loads(row[1]) if row[1] else None}
 
-# ── Categories ────────────────────────────────────────────────────────────────────
-@app.get("/api/categories")
-def get_categories(user: dict = Depends(get_current_user)):
-    uid = user["id"]
-    with db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT name, excluded_from_spending FROM categories WHERE user_id=%s ORDER BY name",
-                (uid,)
-            )
-            cats = [dict(r) for r in cur.fetchall()]
-    return {"categories": cats}
-
-class CategoryCreate(BaseModel):
-    name: str
-
-@app.post("/api/categories", status_code=201)
-def create_category(body: CategoryCreate, user: dict = Depends(require_edit)):
-    name = body.name.strip()
-    if not name: raise HTTPException(400, "Category name cannot be empty")
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO categories (user_id, name) VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING name",
-                (user["id"], name))
-            if cur.rowcount == 0: raise HTTPException(409, "Category already exists")
-    return {"ok": True, "name": name}
-
-class CategoryExclusionToggle(BaseModel):
-    name: str
-    excluded: bool
-
-@app.patch("/api/categories/exclusion")
-def toggle_category_exclusion(body: CategoryExclusionToggle, user: dict = Depends(require_edit)):
-    uid = user["id"]
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE categories SET excluded_from_spending = %s WHERE user_id=%s AND name=%s RETURNING name",
-                (body.excluded, uid, body.name)
-            )
-            if cur.rowcount == 0:
-                raise HTTPException(404, "Category not found")
-    return {"ok": True, "name": body.name, "excluded": body.excluded}
-
-class CategoryRename(BaseModel):
-    old_name: str; new_name: str
-
-@app.patch("/api/categories")
-def rename_category(body: CategoryRename, user: dict = Depends(require_edit)):
-    old, new, uid = body.old_name.strip(), body.new_name.strip(), user["id"]
-    if not new:    raise HTTPException(400, "New name cannot be empty")
-    if old == new: raise HTTPException(400, "New name is the same as old name")
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM categories WHERE user_id=%s AND name=%s", (uid, old))
-            if not cur.fetchone(): raise HTTPException(404, "Category not found")
-            cur.execute("SELECT 1 FROM categories WHERE user_id=%s AND name=%s", (uid, new))
-            if cur.fetchone():     raise HTTPException(409, "A category with that name already exists")
-            cur.execute("UPDATE categories SET name=%s WHERE user_id=%s AND name=%s", (new, uid, old))
-            cur.execute("UPDATE transactions SET category=%s WHERE user_id=%s AND category=%s",
-                        (new, uid, old))
-            updated = cur.rowcount
-    return {"ok": True, "old_name": old, "new_name": new, "updated": updated}
-
-@app.delete("/api/categories")
-def delete_category(name: str, user: dict = Depends(require_edit)):
-    if name == "Other": raise HTTPException(400, "Cannot delete the 'Other' category")
-    uid = user["id"]
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE transactions SET category='Other' WHERE user_id=%s AND category=%s",
-                        (uid, name))
-            reassigned = cur.rowcount
-            cur.execute("DELETE FROM categories WHERE user_id=%s AND name=%s RETURNING name",
-                        (uid, name))
-            if cur.rowcount == 0: raise HTTPException(404, "Category not found")
-    return {"ok": True, "name": name, "reassigned": reassigned}
-
 # ── Tags ──────────────────────────────────────────────────────────────────────────
 @app.get("/api/tags")
 def get_tags(user: dict = Depends(get_current_user)):
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT name FROM tags WHERE user_id=%s ORDER BY name",
+                "SELECT name, excluded_from_spending FROM tags WHERE user_id=%s ORDER BY name",
                 (user["id"],)
             )
-            return {"tags": [r["name"] for r in cur.fetchall()]}
+            return {"tags": [dict(r) for r in cur.fetchall()]}
 
 class TagCreate(BaseModel):
     name: str
@@ -1378,6 +1216,22 @@ def delete_tag(name: str, user: dict = Depends(require_edit)):
             )
             if cur.rowcount == 0: raise HTTPException(404, "Tag not found")
     return {"ok": True, "name": name}
+
+class TagExclusionToggle(BaseModel):
+    name: str
+    excluded: bool
+
+@app.patch("/api/tags/exclusion")
+def toggle_tag_exclusion(body: TagExclusionToggle, user: dict = Depends(require_edit)):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE tags SET excluded_from_spending=%s WHERE user_id=%s AND name=%s RETURNING name",
+                (body.excluded, user["id"], body.name)
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(404, "Tag not found")
+    return {"ok": True, "name": body.name, "excluded": body.excluded}
 
 class TagRename(BaseModel):
     old_name: str

@@ -56,14 +56,14 @@ a{color:var(--accent2);text-decoration:none}
 #history-table th{color:var(--muted);font-weight:600;font-size:.72rem;text-transform:uppercase}
 
 /* ── Summary cards ──────────────────────────────────────────────────────── */
-.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:24px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
 .card .label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
 .card .value{font-size:1.75rem;font-weight:700}
 .card .sub{font-size:.8rem;color:var(--muted);margin-top:4px}
 
 /* ── Charts ─────────────────────────────────────────────────────────────── */
-.charts{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px}
+.charts{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:24px}
 .chart-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
 .chart-box h3{font-size:.85rem;color:var(--muted);text-transform:uppercase;
   letter-spacing:.05em;margin-bottom:16px}
@@ -162,10 +162,6 @@ tbody tr.selected{background:rgba(99,102,241,.1) !important}
   transition:bottom .25s cubic-bezier(.4,0,.2,1);white-space:nowrap}
 #bulk-bar.visible{bottom:24px}
 #bulk-count{font-weight:600;font-size:.875rem;color:var(--accent2);min-width:110px}
-#bulk-cat-select{
-  background:var(--bg);border:1px solid var(--border);color:var(--text);
-  border-radius:8px;padding:6px 10px;font-size:.875rem;outline:none}
-#bulk-cat-select:focus{border-color:var(--accent)}
 #bulk-tag-input{background:var(--bg);border:1px solid var(--border);color:var(--text);
   border-radius:8px;padding:6px 10px;font-size:.875rem;outline:none;width:140px}
 #bulk-tag-input:focus{border-color:var(--accent)}
@@ -388,7 +384,6 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 
 @media(max-width:1024px){
   .cards{grid-template-columns:repeat(3,1fr)}
-  .charts{grid-template-columns:repeat(2,1fr)}
 }
 
 @media(max-width:640px){
@@ -433,17 +428,15 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   .table-box tbody tr td:nth-child(3){grid-column:5;grid-row:1;font-weight:700;padding:0;text-align:right;align-self:center}
   /* description */
   .table-box tbody tr td:nth-child(4){grid-column:2/5;grid-row:2;padding:0}
-  /* category pill — between date and tags */
-  .table-box tbody tr td:nth-child(5){grid-column:3;grid-row:1;padding:0;align-self:center}
   /* tags */
-  .table-box tbody tr td:nth-child(6){grid-column:4;grid-row:1;padding:0;align-self:center;min-width:0;overflow:hidden}
-  .table-box tbody tr td:nth-child(6) .tags-cell{flex-wrap:nowrap;overflow:hidden}
+  .table-box tbody tr td:nth-child(5){grid-column:3/5;grid-row:1;padding:0;align-self:center;min-width:0;overflow:hidden}
+  .table-box tbody tr td:nth-child(5) .tags-cell{flex-wrap:nowrap;overflow:hidden}
   /* source/card */
-  .table-box tbody tr td:nth-child(7){grid-column:5;grid-row:2;padding:0;text-align:right}
+  .table-box tbody tr td:nth-child(6){grid-column:5;grid-row:2;padding:0;text-align:right}
   /* import — hidden */
-  .table-box tbody tr td:nth-child(8){display:none}
+  .table-box tbody tr td:nth-child(7){display:none}
   /* actions (restore btn) */
-  .table-box tbody tr td:nth-child(9){grid-column:5;grid-row:3;padding:0}
+  .table-box tbody tr td:nth-child(8){grid-column:5;grid-row:3;padding:0}
   /* pagination */
   .pagination{padding:12px;gap:6px}
 
@@ -488,7 +481,6 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 <!-- User header -->
 <div id="user-header">
   <div style="display:flex;gap:8px;margin-right:auto">
-    <button class="btn" onclick="openCatModal()">⚙ <span class="btn-label">Categories</span></button>
     <button class="btn" onclick="openTagModal()">⚙ <span class="btn-label">Tags</span></button>
   </div>
   <div id="user-menu-trigger" onclick="toggleUserMenu()">
@@ -550,11 +542,6 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
       <div class="sub">per transaction</div>
     </div>
     <div class="card">
-      <div class="label">Top Category</div>
-      <div class="value" style="font-size:1rem" id="card-top-cat">—</div>
-      <div class="sub" id="card-top-amt"></div>
-    </div>
-    <div class="card">
       <div class="label">Top Tag</div>
       <div class="value" style="font-size:1rem" id="card-top-tag">—</div>
       <div class="sub" id="card-top-tag-amt"></div>
@@ -564,11 +551,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   <!-- Charts -->
   <div class="charts">
     <div class="chart-box">
-      <h3><span id="donut-title">By Category</span> <span id="donut-filter" onclick="clearCatFilter()" style="display:none">(filtered – click to clear)</span></h3>
-      <canvas id="donutChart" height="260"></canvas>
-    </div>
-    <div class="chart-box">
-      <h3><span id="tag-title">By Tag</span> <button id="tag-match-btn" onclick="toggleTagMatch()" style="display:none;margin-left:6px;padding:1px 7px;border-radius:999px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:.7rem;cursor:pointer;font-weight:600;letter-spacing:.04em">ANY</button> <span id="tag-filter" onclick="clearTagFilter()" style="display:none">(filtered – click to clear)</span></h3>
+      <h3>By Tag <span id="tag-filter" onclick="clearTagFilter()" style="display:none">(filtered – click to clear)</span></h3>
       <div id="tagChips" style="display:flex;flex-wrap:wrap;gap:8px;padding:8px 0;min-height:48px;align-content:flex-start"></div>
     </div>
     <div class="chart-box">
@@ -583,12 +566,10 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <select id="filter-source" onchange="applyFilters()">
       <option value="">All Issuers</option>
     </select>
-    <select id="filter-cat" onchange="onCatFilterChange()">
-      <option value="">All Categories</option>
-    </select>
     <select id="filter-tag" onchange="onTagDropdownChange()">
       <option value="">Add tag filter…</option>
     </select>
+    <button id="tag-match-btn" onclick="toggleTagMatch()" style="display:none;padding:6px 12px;border-radius:8px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:.8rem;cursor:pointer;font-weight:600;letter-spacing:.04em">ANY</button>
     <select id="filter-card" onchange="applyFilters()">
       <option value="">All Card #s</option>
     </select>
@@ -633,7 +614,6 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
           <th onclick="sortBy('date')">Date</th>
           <th onclick="sortBy('amount')" style="text-align:right">Amount</th>
           <th onclick="sortBy('description')">Description</th>
-          <th onclick="sortBy('category')">Category</th>
           <th>Tags</th>
           <th onclick="sortBy('source')">Card</th>
           <th>Import</th>
@@ -661,9 +641,6 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   </div>
   <div class="bulk-sep"></div>
   <div class="bulk-row">
-    <select id="bulk-cat-select"><option value="">Set category…</option></select>
-    <button class="bulk-apply" onclick="applyBulkCategory()">Apply</button>
-    <div class="bulk-sep"></div>
     <input id="bulk-tag-input" type="text" placeholder="Add tag…">
     <button class="bulk-apply" onclick="applyBulkTag('add')">+ Tag</button>
     <button class="bulk-apply" style="background:rgba(239,68,68,.7)" onclick="applyBulkTag('remove')">− Tag</button>
@@ -686,22 +663,6 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <div id="invite-list" class="invite-list"></div>
     <div class="invite-modal-footer">
       <button onclick="closeInviteModal()">Done</button>
-    </div>
-  </div>
-</div>
-
-<!-- Category manager modal -->
-<div id="cat-modal-overlay" onclick="if(event.target===this)closeCatModal()">
-  <div id="cat-modal">
-    <h2>⚙ Manage Categories</h2>
-    <div class="cat-add-row">
-      <input id="cat-new-input" placeholder="New category name…"
-             onkeydown="if(event.key==='Enter')addCategoryFromInput()">
-      <button onclick="addCategoryFromInput()">+ Add</button>
-    </div>
-    <div id="cat-list"></div>
-    <div class="cat-modal-footer">
-      <button onclick="closeCatModal()">Done</button>
     </div>
   </div>
 </div>
@@ -729,12 +690,9 @@ let totalPages   = 1;
 let sortCol      = 'date';
 let sortDir      = 'desc';
 let stats        = null;
-let categories   = [];
-let tags         = [];  // ['tag1', 'tag2', ...]
+let tags         = [];  // [{name, excluded_from_spending}]
 let currentTxs   = [];
-let donutChart   = null;
 let barChart     = null;
-let catFilter    = '';        // category filter set by clicking donut
 let tagFilters   = new Set(); // active tag filters (multi-select)
 let tagMatchMode = 'any';     // 'any' (OR) or 'all' (AND)
 let monthFilter  = '';        // month filter set by clicking bar chart
@@ -748,14 +706,6 @@ const CAT_PALETTE = [
   '#ec4899','#14b8a6','#f97316','#84cc16','#06b6d4','#a855f7',
   '#e11d48','#0ea5e9','#d97706','#16a34a','#7c3aed','#db2777',
 ];
-const catColorMap = {};
-function catColor(cat) {
-  if (!catColorMap[cat]) {
-    const idx = Object.keys(catColorMap).length % CAT_PALETTE.length;
-    catColorMap[cat] = CAT_PALETTE[idx];
-  }
-  return catColorMap[cat];
-}
 
 function sourceColor(src) {
   const idx = allSources.indexOf(src);
@@ -787,7 +737,7 @@ async function checkAuth() {
       return r.json();
     });
     showUserHeader(user);
-    await Promise.all([loadCategories(), loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
+    await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
   } catch(e) {
     document.getElementById('login-overlay').classList.add('visible');
   }
@@ -843,7 +793,6 @@ async function api(path, opts = {}) {
 function buildFilterParams(extra = {}) {
   const p = new URLSearchParams({
     source:      document.getElementById('filter-source').value,
-    category:    catFilter || document.getElementById('filter-cat').value,
     date_from:   document.getElementById('filter-date-from').value,
     date_to:     document.getElementById('filter-date-to').value,
     search:      document.getElementById('search').value,
@@ -855,11 +804,6 @@ function buildFilterParams(extra = {}) {
   tagFilters.forEach(t => p.append('tag', t));
   if (tagFilters.size > 1) p.set('tag_match', tagMatchMode);
   return p.toString();
-}
-
-function onCatFilterChange() {
-  catFilter = document.getElementById('filter-cat').value;
-  applyFilters();
 }
 
 // ── Status view ────────────────────────────────────────────────────────────────
@@ -915,26 +859,15 @@ async function loadTransactions() {
   } catch(e) { console.error('loadTransactions', e); }
 }
 
-async function loadCategories() {
-  try {
-    const data = await api('/api/categories');
-    categories = data.categories;  // [{name, excluded_from_spending}]
-    const sel = document.getElementById('filter-cat');
-    sel.innerHTML = '<option value="">All Categories</option>' +
-      categories.map(c => `<option value="${escHtml(c.name)}">${escHtml(c.name)}</option>`).join('');
-    const dl = document.getElementById('cat-datalist');
-    if (dl) dl.innerHTML = categories.map(c => `<option value="${escHtml(c.name)}">`).join('');
-  } catch(e) { console.error('loadCategories', e); }
-}
-
 async function loadTags() {
   try {
     const data = await api('/api/tags');
-    tags = data.tags || [];
+    tags = data.tags || [];  // [{name, excluded_from_spending}]
+    const tagNames = tags.map(t => t.name);
     const sel = document.getElementById('filter-tag');
     sel.innerHTML = '<option value="">Add tag filter…</option>' +
       '<option value="__none__">No Tag</option>' +
-      tags.map(t => `<option value="${escHtml(t)}">${escHtml(t)}</option>`).join('');
+      tagNames.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('');
   } catch(e) { console.error('loadTags', e); }
 }
 
@@ -946,7 +879,7 @@ async function loadUploadHistory() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadCategories(), loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
+  await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
 }
 
 // ── Render: cards ──────────────────────────────────────────────────────────────
@@ -955,11 +888,6 @@ function renderCards(s) {
   document.getElementById('card-total').textContent = fmt(s.total);
   document.getElementById('card-count').textContent = (s.count || 0).toLocaleString();
   document.getElementById('card-avg').textContent   = s.count ? fmt(s.total / s.count) : '—';
-  if (s.by_category && s.by_category.length) {
-    const top = s.by_category[0];
-    document.getElementById('card-top-cat').textContent = top.category;
-    document.getElementById('card-top-amt').textContent = fmt(top.total);
-  }
   if (s.by_tag && s.by_tag.length) {
     const top = s.by_tag[0];
     document.getElementById('card-top-tag').textContent = top.tag;
@@ -972,45 +900,51 @@ function renderCards(s) {
 
 // ── Render: charts ─────────────────────────────────────────────────────────────
 function renderCharts(s) {
-  const cats   = s.by_category || [];
-  const total  = cats.reduce((a, c) => a + c.total, 0);
   updateFilterBadges();
 
-  if (donutChart) donutChart.destroy();
-  donutChart = new Chart(document.getElementById('donutChart').getContext('2d'), {
-    type: 'doughnut',
-    data: {
-      labels: cats.map(c => c.category),
-      datasets: [{
-        data: cats.map(c => c.total),
-        backgroundColor: cats.map(c => catColor(c.category)),
-        borderWidth: 2, borderColor: '#1a1d27'
-      }]
-    },
-    options: {
-      cutout: '65%',
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: ctx => {
-              const v = ctx.parsed;
-              const pct = total ? ((v / total) * 100).toFixed(1) : '0';
-              return ` $${v.toLocaleString('en-US',{minimumFractionDigits:2})} (${pct}%)`;
-            }
-          }
-        }
-      },
-      onClick: (_, elems) => {
-        if (!elems.length) return;
-        const clicked = cats[elems[0].index].category;
-        catFilter = catFilter === clicked ? '' : clicked;
-        document.getElementById('filter-cat').value = catFilter;
-        updateFilterBadges();
-        applyFilters();
-      }
+  // Tag chips (chart box 1)
+  const tagData = s.by_tag || [];
+  const tagChips = document.getElementById('tagChips');
+  tagChips.innerHTML = '';
+  const makeChip = (label, value, color, title, amt) => {
+    const active = tagFilters.has(value);
+    const chip = document.createElement('div');
+    if (title) chip.title = title;
+    chip.style.cssText = `
+      display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
+      border-radius:999px;cursor:pointer;font-size:.8rem;user-select:none;white-space:nowrap;
+      background:${active ? color : color + '33'};
+      border:1px solid ${color};
+      color:${active ? contrastText(color) : '#c9cde0'};
+      transition:background .15s,color .15s;
+    `;
+    chip.innerHTML = `<span>${escHtml(label)}</span>` +
+      (amt != null ? `<span style="opacity:.8;font-size:.75rem">${amt}</span>` : '');
+    chip.onclick = () => {
+      if (tagFilters.has(value)) tagFilters.delete(value); else tagFilters.add(value);
+      updateFilterBadges();
+      applyFilters();
+    };
+    return chip;
+  };
+
+  if (tagData.length) {
+    tagData.forEach((row, i) => {
+      const color = CAT_PALETTE[i % CAT_PALETTE.length];
+      const amt = '$' + Math.round(+row.total||0).toLocaleString('en-US');
+      tagChips.appendChild(makeChip(row.tag, row.tag, color,
+        `${row.count} tx${row.count !== 1 ? 's' : ''}`, amt));
+    });
+    // "No Tag" chip
+    const untagged = s.untagged || {};
+    if (untagged.count > 0) {
+      const noTagAmt = '$' + Math.round(+untagged.total||0).toLocaleString('en-US');
+      tagChips.appendChild(makeChip('No Tag', '__none__', '#6b7280',
+        `${untagged.count} tx${untagged.count !== 1 ? 's' : ''}`, noTagAmt));
     }
-  });
+  } else {
+    tagChips.innerHTML = '<span style="color:#8b8fa8;font-size:.85rem">No tags assigned yet</span>';
+  }
 
   // Bar
   const months = s.by_month || [];
@@ -1056,49 +990,6 @@ function renderCharts(s) {
     }
   });
 
-  // Tag chips
-  const tagData = s.by_tag || [];
-  const tagChips = document.getElementById('tagChips');
-  tagChips.innerHTML = '';
-  const makeChip = (label, value, color, title, amt) => {
-    const active = tagFilters.has(value);
-    const chip = document.createElement('div');
-    if (title) chip.title = title;
-    chip.style.cssText = `
-      display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
-      border-radius:999px;cursor:pointer;font-size:.8rem;user-select:none;white-space:nowrap;
-      background:${active ? color : color + '33'};
-      border:1px solid ${color};
-      color:${active ? contrastText(color) : '#c9cde0'};
-      transition:background .15s,color .15s;
-    `;
-    chip.innerHTML = `<span>${escHtml(label)}</span>` +
-      (amt != null ? `<span style="opacity:.8;font-size:.75rem">${amt}</span>` : '');
-    chip.onclick = () => {
-      if (tagFilters.has(value)) tagFilters.delete(value); else tagFilters.add(value);
-      updateFilterBadges();
-      applyFilters();
-    };
-    return chip;
-  };
-
-  if (tagData.length) {
-    tagData.forEach((row, i) => {
-      const color = CAT_PALETTE[i % CAT_PALETTE.length];
-      const amt = '$' + Math.round(+row.total||0).toLocaleString('en-US');
-      tagChips.appendChild(makeChip(row.tag, row.tag, color,
-        `${row.count} tx${row.count !== 1 ? 's' : ''}`, amt));
-    });
-    // "No Tag" chip — always shown when there are tags so untagged txs can be found
-    const untagged = s.untagged || {};
-    if (untagged.count > 0) {
-      const noTagAmt = '$' + Math.round(+untagged.total||0).toLocaleString('en-US');
-      tagChips.appendChild(makeChip('No Tag', '__none__', '#6b7280',
-        `${untagged.count} tx${untagged.count !== 1 ? 's' : ''}`, noTagAmt));
-    }
-  } else {
-    tagChips.innerHTML = '<span style="color:#8b8fa8;font-size:.85rem">No tags assigned yet</span>';
-  }
 }
 
 // ── Render: table ──────────────────────────────────────────────────────────────
@@ -1114,7 +1005,7 @@ function renderTable(txs) {
       : viewStatus === 'deduped'
         ? 'No cross-statement duplicates found.'
         : 'No transactions found. Drop statement files above to get started.';
-    tbody.innerHTML = `<tr><td colspan="${showActions ? 9 : 8}" style="padding:0">
+    tbody.innerHTML = `<tr><td colspan="${showActions ? 8 : 7}" style="padding:0">
       <div class="empty-state">
         <div class="big">${viewStatus === 'active' ? '📭' : '✓'}</div>
         <div>${emptyMsg}</div>
@@ -1141,14 +1032,6 @@ function renderTable(txs) {
       <td>${t.date}</td>
       <td class="amount">$${(+t.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td>
       <td class="description-cell">${escHtml(t.description)}</td>
-      <td>
-        <span class="pill${t.manually_corrected ? ' edited' : ''}"
-              style="background:${catColor(t.category)}22;color:${catColor(t.category)}"
-              data-id="${t.id}" data-cat="${escHtml(t.category)}"
-              onclick="startEdit(this)">
-          ${escHtml(t.category)}
-        </span>
-      </td>
       <td>${tagsCell(t)}</td>
       <td style="font-size:.8rem;white-space:nowrap">${t.source ? sourceTag(t.source) : '<span style="color:var(--border)">—</span>'}</td>
       <td class="import-file" title="${escHtml(t.import_file||'')}">${escHtml(fname)}</td>
@@ -1469,96 +1352,6 @@ function reimportFile(filename) {
   input.click();
 }
 
-// ── Category editing ───────────────────────────────────────────────────────────
-function startEdit(pillEl) {
-  const txId   = pillEl.dataset.id;
-  const curCat = pillEl.dataset.cat;
-
-  const wrap = document.createElement('span');
-  wrap.style.cssText = 'position:relative;display:inline-block';
-
-  const inp = document.createElement('input');
-  inp.type = 'text';
-  inp.className = 'pill-select';
-  inp.value = curCat;
-  inp.setAttribute('list', 'cat-datalist');
-  inp.style.width = '130px';
-
-  const hint = document.createElement('div');
-  hint.style.cssText = 'position:absolute;top:100%;left:0;z-index:999;background:var(--bg-soft);' +
-    'border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:.68rem;' +
-    'color:var(--accent2);white-space:nowrap;display:none;pointer-events:none';
-
-  inp.oninput = () => {
-    const v = inp.value.trim();
-    const isNew = v && !categories.some(c => c.name === v);
-    hint.textContent = isNew ? `✦ New category "${v}" will be created` : '';
-    hint.style.display = isNew ? 'block' : 'none';
-  };
-
-  let committed = false;
-  const commit = async () => {
-    if (committed) return;
-    committed = true;
-    hint.style.display = 'none';
-    const newCat = inp.value.trim();
-    if (!newCat || newCat === curCat) { wrap.replaceWith(pillEl); return; }
-    const isNew = !categories.some(c => c.name === newCat);
-    if (isNew) {
-      try {
-        await api('/api/categories', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ name: newCat })
-        });
-        await loadCategories();
-        showToast('Category created', `"${newCat}" added`, 'success');
-      } catch(e) {
-        if (!e.message.includes('409')) {
-          showToast('Failed to create category', e.message, 'error');
-          wrap.replaceWith(pillEl);
-          return;
-        }
-      }
-    }
-    await saveCategory(txId, newCat, pillEl);
-    wrap.replaceWith(pillEl);
-  };
-
-  inp.onkeydown = e => {
-    if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { committed = true; wrap.replaceWith(pillEl); }
-  };
-  inp.onblur = () => setTimeout(commit, 200);
-
-  wrap.appendChild(inp);
-  wrap.appendChild(hint);
-  pillEl.replaceWith(wrap);
-  inp.focus();
-  inp.select();
-}
-
-async function saveCategory(txId, newCat, pillEl) {
-  try {
-    await api(`/api/transactions/${txId}`, {
-      method: 'PATCH',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ category: newCat })
-    });
-    pillEl.textContent = newCat;
-    pillEl.dataset.cat = newCat;
-    pillEl.style.background = catColor(newCat) + '22';
-    pillEl.style.color = catColor(newCat);
-    pillEl.classList.add('edited');
-    const sel = pillEl.parentElement?.querySelector('select');
-    sel?.replaceWith(pillEl);
-    // Refresh charts quietly
-    loadStats();
-  } catch(e) {
-    showToast('Update failed', e.message, 'error');
-  }
-}
-
 // ── Tag autocomplete helper ─────────────────────────────────────────────────────
 function attachTagAutocomplete(inp, { onPick, exclude = [] } = {}) {
   let dropdown = null;
@@ -1566,7 +1359,7 @@ function attachTagAutocomplete(inp, { onPick, exclude = [] } = {}) {
 
   function getFiltered() {
     const q = inp.value.trim().toLowerCase();
-    return tags.filter(t => !exclude.includes(t) && (!q || t.toLowerCase().includes(q)));
+    return tags.map(t => t.name).filter(n => !exclude.includes(n) && (!q || n.toLowerCase().includes(q)));
   }
 
   function openDropdown() {
@@ -1685,7 +1478,7 @@ async function addTagToTx(txId, tagName, cell) {
       body: JSON.stringify({ tags: newTags })
     });
     tx.tags = newTags;
-    if (!tags.includes(tagName)) { tags.push(tagName); tags.sort(); }
+    if (!tags.some(t => t.name === tagName)) { tags.push({name: tagName, excluded_from_spending: false}); tags.sort((a,b) => a.name.localeCompare(b.name)); }
     // Re-render just this cell
     const td = cell.closest('td');
     if (td) td.innerHTML = tagsCell(tx);
@@ -1730,7 +1523,6 @@ async function removeTagFromTx(txId, tagName, evt) {
 
 // ── Filters & sorting ──────────────────────────────────────────────────────────
 function updateFilterBadges() {
-  document.getElementById('donut-filter').style.display  = catFilter   ? '' : 'none';
   document.getElementById('tag-filter').style.display    = tagFilters.size ? '' : 'none';
   document.getElementById('active-filter').style.display = monthFilter ? '' : 'none';
   const btn = document.getElementById('tag-match-btn');
@@ -1753,13 +1545,6 @@ function applyFilters() {
   loadTransactions();
 }
 
-function clearCatFilter() {
-  catFilter = '';
-  document.getElementById('filter-cat').value = '';
-  updateFilterBadges();
-  applyFilters();
-}
-
 function onTagDropdownChange() {
   const sel = document.getElementById('filter-tag');
   const val = sel.value;
@@ -1779,11 +1564,9 @@ function clearTagFilter() {
 }
 
 function clearFilter() {
-  catFilter = '';
   tagFilters.clear();
   tagMatchMode = 'any';
   monthFilter = '';
-  document.getElementById('filter-cat').value = '';
   document.getElementById('filter-source').value = '';
   document.getElementById('filter-date-from').value = '';
   document.getElementById('filter-date-to').value = '';
@@ -1800,7 +1583,7 @@ function sortBy(col) {
   else { sortCol = col; sortDir = 'desc'; }
   // Update header indicators
   document.querySelectorAll('thead th').forEach(th => th.classList.remove('asc','desc'));
-  const colMap = {date:1,amount:2,description:3,category:4,source:6};
+  const colMap = {date:1,amount:2,description:3,source:5};
   const th = document.querySelectorAll('thead th')[colMap[col]];
   if (th) th.classList.add(sortDir);
   currentPage = 1;
@@ -2033,28 +1816,6 @@ function updateBulkBar() {
   document.getElementById('bulk-count').textContent =
     `${n} transaction${n !== 1 ? 's' : ''} selected`;
   bar.classList.toggle('visible', n > 0);
-  if (n > 0) {
-    const sel = document.getElementById('bulk-cat-select');
-    sel.innerHTML = '<option value="">Set category…</option>' +
-      categories.map(c => `<option>${escHtml(c.name)}</option>`).join('');
-  }
-}
-
-async function applyBulkCategory() {
-  const cat = document.getElementById('bulk-cat-select').value;
-  if (!cat) { showToast('Pick a category', 'Select a category first.', 'warn'); return; }
-  try {
-    const data = await api('/api/transactions', {
-      method: 'PATCH',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ ids: [...selectedIds], category: cat })
-    });
-    showToast(`Updated ${data.updated} transaction${data.updated!==1?'s':''}`,
-              `→ ${cat}`, 'success');
-    clearSelection();
-    loadStats();
-    loadTransactions();
-  } catch(e) { showToast('Update failed', e.message, 'error'); }
 }
 
 async function applyBulkTag(action) {
@@ -2127,157 +1888,6 @@ async function restoreSelected() {
   } catch(e) { showToast('Restore failed', e.message, 'error'); }
 }
 
-// ── Category manager ───────────────────────────────────────────────────────────
-async function openCatModal() {
-  document.getElementById('cat-modal-overlay').classList.add('open');
-  document.getElementById('cat-new-input').value = '';
-  await renderCatList();
-}
-
-function closeCatModal() {
-  document.getElementById('cat-modal-overlay').classList.remove('open');
-}
-
-async function renderCatList() {
-  const data = await api('/api/categories');
-  const list = document.getElementById('cat-list');
-  list.innerHTML = data.categories.map(c => `
-    <div data-name="${escHtml(c.name)}">
-      <div class="cat-row">
-        <span class="cat-row-name" data-original="${escHtml(c.name)}">${escHtml(c.name)}</span>
-        <div class="cat-row-actions">
-          <button class="cat-btn excl-btn${c.excluded_from_spending ? ' excl-on' : ''}"
-                  title="${c.excluded_from_spending ? 'Excluded from spending — click to include' : 'Click to exclude from spending totals'}"
-                  onclick="toggleExclusion('${escHtml(c.name)}', ${!c.excluded_from_spending})">
-            ${c.excluded_from_spending ? '⊘ excl' : '⊘'}
-          </button>
-          <button class="cat-btn" title="Rename" onclick="startRename(this)">✏</button>
-          <button class="cat-btn save" title="Save rename" onclick="saveRename(this)" style="display:none">✓ Save</button>
-          <button class="cat-btn del" title="Delete" onclick="deleteCategory('${escHtml(c.name)}')"
-                  ${c.name === 'Other' ? 'disabled' : ''}>✕</button>
-        </div>
-      </div>
-    </div>`
-  ).join('');
-}
-
-function startRename(btn) {
-  const row  = btn.closest('.cat-row');
-  const span = row.querySelector('.cat-row-name');
-  span.contentEditable = 'true';
-  span.style.cursor = 'text';
-  span.focus();
-  // Select all text
-  const range = document.createRange();
-  range.selectNodeContents(span);
-  window.getSelection().removeAllRanges();
-  window.getSelection().addRange(range);
-  btn.style.display = 'none';
-  row.querySelector('.cat-btn.save').style.display = '';
-  span.onkeydown = e => {
-    if (e.key === 'Enter') { e.preventDefault(); saveRename(row.querySelector('.cat-btn.save')); }
-    if (e.key === 'Escape') { cancelRename(row); }
-  };
-}
-
-function cancelRename(row) {
-  const span = row.querySelector('.cat-row-name');
-  span.textContent = span.dataset.original;
-  span.contentEditable = 'false';
-  row.querySelector('.cat-btn:not(.save):not(.del)').style.display = '';
-  row.querySelector('.cat-btn.save').style.display = 'none';
-}
-
-async function saveRename(btn) {
-  const row    = btn.closest('.cat-row');
-  const span   = row.querySelector('.cat-row-name');
-  const oldName = span.dataset.original;
-  const newName = span.textContent.trim();
-  if (!newName || newName === oldName) { cancelRename(row); return; }
-  try {
-    const data = await api('/api/categories', {
-      method: 'PATCH',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ old_name: oldName, new_name: newName })
-    });
-    const msg = data.updated > 0
-      ? `${data.updated} transaction${data.updated!==1?'s':''} updated`
-      : 'No transactions affected';
-    showToast('Category renamed', `"${oldName}" → "${newName}" · ${msg}`, 'success');
-    await renderCatList();
-    await loadCategories();
-    if (catFilter === oldName) {
-      catFilter = newName;
-      document.getElementById('filter-cat').value = newName;
-    }
-    loadStats();
-    loadTransactions();
-  } catch(e) {
-    showToast('Rename failed', e.message, 'error');
-    cancelRename(row);
-  }
-}
-
-async function addCategoryFromInput() {
-  const input = document.getElementById('cat-new-input');
-  const name  = input.value.trim();
-  if (!name) return;
-  try {
-    await api('/api/categories', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ name })
-    });
-    input.value = '';
-    await renderCatList();
-    await loadCategories();
-    showToast('Category added', name, 'success');
-  } catch(e) {
-    showToast('Error', e.message, 'error');
-  }
-}
-
-async function deleteCategory(name) {
-  if (!confirm(`Delete "${name}"?\n\nAny transactions using it will be moved to "Other".`)) return;
-  try {
-    const data = await api('/api/categories?name=' + encodeURIComponent(name), { method: 'DELETE' });
-    await renderCatList();
-    await loadCategories();
-    const msg = data.reassigned > 0
-      ? `${data.reassigned} transaction${data.reassigned!==1?'s':''} moved to "Other"`
-      : 'No transactions affected';
-    showToast('Category deleted', `"${name}" · ${msg}`, data.reassigned > 0 ? 'warn' : 'success');
-    if (catFilter === name || document.getElementById('filter-cat').value === name) {
-      catFilter = '';
-      document.getElementById('filter-cat').value = '';
-    }
-    loadStats();
-    loadTransactions();
-  } catch(e) {
-    showToast('Error', e.message, 'error');
-  }
-}
-
-async function toggleExclusion(name, excluded) {
-  try {
-    await api('/api/categories/exclusion', {
-      method: 'PATCH',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ name, excluded })
-    });
-    await renderCatList();
-    await loadCategories();
-    loadStats();
-    showToast(
-      excluded ? 'Excluded from spending' : 'Included in spending',
-      `"${name}" will ${excluded ? 'no longer' : 'now'} count toward spending totals`,
-      'success'
-    );
-  } catch(e) {
-    showToast('Error', e.message, 'error');
-  }
-}
-
 // ── Tag manager ────────────────────────────────────────────────────────────────
 async function openTagModal() {
   document.getElementById('tag-modal-overlay').classList.add('open');
@@ -2296,18 +1906,43 @@ async function renderTagList() {
     list.innerHTML = '<div style="color:var(--muted);font-size:.875rem;padding:12px 8px">No tags yet — add one above.</div>';
     return;
   }
-  list.innerHTML = data.tags.map(name => `
-    <div data-name="${escHtml(name)}">
+  list.innerHTML = data.tags.map(tag => `
+    <div data-name="${escHtml(tag.name)}">
       <div class="cat-row">
-        <span class="cat-row-name" data-original="${escHtml(name)}">${escHtml(name)}</span>
+        <span class="cat-row-name" data-original="${escHtml(tag.name)}">${escHtml(tag.name)}</span>
         <div class="cat-row-actions">
+          <button class="cat-btn excl-btn${tag.excluded_from_spending ? ' excl-on' : ''}"
+                  title="${tag.excluded_from_spending ? 'Excluded from spending — click to include' : 'Click to exclude from spending totals'}"
+                  onclick="toggleTagExclusion('${escHtml(tag.name)}', ${!tag.excluded_from_spending})">
+            ${tag.excluded_from_spending ? '⊘ excl' : '⊘'}
+          </button>
           <button class="cat-btn" title="Rename" onclick="startTagRename(this)">✏</button>
           <button class="cat-btn save" title="Save rename" onclick="saveTagRename(this)" style="display:none">✓ Save</button>
-          <button class="cat-btn del" title="Delete" onclick="deleteTagFromModal('${escHtml(name)}')">✕</button>
+          <button class="cat-btn del" title="Delete" onclick="deleteTagFromModal('${escHtml(tag.name)}')">✕</button>
         </div>
       </div>
     </div>`
   ).join('');
+}
+
+async function toggleTagExclusion(name, excluded) {
+  try {
+    await api('/api/tags/exclusion', {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, excluded })
+    });
+    await renderTagList();
+    await loadTags();
+    loadStats();
+    showToast(
+      excluded ? 'Excluded from spending' : 'Included in spending',
+      `"${name}" will ${excluded ? 'no longer' : 'now'} count toward spending totals`,
+      'success'
+    );
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+  }
 }
 
 function startTagRename(btn) {
@@ -2484,7 +2119,6 @@ async function revokeInvite(email) {
   }
 }
 </script>
-<datalist id="cat-datalist"></datalist>
 <footer id="version-footer" style="text-align:center;padding:18px 0 12px;color:var(--muted);font-size:0.75rem"></footer>
 </body>
 </html>
