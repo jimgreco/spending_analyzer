@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A full-stack personal finance tracker. Import bank statements (PDF/CSV), auto-categorize transactions with AI + fuzzy matching, tag transactions with free-form global tags, view spending by category/tag/month, and share read/edit access with other users.
+A full-stack personal finance tracker. Import bank statements (PDF/CSV), auto-tag transactions with AI, tag transactions with free-form global tags, view spending by tag/month, and share read/edit access with other users.
 
 ---
 
@@ -13,8 +13,8 @@ spending/
 ├── .env                    # Secrets (DATABASE_URL, API keys, OAuth creds) — not committed
 ├── samples/                # Sample statement files for testing
 └── webapp/
-    ├── app.py              # FastAPI backend (~1450 lines, single file)
-    ├── index.html          # Single-page frontend — all HTML/CSS/JS inline (~2400 lines)
+    ├── app.py              # FastAPI backend (~1000 lines, single file)
+    ├── index.html          # Single-page frontend — all HTML/CSS/JS inline (~2000 lines)
     ├── requirements.txt
     ├── runtime.txt         # python-3.11.9 (used by EBS)
     ├── run.sh              # Local dev start script (not deployed)
@@ -33,7 +33,7 @@ spending/
 # .env (at project root)
 LOCAL_DEV=true
 DATABASE_URL=postgresql://spending:spending@localhost:5434/spending
-OPENAI_API_KEY=sk-...   # Optional — falls back to "Other" if absent
+OPENAI_API_KEY=sk-...   # Optional — falls back to no tags if absent
 OPENAI_MODEL=gpt-4.1-mini
 
 # Run
@@ -41,7 +41,7 @@ cd webapp && pip install -r requirements.txt
 python app.py           # or: uvicorn app:app --reload --port 8000
 ```
 
-`LOCAL_DEV=true` bypasses Google OAuth, creates a local test user, and auto-seeds categories. Open `http://localhost:8000`.
+`LOCAL_DEV=true` bypasses Google OAuth and creates a local test user. Open `http://localhost:8000`.
 
 **Claude Code launch config** (`.claude/launch.json`):
 ```json
@@ -101,7 +101,7 @@ Environment variables (set via EBS console or `eb setenv`):
 | Auth | Google OAuth 2.0 (or local dev bypass) |
 | Sessions | itsdangerous signed cookies (30-day) |
 | PDF/CSV parsing | GPT-only (pdfplumber for text extraction, no hand-coded parsers) |
-| AI categorization | OpenAI API (gpt-4.1-mini) |
+| AI tag assignment | OpenAI API (gpt-4.1-mini) |
 | Frontend | Vanilla JS + inline CSS, no frameworks |
 | Charts | Chart.js 4.4.1 |
 
@@ -112,16 +112,15 @@ Environment variables (set via EBS console or `eb setenv`):
 | Table | Key Columns |
 |-------|-------------|
 | `users` | `id`, `google_id` UNIQUE, `email`, `name` |
-| `transactions` | `id`, `user_id`, `date`, `description`, `category`, `amount`, `source`, `status` ('active'/'deleted'/'deduped'), `dedup_key`, `manually_corrected`, `import_file` |
-| `categories` | `id`, `user_id`, `name`, `excluded_from_spending` |
-| `tags` | `id`, `user_id`, `name` — UNIQUE(user_id, name) |
+| `transactions` | `id`, `user_id`, `date`, `description`, `amount`, `source`, `status` ('active'/'deleted'/'deduped'), `dedup_key`, `import_file` |
+| `tags` | `id`, `user_id`, `name`, `excluded_from_spending` — UNIQUE(user_id, name) |
 | `transaction_tags` | `transaction_id`, `tag_id` — PK(transaction_id, tag_id) |
 | `uploaded_files` | `id`, `user_id`, `filename`, `file_hash`, `source`, `card_last4`, `tx_new`, `tx_dupes` |
 | `invited_users` | `id`, `email` UNIQUE, `role` ('read'/'edit') |
 
 **Migrations** live at the bottom of `app.py` as a list of `(name, sql)` tuples. Each runs in its own transaction on startup — failures are logged and skipped, never blocking.
 
-**Tags** are global per user (not per-category). A transaction can have zero or more tags (many-to-many via `transaction_tags`). Tag names are unique per user.
+**Tags** are global per user. A transaction can have zero or more tags (many-to-many via `transaction_tags`). Tag names are unique per user. Tags have an `excluded_from_spending` boolean — transactions are excluded from spending totals if any of their tags are marked excluded; excluded tags are also hidden from the "By Tag" chips.
 
 **Multi-user model:** `OWNER_EMAIL` identifies the owner. Invited users (`invited_users`) always query the owner's `user_id` — they see and edit the same dataset.
 
@@ -132,9 +131,8 @@ Environment variables (set via EBS console or `eb setenv`):
 ### Transactions
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/api/transactions` | Paginated. Params: `page`, `per_page`, `source`, `category`, `tag`, `search`, `date_from`, `date_to`, `card_last4`, `import_file`, `sort_by`, `sort_dir`, `status`. Returns `tags` array per transaction. |
-| PATCH | `/api/transactions/{id}` | Update category/source on a single tx |
-| PATCH | `/api/transactions` | Bulk update — body: `{ids, category?}` |
+| GET | `/api/transactions` | Paginated. Params: `page`, `per_page`, `source`, `tag`, `tag_match` ('any'/'all'), `search`, `date_from`, `date_to`, `card_last4`, `import_file`, `sort_by`, `sort_dir`, `status`. Returns `tags` array per transaction. |
+| PATCH | `/api/transactions/{id}` | Update `source` on a single tx |
 | DELETE | `/api/transactions/{id}` | Soft-delete (status → 'deleted') |
 | POST | `/api/transactions/bulk-delete` | Bulk soft-delete |
 | POST | `/api/transactions/{id}/restore` | Restore soft-deleted |
@@ -145,29 +143,21 @@ Environment variables (set via EBS console or `eb setenv`):
 ### Stats
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/api/stats` | Returns `total`, `count`, `by_category`, `by_month`, `by_source`, `by_tag`. Same filter params as transactions. |
-
-### Categories
-| Method | Path | Notes |
-|--------|------|-------|
-| GET | `/api/categories` | List all for user |
-| POST | `/api/categories` | Create — body: `{name}` |
-| PATCH | `/api/categories` | Rename — body: `{old_name, new_name}` (cascades to transactions) |
-| PATCH | `/api/categories/exclusion` | Toggle excluded_from_spending — body: `{name, excluded}` |
-| DELETE | `/api/categories?name=` | Delete (reassigns transactions to 'Other') |
+| GET | `/api/stats` | Returns `total`, `count`, `by_month`, `by_source`, `by_tag`. Same filter params as transactions. Transactions with any excluded tag are omitted from totals. `by_tag` only includes non-excluded tags. |
 
 ### Tags
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/api/tags` | List all tag names for user |
+| GET | `/api/tags` | Returns `{tags: [{name, excluded_from_spending}]}` |
 | POST | `/api/tags` | Create — body: `{name}` |
 | PATCH | `/api/tags` | Rename — body: `{old_name, new_name}` |
+| PATCH | `/api/tags/exclusion` | Toggle excluded_from_spending — body: `{name, excluded}` |
 | DELETE | `/api/tags?name=` | Delete tag (cascades — removed from all transactions) |
 
 ### Uploads
 | Method | Path | Notes |
 |--------|------|-------|
-| POST | `/api/upload` | Multipart — parses PDF/CSV, dedupes, categorizes, returns `{new, dupes}` |
+| POST | `/api/upload` | Multipart — parses PDF/CSV, dedupes, assigns tags, returns `{new, dupes}` |
 | GET | `/api/uploads` | List uploaded files |
 | DELETE | `/api/uploads?filename=` | Remove upload record |
 | PATCH | `/api/uploads` | Rename display name |
@@ -187,54 +177,49 @@ Environment variables (set via EBS console or `eb setenv`):
 
 ### Key State Variables
 ```js
-let categories   = [];          // [{name, excluded_from_spending}]
-let tags         = [];          // [name, ...] — global tag names
+let tags         = [];          // [{name, excluded_from_spending}] — global tag list
 let allSources   = [];          // sorted alphabetically; drives sourceColor()
 let currentTxs   = [];          // transactions currently rendered in table
 let selectedIds  = new Set();   // bulk-selected transaction IDs
-let catFilter    = '';          // set by category donut click
-let tagFilter    = '';          // set by tag bar chart click
+let tagFilters   = new Set();   // active tag filters (multi-select)
+let tagMatchMode = 'any';       // 'any' (OR) or 'all' (AND)
 let monthFilter  = '';          // set by monthly bar chart click
 let viewStatus   = 'active';    // 'active' | 'deleted' | 'deduped'
-let donutChart, barChart, tagChart;  // Chart.js instances (destroyed/recreated on each render)
+let barChart     = null;        // Chart.js instance (destroyed/recreated on each render)
 ```
 
 ### Data Flow
 ```
-checkAuth() → loadCategories() + loadTags() + loadStats() + loadTransactions()
-                                    ↓                              ↓
-                            renderCharts(stats)            renderTable(txs)
+checkAuth() → loadTags() + loadStats() + loadTransactions()
+                   ↓                           ↓
+          renderCharts(stats)           renderTable(txs)
 ```
 
 Any filter change calls `applyFilters()` → `loadStats()` + `loadTransactions()`.
 
-`buildFilterParams()` assembles all active filters into URL params. It merges chart-driven state (`catFilter`, `tagFilter`, `monthFilter`) with form dropdown values.
+`buildFilterParams()` assembles all active filters into URL params. It merges `tagFilters` (Set), `tagMatchMode`, and `monthFilter` with form dropdown values.
 
-### Charts (3-column grid, left → right)
-1. **By Category** — doughnut chart; click slice → sets `catFilter`
-2. **By Tag** — horizontal bar chart (total spent per tag); click bar → sets `tagFilter`; shows "No tags assigned yet" when empty
-3. **Monthly Spending** — vertical bar chart; click bar → sets `monthFilter` + fills date range inputs
+### Charts (2-column grid, left → right)
+1. **By Tag** — clickable tag chips (total spent per non-excluded tag); clicking toggles that tag in `tagFilters`. Shows a "(filtered – click to clear)" link when any tag filter is active.
+2. **Monthly Spending** — vertical bar chart; click bar → sets `monthFilter` + fills date range inputs. Shows "(filtered – click to clear)" when active.
 
-Each chart shows a "(filtered – click to clear)" link in its header when its own filter is active (`catFilter`, `tagFilter`, `monthFilter` respectively). `updateFilterBadges()` sets all three in one call.
+`updateFilterBadges()` syncs both filter indicators and the ANY/ALL toggle button visibility in one call.
 
 ### Inline Editing
-- **Category pill** click → `startEdit(pill)` → `<input list="cat-datalist">` with autocomplete. Typing a new name shows "✦ New category will be created" hint. On commit: creates category if new, then PATCHes transaction.
 - **Tags cell** — shows tag chips with `×` to remove. `+` button → `startTagAdd()` → inline text input with custom autocomplete dropdown (`attachTagAutocomplete()`). Existing tags on the transaction are excluded from suggestions.
 
 ### Tag Autocomplete
-`attachTagAutocomplete(inp, { onPick, exclude })` — shared helper that attaches a custom `position:fixed` styled dropdown to any input. Uses the global `tags[]` array. Suppresses browser autocomplete via `autocomplete="off"` + randomized `name` attribute. Supports keyboard navigation (↑↓ arrows, Enter, Escape). Used on:
+`attachTagAutocomplete(inp, { onPick, exclude })` — shared helper that attaches a custom `position:fixed` styled dropdown to any input. Uses `tags[].name` from the global `tags` array. Suppresses browser autocomplete via `autocomplete="off"` + randomized `name` attribute. Supports keyboard navigation (↑↓ arrows, Enter, Escape). Used on:
 - Inline `+` tag inputs on transaction rows
 - `#bulk-tag-input` in the bulk action bar
 
 ### Bulk Action Bar
 Fixed to bottom of viewport, visible when `selectedIds.size > 0`. Contains:
-- **Category select + Apply** → `applyBulkCategory()`
 - **Tag input + `+ Tag` / `− Tag` buttons** → `applyBulkTag('add'|'remove')` — calls `POST /api/transactions/bulk-tag`
 - **Delete / Restore / Clear** buttons
 
 ### Modals
-- **⚙ Categories** — `openCatModal()` — add, rename, delete, toggle exclusion
-- **⚙ Tags** — `openTagModal()` — add, rename (`PATCH /api/tags`), delete tags
+- **⚙ Tags** — `openTagModal()` — add, rename, delete, toggle `excluded_from_spending` per tag
 
 ### Version Footer
 `GET /api/version` is fetched on boot; populates `#version-footer` with `<sha> — <timestamp>`.
@@ -264,14 +249,16 @@ DB migrations run on startup to retroactively clean existing records.
 3. If text > 30,000 chars: chunk by pages (PDF) or rows (CSV, repeating header); each chunk sent separately
 4. `parse_with_gpt()` sends each chunk to gpt-4.1-mini with `max_tokens=32000`, `response_format=json_object`
 5. Returns `{date, description, amount}` rows; source detected via `detect_source(text)` regex
-6. `clean_description()` applied to all rows before fuzzy/GPT categorization and DB insert
+6. `clean_description()` applied to all rows before GPT tag assignment and DB insert
 
-### Categorization Pipeline (on upload)
-1. Exact description match in historical transactions
-2. Fuzzy match (SequenceMatcher ≥0.75) on `manually_corrected=TRUE` transactions
-3. Fuzzy match (≥0.85) on all active transactions
-4. Batch GPT call (gpt-4.1-mini) for remaining uncategorized
-5. Falls back to "Other" if GPT unavailable
+### Tag Assignment Pipeline (on upload)
+GPT assigns zero or more tags per transaction from the user's existing tag list:
+1. `assign_tags_with_gpt(descriptions, tag_list)` — batch GPT call (gpt-4.1-mini); returns `{description: [tag, ...]}` map
+2. If no tags exist or GPT is unavailable, transactions are imported with no tags
+3. After bulk insert (via `execute_values` with `RETURNING id`), tags are upserted and `transaction_tags` rows inserted
+
+### Tag Exclusion
+A transaction is excluded from spending totals if **any** of its tags has `excluded_from_spending = TRUE`. This is enforced via a `NOT IN` subquery on `transaction_tags` in both `/api/stats` and `/api/transactions`. Excluded tags are also filtered out of the `by_tag` stats results.
 
 ### Deduplication
 `dedup_key = MD5(date|source|amount|normalized_description|seq)`. On upload, any transaction whose key already exists in the DB is inserted with `status='deduped'` rather than 'active'.
