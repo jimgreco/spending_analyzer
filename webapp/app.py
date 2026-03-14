@@ -955,9 +955,41 @@ def get_stats(
                                  JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)
             """, params + [uid])
             untagged = dict(cur.fetchone())
+            # Tag hierarchy — detect immediate parent-child relationships
+            # A is a child of B if every active tx with tag A also has tag B, and A has fewer txs
+            # Immediate parent = smallest qualifying superset (DISTINCT ON with ORDER BY tx_count ASC)
+            cur.execute("""
+                WITH tag_tx AS (
+                    SELECT tg.id AS tag_id, tg.name AS tag,
+                           COUNT(DISTINCT tt.transaction_id)::int AS tx_count,
+                           array_agg(DISTINCT tt.transaction_id) AS tx_ids
+                    FROM tags tg
+                    JOIN transaction_tags tt ON tt.tag_id = tg.id
+                    JOIN transactions t ON t.id = tt.transaction_id
+                    WHERE tg.user_id = %s AND t.user_id = %s
+                      AND t.status = 'active' AND tg.excluded_from_spending = FALSE
+                    GROUP BY tg.id, tg.name
+                ),
+                candidates AS (
+                    SELECT child.tag AS child_tag, parent.tag AS parent_tag,
+                           parent.tx_count
+                    FROM tag_tx child
+                    JOIN tag_tx parent
+                      ON child.tag_id <> parent.tag_id
+                     AND child.tx_count < parent.tx_count
+                     AND child.tx_ids <@ parent.tx_ids
+                ),
+                immediate AS (
+                    SELECT DISTINCT ON (child_tag) child_tag, parent_tag
+                    FROM candidates ORDER BY child_tag, tx_count ASC
+                )
+                SELECT child_tag, parent_tag FROM immediate
+            """, [uid, uid])
+            tag_hierarchy = [dict(r) for r in cur.fetchall()]
 
     return {**summary, "by_month": by_month,
-            "by_source": by_source, "by_tag": by_tag, "untagged": untagged}
+            "by_source": by_source, "by_tag": by_tag, "untagged": untagged,
+            "tag_hierarchy": tag_hierarchy}
 
 # ── Source update ─────────────────────────────────────────────────────────────────
 class SourceUpdate(BaseModel):

@@ -195,6 +195,17 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   transition:all .15s}
 .tag-add-btn:hover{border-color:var(--accent);color:var(--accent)}
 
+/* ── Tag hierarchy chips ─────────────────────────────────────────────────── */
+.tag-group{display:flex;flex-direction:column;gap:4px}
+.tag-chip-row{display:inline-flex;align-items:center;gap:4px}
+.tag-expand-btn{
+  background:none;border:1px solid rgba(99,102,241,.35);color:var(--muted);
+  border-radius:999px;padding:2px 8px;font-size:.7rem;cursor:pointer;
+  transition:all .15s;white-space:nowrap;line-height:1.4}
+.tag-expand-btn:hover{border-color:var(--accent);color:var(--accent);background:rgba(99,102,241,.1)}
+.tag-children-row{display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding-left:12px;margin-top:2px}
+.tag-child-connector{color:var(--muted);font-size:.75rem;opacity:.5;flex-shrink:0}
+
 /* ── Tag autocomplete dropdown ──────────────────────────────────────────── */
 .tag-ac-dropdown{
   position:fixed;z-index:9999;
@@ -694,6 +705,9 @@ let currentTxs   = [];
 let barChart     = null;
 let tagFilters   = new Set(); // active tag filters (multi-select)
 let tagMatchMode = 'any';     // 'any' (OR) or 'all' (AND)
+let tagHierarchy    = {};     // { parentTag: [childTag, ...] } — from stats
+let childTags       = new Set(); // all tags that are a child of something
+let expandedParents = new Set(); // which parent chips are currently expanded
 let monthFilter  = '';        // month filter set by clicking bar chart
 let selectedIds  = new Set();
 let viewStatus   = 'active';  // 'active' | 'deleted' | 'deduped'
@@ -897,53 +911,129 @@ function renderCards(s) {
   }
 }
 
-// ── Render: charts ─────────────────────────────────────────────────────────────
-function renderCharts(s) {
-  updateFilterBadges();
+// ── Tag chip helper ─────────────────────────────────────────────────────────────
+function makeTagChip(label, value, color, title, amt) {
+  const active = tagFilters.has(value);
+  const chip = document.createElement('div');
+  if (title) chip.title = title;
+  chip.style.cssText = `
+    display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
+    border-radius:999px;cursor:pointer;font-size:.8rem;user-select:none;white-space:nowrap;
+    background:${active ? color : color + '33'};
+    border:1px solid ${color};
+    color:${active ? contrastText(color) : '#c9cde0'};
+    transition:background .15s,color .15s;
+  `;
+  chip.innerHTML = `<span>${escHtml(label)}</span>` +
+    (amt != null ? `<span style="opacity:.8;font-size:.75rem">${amt}</span>` : '');
+  chip.onclick = () => {
+    if (tagFilters.has(value)) tagFilters.delete(value); else tagFilters.add(value);
+    updateFilterBadges();
+    applyFilters();
+  };
+  return chip;
+}
 
-  // Tag chips (chart box 1)
-  const tagData = s.by_tag || [];
+function renderTagChips(s) {
+  const tagData  = s.by_tag || [];
   const tagChips = document.getElementById('tagChips');
   tagChips.innerHTML = '';
-  const makeChip = (label, value, color, title, amt) => {
-    const active = tagFilters.has(value);
-    const chip = document.createElement('div');
-    if (title) chip.title = title;
-    chip.style.cssText = `
-      display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
-      border-radius:999px;cursor:pointer;font-size:.8rem;user-select:none;white-space:nowrap;
-      background:${active ? color : color + '33'};
-      border:1px solid ${color};
-      color:${active ? contrastText(color) : '#c9cde0'};
-      transition:background .15s,color .15s;
-    `;
-    chip.innerHTML = `<span>${escHtml(label)}</span>` +
-      (amt != null ? `<span style="opacity:.8;font-size:.75rem">${amt}</span>` : '');
-    chip.onclick = () => {
-      if (tagFilters.has(value)) tagFilters.delete(value); else tagFilters.add(value);
-      updateFilterBadges();
-      applyFilters();
-    };
-    return chip;
-  };
+
+  // Build lookup: tag name → {total, count, colorIndex}
+  const tagMap = {};
+  tagData.forEach((row, i) => { tagMap[row.tag] = { ...row, colorIndex: i }; });
+
+  function renderChip(name, value, colorIndex, count, total) {
+    const color = CAT_PALETTE[colorIndex % CAT_PALETTE.length];
+    const amt = '$' + Math.round(+total || 0).toLocaleString('en-US');
+    return makeTagChip(name, value, color, `${count} tx${count !== 1 ? 's' : ''}`, amt);
+  }
+
+  function buildGroup(row, i) {
+    const children = (tagHierarchy[row.tag] || []).filter(c => tagMap[c]);
+    const group = document.createElement('div');
+    group.className = 'tag-group';
+
+    const chipRow = document.createElement('div');
+    chipRow.className = 'tag-chip-row';
+    chipRow.appendChild(renderChip(row.tag, row.tag, i, row.count, row.total));
+
+    if (children.length) {
+      const isExpanded = expandedParents.has(row.tag);
+      const toggle = document.createElement('button');
+      toggle.className = 'tag-expand-btn';
+      toggle.title = isExpanded ? 'Collapse' : 'Expand sub-tags';
+      toggle.textContent = isExpanded ? `▴ ${children.length}` : `▾ ${children.length}`;
+      toggle.onclick = e => {
+        e.stopPropagation();
+        if (expandedParents.has(row.tag)) expandedParents.delete(row.tag);
+        else expandedParents.add(row.tag);
+        renderTagChips(s);
+      };
+      chipRow.appendChild(toggle);
+
+      if (isExpanded) {
+        const childRow = document.createElement('div');
+        childRow.className = 'tag-children-row';
+        children.forEach(childName => {
+          const d = tagMap[childName];
+          const connector = document.createElement('span');
+          connector.className = 'tag-child-connector';
+          connector.textContent = '└';
+          childRow.appendChild(connector);
+          childRow.appendChild(renderChip(childName, childName, d.colorIndex, d.count, d.total));
+        });
+        group.appendChild(chipRow);
+        group.appendChild(childRow);
+        tagChips.appendChild(group);
+        return;
+      }
+    }
+    group.appendChild(chipRow);
+    tagChips.appendChild(group);
+  }
 
   if (tagData.length) {
     tagData.forEach((row, i) => {
-      const color = CAT_PALETTE[i % CAT_PALETTE.length];
-      const amt = '$' + Math.round(+row.total||0).toLocaleString('en-US');
-      tagChips.appendChild(makeChip(row.tag, row.tag, color,
-        `${row.count} tx${row.count !== 1 ? 's' : ''}`, amt));
+      if (childTags.has(row.tag)) return; // rendered under parent
+      buildGroup(row, i);
     });
     // "No Tag" chip
     const untagged = s.untagged || {};
     if (untagged.count > 0) {
-      const noTagAmt = '$' + Math.round(+untagged.total||0).toLocaleString('en-US');
-      tagChips.appendChild(makeChip('No Tag', '__none__', '#6b7280',
+      const noTagAmt = '$' + Math.round(+untagged.total || 0).toLocaleString('en-US');
+      const group = document.createElement('div');
+      group.className = 'tag-group';
+      const chipRow = document.createElement('div');
+      chipRow.className = 'tag-chip-row';
+      chipRow.appendChild(makeTagChip('No Tag', '__none__', '#6b7280',
         `${untagged.count} tx${untagged.count !== 1 ? 's' : ''}`, noTagAmt));
+      group.appendChild(chipRow);
+      tagChips.appendChild(group);
     }
   } else {
     tagChips.innerHTML = '<span style="color:#8b8fa8;font-size:.85rem">No tags assigned yet</span>';
   }
+}
+
+// ── Render: charts ─────────────────────────────────────────────────────────────
+function renderCharts(s) {
+  updateFilterBadges();
+
+  // Rebuild hierarchy from stats response
+  tagHierarchy = {};
+  childTags = new Set();
+  (s.tag_hierarchy || []).forEach(({child_tag, parent_tag}) => {
+    if (!tagHierarchy[parent_tag]) tagHierarchy[parent_tag] = [];
+    tagHierarchy[parent_tag].push(child_tag);
+    childTags.add(child_tag);
+  });
+  // Prune expanded state for tags that no longer have children
+  for (const p of expandedParents) {
+    if (!tagHierarchy[p]) expandedParents.delete(p);
+  }
+
+  renderTagChips(s);
 
   // Bar
   const months = s.by_month || [];
@@ -2022,10 +2112,9 @@ async function deleteTagFromModal(name) {
     await api('/api/tags?name=' + encodeURIComponent(name), { method: 'DELETE' });
     await renderTagList();
     await loadTags();
-    if (tagFilters.has(name)) {
-      tagFilters.delete(name);
-      updateFilterBadges();
-    }
+    tagFilters.delete(name);
+    expandedParents.delete(name);
+    updateFilterBadges();
     loadStats();
     loadTransactions();
     showToast('Tag deleted', `"${name}" removed from all transactions`, 'warn');
