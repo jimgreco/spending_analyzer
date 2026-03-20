@@ -1061,6 +1061,16 @@ def bulk_restore_transactions(body: BulkRestore, user: dict = Depends(require_ed
             restored = cur.rowcount
     return {"ok": True, "restored": restored}
 
+@app.post("/api/transactions/purge-deduped")
+def purge_deduped_transactions(user: dict = Depends(require_edit)):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM transactions WHERE user_id=%s AND status='deduped'",
+                (user["id"],))
+            purged = cur.rowcount
+    return {"ok": True, "purged": purged}
+
 # ── Upload ────────────────────────────────────────────────────────────────────────
 def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes, force: bool):
     """Runs in a background thread. Processes one file and updates upload_jobs on completion."""

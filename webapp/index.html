@@ -608,6 +608,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <button class="status-tab"        data-status="deleted" onclick="setViewStatus('deleted')">🗑 Deleted</button>
     <button class="status-tab"        data-status="deduped" onclick="setViewStatus('deduped')">⟳ Deduped</button>
     <span id="status-hint" style="font-size:.75rem;color:var(--muted);margin-left:4px"></span>
+    <button id="purge-deduped-btn" onclick="purgeDeduped()" style="display:none;margin-left:auto;background:none;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:4px 12px;font-size:.8rem;cursor:pointer">🗑 Purge All</button>
   </div>
 
   <!-- Transaction table -->
@@ -829,22 +830,26 @@ function setViewStatus(s) {
   const actionsHeader = document.getElementById('col-actions-header');
   const bulkDeleteBtn  = document.getElementById('bulk-delete-btn');
   const bulkRestoreBtn = document.getElementById('bulk-restore-btn');
+  const purgeBtn       = document.getElementById('purge-deduped-btn');
 
   if (s === 'deleted') {
     hint.textContent = 'Soft-deleted transactions — restore to bring them back.';
     actionsHeader.style.display = '';
     bulkDeleteBtn.style.display  = 'none';
     bulkRestoreBtn.style.display = '';
+    purgeBtn.style.display = 'none';
   } else if (s === 'deduped') {
     hint.textContent = 'Transactions stored as cross-statement duplicates — restore to keep both.';
     actionsHeader.style.display = '';
     bulkDeleteBtn.style.display  = 'none';
     bulkRestoreBtn.style.display = '';
+    purgeBtn.style.display = '';
   } else {
     hint.textContent = '';
     actionsHeader.style.display = 'none';
     bulkDeleteBtn.style.display  = '';
     bulkRestoreBtn.style.display = 'none';
+    purgeBtn.style.display = 'none';
   }
 
   currentPage = 1;
@@ -1975,6 +1980,16 @@ async function restoreSelected() {
     loadStats();
     loadTransactions();
   } catch(e) { showToast('Restore failed', e.message, 'error'); }
+}
+
+// ── Purge deduped ───────────────────────────────────────────────────────────────
+async function purgeDeduped() {
+  if (!confirm('Permanently delete all duplicate transactions? This cannot be undone.')) return;
+  try {
+    const data = await api('/api/transactions/purge-deduped', { method: 'POST' });
+    showToast(`Purged ${data.purged} duplicate transaction${data.purged!==1?'s':''}`, '', 'success');
+    loadTransactions();
+  } catch(e) { showToast('Purge failed', e.message, 'error'); }
 }
 
 // ── Tag manager ────────────────────────────────────────────────────────────────
