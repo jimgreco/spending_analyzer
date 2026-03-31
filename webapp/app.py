@@ -1360,16 +1360,44 @@ def bulk_tag_transactions(body: dict, user: dict = Depends(require_edit)):
 
 # ── Upload history ────────────────────────────────────────────────────────────────
 @app.get("/api/uploads")
-def get_uploads(user: dict = Depends(get_current_user)):
+def get_uploads(user: dict = Depends(get_current_user), limit: int = 25, offset: int = 0):
+    uid = user["id"]
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Total count
+            cur.execute("SELECT COUNT(*) FROM uploaded_files WHERE user_id=%s", (uid,))
+            total = cur.fetchone()["count"]
+            # Paginated uploads (most recent first)
             cur.execute("""
                 SELECT filename, file_hash, source, card_last4, tx_new, tx_dupes,
                        to_char(uploaded_at,'YYYY-MM-DD HH24:MI') as uploaded_at
                 FROM uploaded_files WHERE user_id=%s
-                ORDER BY source, filename LIMIT 50
-            """, (user["id"],))
-            return {"uploads": [dict(r) for r in cur.fetchall()]}
+                ORDER BY uploaded_at DESC
+                LIMIT %s OFFSET %s
+            """, (uid, limit, offset))
+            uploads = [dict(r) for r in cur.fetchall()]
+            # Lightweight dropdown data (all uploads)
+            cur.execute("""
+                SELECT DISTINCT source FROM uploaded_files
+                WHERE user_id=%s AND source IS NOT NULL ORDER BY source
+            """, (uid,))
+            all_sources = [r["source"] for r in cur.fetchall()]
+            cur.execute("""
+                SELECT DISTINCT card_last4, source FROM uploaded_files
+                WHERE user_id=%s AND card_last4 IS NOT NULL
+                ORDER BY source, card_last4
+            """, (uid,))
+            all_cards = [dict(r) for r in cur.fetchall()]
+            cur.execute("""
+                SELECT filename FROM uploaded_files
+                WHERE user_id=%s ORDER BY uploaded_at DESC
+            """, (uid,))
+            all_filenames = [r["filename"] for r in cur.fetchall()]
+            return {
+                "uploads": uploads, "total": total,
+                "all_sources": all_sources, "all_cards": all_cards,
+                "all_filenames": all_filenames,
+            }
 
 class UploadRename(BaseModel):
     old_name: str

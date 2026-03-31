@@ -715,6 +715,8 @@ let selectedIds  = new Set();
 let viewStatus   = 'active';  // 'active' | 'deleted' | 'deduped'
 
 let allSources = [];   // sorted alphabetically; populated in renderUploadHistory
+let uploadsList = [];  // accumulated paginated uploads for the history table
+let uploadsTotal = 0;  // total upload count from server
 
 const CAT_PALETTE = [
   '#6366f1','#22d3ee','#10b981','#f59e0b','#ef4444','#8b5cf6',
@@ -890,10 +892,17 @@ async function loadTags() {
   } catch(e) { console.error('loadTags', e); }
 }
 
-async function loadUploadHistory() {
+async function loadUploadHistory(append = false) {
   try {
-    const data = await api('/api/uploads');
-    renderUploadHistory(data.uploads);
+    const offset = append ? uploadsList.length : 0;
+    const data = await api(`/api/uploads?limit=25&offset=${offset}`);
+    if (append) {
+      uploadsList = uploadsList.concat(data.uploads);
+    } else {
+      uploadsList = data.uploads;
+    }
+    uploadsTotal = data.total;
+    renderUploadHistory(uploadsList, data);
   } catch(e) { console.error('loadUploadHistory', e); }
 }
 
@@ -1219,21 +1228,24 @@ function onDateInput() {
 }
 
 // ── Render: upload history ─────────────────────────────────────────────────────
-function renderUploadHistory(uploads) {
-  // Populate issuer filter dropdown dynamically from uploads
+function renderUploadHistory(uploads, apiData) {
+  // Populate filter dropdowns from full server data (not paginated subset)
+  const sources = apiData ? apiData.all_sources : [];
+  const cards = apiData ? apiData.all_cards : [];
+  const filenames = apiData ? apiData.all_filenames : [];
+
   const sourceSel = document.getElementById('filter-source');
   const curSource = sourceSel.value;
-  const uniqueSources = [...new Set((uploads || []).map(u => u.source).filter(Boolean))].sort();
-  allSources = uniqueSources;
+  allSources = sources;
   sourceSel.innerHTML = '<option value="">All Issuers</option>' +
-    uniqueSources.map(s => `<option ${s === curSource ? 'selected' : ''}>${escHtml(s)}</option>`).join('');
+    sources.map(s => `<option ${s === curSource ? 'selected' : ''}>${escHtml(s)}</option>`).join('');
 
   // Populate card filter dropdown — dedupe by last4, show source of first match
   const cardSel = document.getElementById('filter-card');
   const curCard = cardSel.value;
   const cardMap = new Map();
-  (uploads || []).filter(u => u.card_last4).forEach(u => {
-    if (!cardMap.has(u.card_last4)) cardMap.set(u.card_last4, u.source || '');
+  cards.forEach(c => {
+    if (!cardMap.has(c.card_last4)) cardMap.set(c.card_last4, c.source || '');
   });
   const sortedCards = [...cardMap.entries()].sort((a, b) => {
     const labelA = (a[1] ? a[1] + ' ' : '') + a[0];
@@ -1246,19 +1258,21 @@ function renderUploadHistory(uploads) {
       return `<option value="${escHtml(last4)}" ${last4 === curCard ? 'selected' : ''}>${label}</option>`;
     }).join('');
 
-  // Populate import filter dropdown
+  // Populate import filter dropdown from full filename list
   const importSel = document.getElementById('filter-import');
   const curImport = importSel.value;
   importSel.innerHTML = '<option value="">All Imports</option>' +
-    (uploads || []).map(u =>
-      `<option ${u.filename === curImport ? 'selected' : ''}>${escHtml(u.filename)}</option>`
+    filenames.map(f =>
+      `<option ${f === curImport ? 'selected' : ''}>${escHtml(f)}</option>`
     ).join('');
 
   const el = document.getElementById('upload-history');
   if (!uploads || !uploads.length) { el.innerHTML = ''; return; }
+  const hasMore = uploads.length < uploadsTotal;
+  const wasOpen = el.querySelector('details')?.open;
   el.innerHTML = `
-    <details>
-      <summary>Upload history (${uploads.length} files)</summary>
+    <details${wasOpen ? ' open' : ''}>
+      <summary>Upload history (${uploads.length} of ${uploadsTotal} files)</summary>
       <table id="history-table">
         <thead><tr>
           <th>File</th><th>Issuer</th><th>Card #</th><th>New</th><th>Dupes</th><th>Imported</th><th></th>
@@ -1324,6 +1338,12 @@ function renderUploadHistory(uploads) {
           </td>
         </tr>`).join('')}</tbody>
       </table>
+      ${hasMore ? `<div style="text-align:center;padding:8px 0">
+        <button class="btn" onclick="loadUploadHistory(true)"
+                style="font-size:.82rem;padding:4px 16px">
+          Load more (${uploadsTotal - uploads.length} remaining)
+        </button>
+      </div>` : ''}
     </details>`;
 }
 
