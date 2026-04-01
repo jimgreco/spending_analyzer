@@ -972,47 +972,50 @@ function renderTagChips(s) {
     return makeTagChip(name, value, color, `${count} tx${count !== 1 ? 's' : ''}`, amt);
   }
 
+  function buildSubtree(parentName, chipRow, group, depth) {
+    const children = (tagHierarchy[parentName] || []).filter(c => tagMap[c]);
+    if (!children.length) return;
+    const isExpanded = expandedParents.has(parentName);
+    const toggle = document.createElement('button');
+    toggle.className = 'tag-expand-btn';
+    toggle.title = isExpanded ? 'Collapse' : 'Expand sub-tags';
+    toggle.textContent = isExpanded ? `▴ ${children.length}` : `▾ ${children.length}`;
+    toggle.onclick = e => {
+      e.stopPropagation();
+      if (expandedParents.has(parentName)) expandedParents.delete(parentName);
+      else expandedParents.add(parentName);
+      renderTagChips(s);
+    };
+    chipRow.appendChild(toggle);
+
+    if (isExpanded) {
+      children.forEach(childName => {
+        const d = tagMap[childName];
+        const childRow = document.createElement('div');
+        childRow.className = 'tag-children-row';
+        childRow.style.paddingLeft = (12 * depth) + 'px';
+        const connector = document.createElement('span');
+        connector.className = 'tag-child-connector';
+        connector.textContent = '└';
+        childRow.appendChild(connector);
+        const childChipRow = document.createElement('span');
+        childChipRow.className = 'tag-chip-row';
+        childChipRow.appendChild(renderChip(childName, childName, d.colorIndex, d.count, d.total));
+        childRow.appendChild(childChipRow);
+        group.appendChild(childRow);
+        buildSubtree(childName, childChipRow, group, depth + 1);
+      });
+    }
+  }
+
   function buildGroup(row, i) {
-    const children = (tagHierarchy[row.tag] || []).filter(c => tagMap[c]);
     const group = document.createElement('div');
     group.className = 'tag-group';
-
     const chipRow = document.createElement('div');
     chipRow.className = 'tag-chip-row';
     chipRow.appendChild(renderChip(row.tag, row.tag, i, row.count, row.total));
-
-    if (children.length) {
-      const isExpanded = expandedParents.has(row.tag);
-      const toggle = document.createElement('button');
-      toggle.className = 'tag-expand-btn';
-      toggle.title = isExpanded ? 'Collapse' : 'Expand sub-tags';
-      toggle.textContent = isExpanded ? `▴ ${children.length}` : `▾ ${children.length}`;
-      toggle.onclick = e => {
-        e.stopPropagation();
-        if (expandedParents.has(row.tag)) expandedParents.delete(row.tag);
-        else expandedParents.add(row.tag);
-        renderTagChips(s);
-      };
-      chipRow.appendChild(toggle);
-
-      if (isExpanded) {
-        const childRow = document.createElement('div');
-        childRow.className = 'tag-children-row';
-        children.forEach(childName => {
-          const d = tagMap[childName];
-          const connector = document.createElement('span');
-          connector.className = 'tag-child-connector';
-          connector.textContent = '└';
-          childRow.appendChild(connector);
-          childRow.appendChild(renderChip(childName, childName, d.colorIndex, d.count, d.total));
-        });
-        group.appendChild(chipRow);
-        group.appendChild(childRow);
-        tagChips.appendChild(group);
-        return;
-      }
-    }
     group.appendChild(chipRow);
+    buildSubtree(row.tag, chipRow, group, 1);
     tagChips.appendChild(group);
   }
 
