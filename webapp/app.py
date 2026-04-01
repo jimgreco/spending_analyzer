@@ -355,6 +355,9 @@ def init_db():
 
         ("add excluded_from_spending to tags",
          "ALTER TABLE tags ADD COLUMN IF NOT EXISTS excluded_from_spending BOOLEAN NOT NULL DEFAULT FALSE"),
+
+        ("add group_tag_id to tags",
+         "ALTER TABLE tags ADD COLUMN IF NOT EXISTS group_tag_id INTEGER REFERENCES tags(id) ON DELETE SET NULL"),
     ]
 
     for label, sql in migrations:
@@ -828,10 +831,14 @@ def get_transactions(
     if tag:
         named = [t for t in tag if t != "__none__"]
         has_none = "__none__" in tag
+        # Match direct tags OR child tags whose group_tag matches
         if tag_match == "all" and named:
-            # Every named tag must be present (HAVING COUNT = N)
-            where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s) GROUP BY tt.transaction_id HAVING COUNT(DISTINCT tg.name) = %s)")
-            params.extend([uid, named, len(named)])
+            for tname in named:
+                where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt "
+                             "JOIN tags tg ON tg.id = tt.tag_id "
+                             "LEFT JOIN tags g ON g.id = tg.group_tag_id "
+                             "WHERE tg.user_id = %s AND (tg.name = %s OR g.name = %s))")
+                params.extend([uid, tname, tname])
             if has_none:
                 where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
                 params.append(uid)
@@ -841,8 +848,11 @@ def get_transactions(
                 clauses.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
                 params.append(uid)
             if named:
-                clauses.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s))")
-                params.extend([uid, named])
+                clauses.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt "
+                               "JOIN tags tg ON tg.id = tt.tag_id "
+                               "LEFT JOIN tags g ON g.id = tg.group_tag_id "
+                               "WHERE tg.user_id = %s AND (tg.name = ANY(%s) OR g.name = ANY(%s)))")
+                params.extend([uid, named, named])
             where.append("(" + " OR ".join(clauses) + ")")
     if date_from:   where.append("t.date >= %s");           params.append(date_from)
     if date_to:     where.append("t.date <= %s");           params.append(date_to)
@@ -867,11 +877,24 @@ def get_transactions(
                        t.amount::float, t.source, t.import_file,
                        t.status, t.dedup_of,
                        COALESCE(ARRAY(
-                           SELECT tg.name FROM transaction_tags tt
+                           SELECT DISTINCT x.name FROM (
+                               SELECT tg.name FROM transaction_tags tt
+                               JOIN tags tg ON tg.id = tt.tag_id
+                               WHERE tt.transaction_id = t.id
+                               UNION
+                               SELECT g.name FROM transaction_tags tt
+                               JOIN tags tg ON tg.id = tt.tag_id
+                               JOIN tags g ON g.id = tg.group_tag_id
+                               WHERE tt.transaction_id = t.id
+                           ) x ORDER BY x.name
+                       ), '{{}}') AS tags,
+                       COALESCE(ARRAY(
+                           SELECT DISTINCT g.name FROM transaction_tags tt
                            JOIN tags tg ON tg.id = tt.tag_id
+                           JOIN tags g ON g.id = tg.group_tag_id
                            WHERE tt.transaction_id = t.id
-                           ORDER BY tg.name
-                       ), '{{}}') AS tags
+                           AND g.id NOT IN (SELECT tt2.tag_id FROM transaction_tags tt2 WHERE tt2.transaction_id = t.id)
+                       ), '{{}}') AS implicit_tags
                 FROM transactions t WHERE {wc}
                 ORDER BY {sc} {sd}, t.id {sd}
                 LIMIT %s OFFSET %s
@@ -893,9 +916,22 @@ def get_stats(
     if tag:
         named = [t for t in tag if t != "__none__"]
         has_none = "__none__" in tag
+        # Match direct tags OR child tags whose group_tag matches
+        tag_match_sql = ("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt "
+                         "JOIN tags tg ON tg.id = tt.tag_id "
+                         "LEFT JOIN tags g ON g.id = tg.group_tag_id "
+                         "WHERE tg.user_id = %s AND (tg.name = ANY(%s) OR g.name = ANY(%s)))")
         if tag_match == "all" and named:
-            where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s) GROUP BY tt.transaction_id HAVING COUNT(DISTINCT tg.name) = %s)")
-            params.extend([uid, named, len(named)])
+            # For "all" mode with group tags, use a broader match per tag
+            where.append(tag_match_sql + " GROUP BY tt.transaction_id HAVING COUNT(DISTINCT CASE WHEN tg.name = ANY(%s) OR g.name = ANY(%s) THEN COALESCE(g.name, tg.name) END) >= %s")
+            # Actually, simplify: just check each named tag individually
+            where.pop()  # remove the one we just added
+            for tname in named:
+                where.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt "
+                             "JOIN tags tg ON tg.id = tt.tag_id "
+                             "LEFT JOIN tags g ON g.id = tg.group_tag_id "
+                             "WHERE tg.user_id = %s AND (tg.name = %s OR g.name = %s))")
+                params.extend([uid, tname, tname])
             if has_none:
                 where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
                 params.append(uid)
@@ -905,8 +941,8 @@ def get_stats(
                 clauses.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
                 params.append(uid)
             if named:
-                clauses.append("t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s))")
-                params.extend([uid, named])
+                clauses.append(tag_match_sql)
+                params.extend([uid, named, named])
             where.append("(" + " OR ".join(clauses) + ")")
     if date_from:   where.append("t.date >= %s");       params.append(date_from)
     if date_to:     where.append("t.date <= %s");       params.append(date_to)
@@ -925,8 +961,14 @@ def get_stats(
             )
             excluded_tag_ids = [r["id"] for r in cur.fetchall()]
             if excluded_tag_ids:
-                where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt WHERE tt.tag_id = ANY(%s))")
-                params.append(excluded_tag_ids)
+                # Exclude transactions with an excluded tag directly OR via group_tag_id
+                where.append("""t.id NOT IN (
+                    SELECT tt.transaction_id FROM transaction_tags tt
+                    JOIN tags child ON child.id = tt.tag_id
+                    WHERE tt.tag_id = ANY(%s)
+                       OR child.group_tag_id = ANY(%s)
+                )""")
+                params.extend([excluded_tag_ids, excluded_tag_ids])
 
             wc = " AND ".join(where)
             cur.execute(f"SELECT TO_CHAR(t.date,'YYYY-MM') AS month, SUM(t.amount)::float AS total FROM transactions t WHERE {wc} GROUP BY month ORDER BY month", params)
@@ -935,12 +977,18 @@ def get_stats(
             by_source = [dict(r) for r in cur.fetchall()]
             cur.execute(f"SELECT COALESCE(SUM(t.amount),0)::float AS total, COUNT(*)::int AS count FROM transactions t WHERE {wc}", params)
             summary = dict(cur.fetchone())
-            # Tag breakdown — only non-excluded tags
+            # Tag breakdown — only non-excluded tags, including implicit group tags
             cur.execute(f"""
                 SELECT tg.name AS tag, SUM(t.amount)::float AS total, COUNT(DISTINCT t.id)::int AS count
                 FROM transactions t
                 JOIN transaction_tags tt ON tt.transaction_id = t.id
-                JOIN tags tg ON tg.id = tt.tag_id
+                JOIN LATERAL (
+                    SELECT direct.id, direct.name, direct.excluded_from_spending FROM tags direct WHERE direct.id = tt.tag_id
+                    UNION ALL
+                    SELECT g.id, g.name, g.excluded_from_spending FROM tags direct
+                    JOIN tags g ON g.id = direct.group_tag_id
+                    WHERE direct.id = tt.tag_id AND g.id IS NOT NULL
+                ) tg ON TRUE
                 WHERE {wc} AND tg.excluded_from_spending = FALSE
                 GROUP BY tg.name
                 ORDER BY total DESC
@@ -955,36 +1003,14 @@ def get_stats(
                                  JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)
             """, params + [uid])
             untagged = dict(cur.fetchone())
-            # Tag hierarchy — detect immediate parent-child relationships
-            # A is a child of B if every active tx with tag A also has tag B, and A has fewer txs
-            # Immediate parent = smallest qualifying superset (DISTINCT ON with ORDER BY tx_count ASC)
+            # Tag hierarchy — from explicit group_tag_id
             cur.execute("""
-                WITH tag_tx AS (
-                    SELECT tg.id AS tag_id, tg.name AS tag,
-                           COUNT(DISTINCT tt.transaction_id)::int AS tx_count,
-                           array_agg(DISTINCT tt.transaction_id) AS tx_ids
-                    FROM tags tg
-                    JOIN transaction_tags tt ON tt.tag_id = tg.id
-                    JOIN transactions t ON t.id = tt.transaction_id
-                    WHERE tg.user_id = %s AND t.user_id = %s
-                      AND t.status = 'active' AND tg.excluded_from_spending = FALSE
-                    GROUP BY tg.id, tg.name
-                ),
-                candidates AS (
-                    SELECT child.tag AS child_tag, parent.tag AS parent_tag,
-                           parent.tx_count
-                    FROM tag_tx child
-                    JOIN tag_tx parent
-                      ON child.tag_id <> parent.tag_id
-                     AND child.tx_count < parent.tx_count
-                     AND child.tx_ids <@ parent.tx_ids
-                ),
-                immediate AS (
-                    SELECT DISTINCT ON (child_tag) child_tag, parent_tag
-                    FROM candidates ORDER BY child_tag, tx_count ASC
-                )
-                SELECT child_tag, parent_tag FROM immediate
-            """, [uid, uid])
+                SELECT child.name AS child_tag, parent.name AS parent_tag
+                FROM tags child
+                JOIN tags parent ON parent.id = child.group_tag_id
+                WHERE child.user_id = %s AND child.excluded_from_spending = FALSE
+                  AND parent.excluded_from_spending = FALSE
+            """, [uid])
             tag_hierarchy = [dict(r) for r in cur.fetchall()]
 
     return {**summary, "by_month": by_month,
@@ -1225,10 +1251,13 @@ def get_upload_job_status(job_id: str, user: dict = Depends(get_current_user)):
 def get_tags(user: dict = Depends(get_current_user)):
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT name, excluded_from_spending FROM tags WHERE user_id=%s ORDER BY name",
-                (user["id"],)
-            )
+            cur.execute("""
+                SELECT t.name, t.excluded_from_spending,
+                       g.name AS group_tag
+                FROM tags t
+                LEFT JOIN tags g ON g.id = t.group_tag_id
+                WHERE t.user_id=%s ORDER BY t.name
+            """, (user["id"],))
             return {"tags": [dict(r) for r in cur.fetchall()]}
 
 class TagCreate(BaseModel):
@@ -1274,6 +1303,54 @@ def toggle_tag_exclusion(body: TagExclusionToggle, user: dict = Depends(require_
             if cur.rowcount == 0:
                 raise HTTPException(404, "Tag not found")
     return {"ok": True, "name": body.name, "excluded": body.excluded}
+
+class TagGroupUpdate(BaseModel):
+    name: str
+    group_tag: Optional[str] = None  # null to clear
+
+@app.patch("/api/tags/group")
+def set_tag_group(body: TagGroupUpdate, user: dict = Depends(require_edit)):
+    uid = user["id"]
+    with db() as conn:
+        with conn.cursor() as cur:
+            # Resolve child tag id
+            cur.execute("SELECT id FROM tags WHERE user_id=%s AND name=%s", (uid, body.name))
+            child_row = cur.fetchone()
+            if not child_row:
+                raise HTTPException(404, "Tag not found")
+            child_id = child_row[0]
+
+            if body.group_tag:
+                group_name = body.group_tag.strip()
+                if group_name == body.name:
+                    raise HTTPException(400, "A tag cannot be its own group")
+                # Resolve (or create) the group tag
+                cur.execute(
+                    "INSERT INTO tags (user_id, name) VALUES (%s,%s) "
+                    "ON CONFLICT (user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
+                    (uid, group_name)
+                )
+                group_id = cur.fetchone()[0]
+                # Prevent cycles: group tag must not itself be a child of this tag
+                cur.execute("SELECT group_tag_id FROM tags WHERE id=%s", (group_id,))
+                parent_group = cur.fetchone()[0]
+                if parent_group == child_id:
+                    raise HTTPException(400, "Circular grouping not allowed")
+
+                cur.execute("UPDATE tags SET group_tag_id=%s WHERE id=%s", (group_id, child_id))
+
+                # Remove explicit group tag from transactions that already have the child tag
+                cur.execute("""
+                    DELETE FROM transaction_tags tt
+                    WHERE tt.tag_id = %s
+                      AND tt.transaction_id IN (
+                          SELECT transaction_id FROM transaction_tags WHERE tag_id = %s
+                      )
+                """, (group_id, child_id))
+            else:
+                cur.execute("UPDATE tags SET group_tag_id=NULL WHERE id=%s", (child_id,))
+
+    return {"ok": True, "name": body.name, "group_tag": body.group_tag}
 
 class TagRename(BaseModel):
     old_name: str

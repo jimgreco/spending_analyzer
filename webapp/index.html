@@ -195,6 +195,8 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   border-radius:999px;padding:0 5px;font-size:.7rem;cursor:pointer;line-height:18px;
   transition:all .15s}
 .tag-add-btn:hover{border-color:var(--accent);color:var(--accent)}
+.tag-chip.implicit{opacity:.5;padding:1px 7px}
+.tag-chip.implicit .tag-chip-del{display:none}
 
 /* ── Tag hierarchy chips ─────────────────────────────────────────────────── */
 .tag-group{display:flex;flex-direction:column;gap:4px}
@@ -270,6 +272,12 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 .cat-btn.excl-btn{font-size:.75rem;color:var(--muted)}
 .cat-btn.excl-btn.excl-on{color:var(--amber);background:rgba(245,158,11,.12)}
 .cat-btn.excl-btn.excl-on:hover{background:rgba(245,158,11,.25)}
+.cat-row-group{display:flex;align-items:center;gap:4px;flex-shrink:0}
+.cat-row-group select{
+  background:var(--bg);border:1px solid var(--border);color:var(--muted);
+  border-radius:6px;padding:2px 6px;font-size:.72rem;outline:none;max-width:120px;cursor:pointer}
+.cat-row-group select:focus{border-color:var(--accent)}
+.cat-row-group label{font-size:.65rem;color:var(--muted)}
 .cat-modal-footer{display:flex;justify-content:flex-end}
 .cat-modal-footer button{
   background:var(--border);border:none;color:var(--text);
@@ -1541,9 +1549,13 @@ function attachTagAutocomplete(inp, { onPick, exclude = [] } = {}) {
 
 function tagsCell(t) {
   const txTags = t.tags || [];
-  const chips = txTags.map(tag =>
-    `<span class="tag-chip">${escHtml(tag)}<button class="tag-chip-del" onclick="removeTagFromTx(${t.id},'${escHtml(tag)}',event)" title="Remove tag">×</button></span>`
-  ).join('');
+  const implicitSet = new Set(t.implicit_tags || []);
+  const chips = txTags.map(tag => {
+    if (implicitSet.has(tag)) {
+      return `<span class="tag-chip implicit" title="Inherited from group">${escHtml(tag)}</span>`;
+    }
+    return `<span class="tag-chip">${escHtml(tag)}<button class="tag-chip-del" onclick="removeTagFromTx(${t.id},'${escHtml(tag)}',event)" title="Remove tag">×</button></span>`;
+  }).join('');
   const addBtn = `<button class="tag-add-btn" onclick="startTagAdd(${t.id},this,event)" title="Add tag">+</button>`;
   return `<span class="tags-cell">${chips}${addBtn}</span>`;
 }
@@ -2031,10 +2043,21 @@ async function renderTagList() {
     list.innerHTML = '<div style="color:var(--muted);font-size:.875rem;padding:12px 8px">No tags yet — add one above.</div>';
     return;
   }
-  list.innerHTML = data.tags.map(tag => `
+  const allNames = data.tags.map(t => t.name);
+  list.innerHTML = data.tags.map(tag => {
+    const opts = allNames.filter(n => n !== tag.name)
+      .map(n => `<option value="${escHtml(n)}"${tag.group_tag === n ? ' selected' : ''}>${escHtml(n)}</option>`).join('');
+    return `
     <div data-name="${escHtml(tag.name)}">
       <div class="cat-row">
         <span class="cat-row-name" data-original="${escHtml(tag.name)}">${escHtml(tag.name)}</span>
+        <div class="cat-row-group">
+          <label>group:</label>
+          <select onchange="setTagGroup('${escHtml(tag.name)}', this.value)">
+            <option value="">—</option>
+            ${opts}
+          </select>
+        </div>
         <div class="cat-row-actions">
           <button class="cat-btn excl-btn${tag.excluded_from_spending ? ' excl-on' : ''}"
                   title="${tag.excluded_from_spending ? 'Excluded from spending — click to include' : 'Click to exclude from spending totals'}"
@@ -2046,8 +2069,8 @@ async function renderTagList() {
           <button class="cat-btn del" title="Delete" onclick="deleteTagFromModal('${escHtml(tag.name)}')">✕</button>
         </div>
       </div>
-    </div>`
-  ).join('');
+    </div>`;
+  }).join('');
 }
 
 async function toggleTagExclusion(name, excluded) {
@@ -2067,6 +2090,23 @@ async function toggleTagExclusion(name, excluded) {
     );
   } catch(e) {
     showToast('Error', e.message, 'error');
+  }
+}
+
+async function setTagGroup(name, groupTag) {
+  try {
+    await api('/api/tags/group', {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, group_tag: groupTag || null })
+    });
+    await loadTags();
+    loadStats();
+    loadTransactions();
+    showToast('Group updated', groupTag ? `"${name}" → "${groupTag}"` : `"${name}" group cleared`, 'success');
+  } catch(e) {
+    showToast('Error', e.message, 'error');
+    await renderTagList();
   }
 }
 
