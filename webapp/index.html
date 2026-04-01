@@ -1133,7 +1133,7 @@ function renderTable(txs) {
         <input type="checkbox" data-id="${t.id}" ${sel ? 'checked' : ''}
                onchange="toggleRow(this)">
       </td>
-      <td>${t.date}</td>
+      <td style="white-space:nowrap">${t.date}</td>
       <td class="amount">$${(+t.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td>
       <td class="description-cell">${escHtml(t.description)}</td>
       <td>${tagsCell(t)}</td>
