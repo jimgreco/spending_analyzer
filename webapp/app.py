@@ -157,6 +157,105 @@ CREATE TABLE IF NOT EXISTS invited_users (
 );
 """
 
+def _migrate_primary_tags():
+    """One-time migration: assign primary_tag_id from transaction_tags data."""
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                # Check if migration already ran (any row has a status set)
+                cur.execute("SELECT 1 FROM transactions WHERE primary_migration_status IS NOT NULL LIMIT 1")
+                if cur.fetchone():
+                    return  # already migrated
+
+                # Check if there are any transactions at all
+                cur.execute("SELECT 1 FROM transactions LIMIT 1")
+                if not cur.fetchone():
+                    return  # empty DB, nothing to migrate
+
+                # Load all tags with hierarchy
+                cur.execute("SELECT id, user_id, name, group_tag_id FROM tags")
+                all_tags = {t[0]: {"id": t[0], "user_id": t[1], "name": t[2], "group_tag_id": t[3]}
+                            for t in cur.fetchall()}
+                parent_of = {tid: tag["group_tag_id"] for tid, tag in all_tags.items()}
+
+                def ancestors(tid):
+                    chain = set()
+                    cur_id = parent_of.get(tid)
+                    while cur_id:
+                        chain.add(cur_id)
+                        cur_id = parent_of.get(cur_id)
+                    return chain
+
+                def chain_depth(tid):
+                    depth = 0
+                    cur_id = parent_of.get(tid)
+                    while cur_id:
+                        depth += 1
+                        cur_id = parent_of.get(cur_id)
+                    return depth
+
+                # Get all transaction-tag assignments
+                cur.execute("""
+                    SELECT t.id, array_agg(tt.tag_id) as tag_ids
+                    FROM transactions t
+                    JOIN transaction_tags tt ON tt.transaction_id = t.id
+                    WHERE t.status = 'active'
+                    GROUP BY t.id
+                """)
+                tx_tags = cur.fetchall()
+
+                for (tx_id, tag_ids) in tx_tags:
+                    tag_id_set = set(tag_ids)
+
+                    # Build ancestor sets for each tag
+                    tag_ancestors = {tid: ancestors(tid) for tid in tag_id_set}
+
+                    # A tag is an "ancestor" if another tag on this tx has it in its ancestor chain
+                    ancestor_ids = set()
+                    for tid in tag_id_set:
+                        ancestor_ids |= (tag_ancestors[tid] & tag_id_set)
+
+                    leaves = tag_id_set - ancestor_ids
+
+                    if len(leaves) == 0:
+                        # All tags are ancestors of each other (shouldn't happen, but handle it)
+                        primary_id = max(tag_id_set, key=chain_depth)
+                        status = 'auto'
+                    elif len(leaves) == 1:
+                        primary_id = next(iter(leaves))
+                        status = 'auto'
+                    else:
+                        # Multiple leaves — check if they share a chain
+                        # Pick deepest by hierarchy depth; mark ambiguous if depths are equal
+                        sorted_leaves = sorted(leaves, key=chain_depth, reverse=True)
+                        primary_id = sorted_leaves[0]
+                        if chain_depth(sorted_leaves[0]) == chain_depth(sorted_leaves[1]):
+                            status = 'ambiguous'
+                        else:
+                            status = 'auto'
+
+                    # Set primary tag
+                    cur.execute(
+                        "UPDATE transactions SET primary_tag_id=%s, primary_migration_status=%s WHERE id=%s",
+                        (primary_id, status, tx_id))
+
+                    # Remove primary tag and its ancestors from transaction_tags (they're now implicit)
+                    remove_ids = {primary_id} | (tag_ancestors.get(primary_id, set()) & tag_id_set)
+                    if remove_ids:
+                        cur.execute(
+                            "DELETE FROM transaction_tags WHERE transaction_id=%s AND tag_id = ANY(%s)",
+                            (tx_id, list(remove_ids)))
+
+                # Mark untagged transactions as auto-migrated
+                cur.execute(
+                    "UPDATE transactions SET primary_migration_status='auto' "
+                    "WHERE primary_migration_status IS NULL")
+
+        print("[migrate:primary-tags] Migration complete")
+    except Exception as e:
+        print(f"[migrate:primary-tags] {type(e).__name__}: {e}")
+
+
 def init_db():
     # Base schema (safe for both fresh and existing DBs)
     with db() as conn:
@@ -358,6 +457,15 @@ def init_db():
 
         ("add group_tag_id to tags",
          "ALTER TABLE tags ADD COLUMN IF NOT EXISTS group_tag_id INTEGER REFERENCES tags(id) ON DELETE SET NULL"),
+
+        ("add primary_tag_id to transactions",
+         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS primary_tag_id INTEGER REFERENCES tags(id) ON DELETE SET NULL"),
+
+        ("index primary_tag_id",
+         "CREATE INDEX IF NOT EXISTS idx_tx_primary_tag ON transactions(primary_tag_id)"),
+
+        ("add primary_migration_status to transactions",
+         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS primary_migration_status TEXT"),
     ]
 
     for label, sql in migrations:
@@ -367,6 +475,9 @@ def init_db():
                     cur.execute(sql)
         except Exception as e:
             print(f"[migrate:{label}] {e}")
+
+    # ── Primary tag data migration ──────────────────────────────────────────────
+    _migrate_primary_tags()
 
     # In LOCAL_DEV mode, ensure the test user exists and owns any orphaned records.
     if LOCAL_DEV:
@@ -476,14 +587,14 @@ def require_owner(user: dict = Depends(get_current_user)) -> dict:
 
 # ── GPT tag assignment ────────────────────────────────────────────────────────────
 def _gpt_tag_chunk(client, model, tag_list, chunk):
-    """Assign zero or more tags to each transaction description in the chunk."""
+    """Assign one primary tag to each transaction description in the chunk."""
     items = "\n".join(f"{i}: {d}" for i, d in enumerate(chunk))
     prompt = (
-        f"For each credit card transaction, pick zero or more matching tags from this list: "
+        f"For each credit card transaction, pick the single best matching tag from this list: "
         f"{', '.join(tag_list)}.\n"
-        f"If none fit, use an empty list.\n\n"
+        f"If none fit, use null.\n\n"
         f"Transactions:\n{items}\n\n"
-        f'Respond with JSON only: {{"results": [{{"index": 0, "tags": ["tag1", "tag2"]}}]}}'
+        f'Respond with JSON only: {{"results": [{{"index": 0, "primary_tag": "tag1"}}]}}'
     )
     resp = client.chat.completions.create(
         model=model,
@@ -497,13 +608,14 @@ def _gpt_tag_chunk(client, model, tag_list, chunk):
     for item in data.get("results", []):
         idx = item.get("index", -1)
         if 0 <= idx < len(chunk):
-            assigned = [t for t in (item.get("tags") or []) if t in tag_set]
-            result[chunk[idx]] = assigned
+            primary = item.get("primary_tag")
+            if primary and primary in tag_set:
+                result[chunk[idx]] = primary
     return result
 
 
 def assign_tags_with_gpt(descriptions: list, tag_list: list) -> dict:
-    """Returns {description: [tag1, tag2, ...]} — assigns zero or more tags per description."""
+    """Returns {description: 'primary_tag'} — assigns one primary tag per description."""
     if not OPENAI_API_KEY or not descriptions or not tag_list:
         return {}
     try:
@@ -812,25 +924,41 @@ def index():
     except FileNotFoundError:
         return HTMLResponse("<h1>index.html not found</h1>", status_code=500)
 
-# ── Tag filter helper (recursive ancestor matching) ──────────────────────────────
-# Matches transactions where any direct tag's ancestor chain includes the filter tag
-_TAG_ANCESTOR_MATCH_ONE = (
-    "t.id IN (SELECT tt.transaction_id FROM transaction_tags tt WHERE EXISTS ("
+# ── Tag filter helper (searches primary tag with hierarchy + secondary tags flat) ─
+# Match ONE tag: primary tag ancestor chain OR secondary tag
+_TAG_MATCH_ONE = (
+    "("
+    # Match via primary tag ancestor chain
+    "EXISTS ("
     "  WITH RECURSIVE chain AS ("
-    "    SELECT tt.tag_id AS cid"
+    "    SELECT t.primary_tag_id AS cid WHERE t.primary_tag_id IS NOT NULL"
     "    UNION ALL"
     "    SELECT tg.group_tag_id FROM tags tg JOIN chain c ON tg.id = c.cid WHERE tg.group_tag_id IS NOT NULL"
     "  ) SELECT 1 FROM chain JOIN tags tg ON tg.id = chain.cid WHERE tg.user_id = %s AND tg.name = %s"
-    "))"
+    ")"
+    " OR "
+    # Match via secondary tags (flat, no hierarchy)
+    "t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = %s)"
+    ")"
 )
-_TAG_ANCESTOR_MATCH_ANY = (
-    "t.id IN (SELECT tt.transaction_id FROM transaction_tags tt WHERE EXISTS ("
+# Match ANY of multiple tags
+_TAG_MATCH_ANY = (
+    "("
+    "EXISTS ("
     "  WITH RECURSIVE chain AS ("
-    "    SELECT tt.tag_id AS cid"
+    "    SELECT t.primary_tag_id AS cid WHERE t.primary_tag_id IS NOT NULL"
     "    UNION ALL"
     "    SELECT tg.group_tag_id FROM tags tg JOIN chain c ON tg.id = c.cid WHERE tg.group_tag_id IS NOT NULL"
     "  ) SELECT 1 FROM chain JOIN tags tg ON tg.id = chain.cid WHERE tg.user_id = %s AND tg.name = ANY(%s)"
-    "))"
+    ")"
+    " OR "
+    "t.id IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s AND tg.name = ANY(%s))"
+    ")"
+)
+# "No tag" filter: no primary tag AND no secondary tags
+_TAG_MATCH_NONE = (
+    "(t.primary_tag_id IS NULL"
+    " AND t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s))"
 )
 
 def _apply_tag_filter(where, params, tag, tag_match, uid):
@@ -838,19 +966,19 @@ def _apply_tag_filter(where, params, tag, tag_match, uid):
     has_none = "__none__" in tag
     if tag_match == "all" and named:
         for tname in named:
-            where.append(_TAG_ANCESTOR_MATCH_ONE)
-            params.extend([uid, tname])
+            where.append(_TAG_MATCH_ONE)
+            params.extend([uid, tname, uid, tname])
         if has_none:
-            where.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
+            where.append(_TAG_MATCH_NONE)
             params.append(uid)
     else:
         clauses = []
         if has_none:
-            clauses.append("t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)")
+            clauses.append(_TAG_MATCH_NONE)
             params.append(uid)
         if named:
-            clauses.append(_TAG_ANCESTOR_MATCH_ANY)
-            params.extend([uid, named])
+            clauses.append(_TAG_MATCH_ANY)
+            params.extend([uid, named, uid, named])
         where.append("(" + " OR ".join(clauses) + ")")
     return where, params
 
@@ -894,35 +1022,27 @@ def get_transactions(
                 SELECT t.id, t.date::text, t.description,
                        t.amount::float, t.source, t.import_file,
                        t.status, t.dedup_of,
+                       pt.name AS primary_tag,
                        COALESCE(ARRAY(
-                           SELECT DISTINCT anc.name FROM transaction_tags tt
-                           JOIN LATERAL (
+                           SELECT tg2.name FROM (
                                WITH RECURSIVE chain AS (
-                                   SELECT tg.id AS cid, tg.name FROM tags tg WHERE tg.id = tt.tag_id
-                                   UNION ALL
-                                   SELECT g.id, g.name FROM tags g
-                                   JOIN chain c ON g.id = (SELECT group_tag_id FROM tags WHERE id = c.cid)
-                               )
-                               SELECT cid, name FROM chain
-                           ) anc ON TRUE
-                           WHERE tt.transaction_id = t.id ORDER BY anc.name
-                       ), '{{}}') AS tags,
-                       COALESCE(ARRAY(
-                           SELECT DISTINCT anc.aname FROM transaction_tags tt
-                           JOIN LATERAL (
-                               WITH RECURSIVE chain AS (
-                                   SELECT tg.group_tag_id AS cid FROM tags tg
-                                   WHERE tg.id = tt.tag_id AND tg.group_tag_id IS NOT NULL
+                                   SELECT pt2.group_tag_id AS cid FROM tags pt2
+                                   WHERE pt2.id = t.primary_tag_id AND pt2.group_tag_id IS NOT NULL
                                    UNION ALL
                                    SELECT g.group_tag_id FROM tags g
                                    JOIN chain c ON g.id = c.cid WHERE g.group_tag_id IS NOT NULL
                                )
-                               SELECT c.cid AS aid, tg2.name AS aname FROM chain c JOIN tags tg2 ON tg2.id = c.cid
-                           ) anc ON TRUE
-                           WHERE tt.transaction_id = t.id
-                           AND anc.aid NOT IN (SELECT tt2.tag_id FROM transaction_tags tt2 WHERE tt2.transaction_id = t.id)
-                       ), '{{}}') AS implicit_tags
-                FROM transactions t WHERE {wc}
+                               SELECT cid FROM chain
+                           ) ch JOIN tags tg2 ON tg2.id = ch.cid ORDER BY tg2.name
+                       ), '{{}}') AS primary_tag_implicit,
+                       COALESCE(ARRAY(
+                           SELECT tg.name FROM transaction_tags tt
+                           JOIN tags tg ON tg.id = tt.tag_id
+                           WHERE tt.transaction_id = t.id ORDER BY tg.name
+                       ), '{{}}') AS tags
+                FROM transactions t
+                LEFT JOIN tags pt ON pt.id = t.primary_tag_id
+                WHERE {wc}
                 ORDER BY {sc} {sd}, t.id {sd}
                 LIMIT %s OFFSET %s
             """, params + [per_page, offset])
@@ -952,26 +1072,22 @@ def get_stats(
 
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Exclude transactions tagged with excluded tags from spending totals
+            # Exclude transactions whose primary tag (or ancestor) is excluded
             cur.execute(
                 "SELECT id FROM tags WHERE user_id=%s AND excluded_from_spending=TRUE",
                 (uid,)
             )
             excluded_tag_ids = [r["id"] for r in cur.fetchall()]
             if excluded_tag_ids:
-                # Exclude transactions with an excluded tag directly OR via ancestor chain
-                where.append("""t.id NOT IN (
-                    SELECT tt.transaction_id FROM transaction_tags tt
-                    WHERE EXISTS (
-                        WITH RECURSIVE chain AS (
-                            SELECT tt.tag_id AS cid
-                            UNION ALL
-                            SELECT tg.group_tag_id FROM tags tg JOIN chain c ON tg.id = c.cid
-                            WHERE tg.group_tag_id IS NOT NULL
-                        )
-                        SELECT 1 FROM chain WHERE cid = ANY(%s)
+                where.append("""(t.primary_tag_id IS NULL OR NOT EXISTS (
+                    WITH RECURSIVE chain AS (
+                        SELECT t.primary_tag_id AS cid
+                        UNION ALL
+                        SELECT tg.group_tag_id FROM tags tg JOIN chain c ON tg.id = c.cid
+                        WHERE tg.group_tag_id IS NOT NULL
                     )
-                )""")
+                    SELECT 1 FROM chain WHERE cid = ANY(%s)
+                ))""")
                 params.append(excluded_tag_ids)
 
             wc = " AND ".join(where)
@@ -981,34 +1097,31 @@ def get_stats(
             by_source = [dict(r) for r in cur.fetchall()]
             cur.execute(f"SELECT COALESCE(SUM(t.amount),0)::float AS total, COUNT(*)::int AS count FROM transactions t WHERE {wc}", params)
             summary = dict(cur.fetchone())
-            # Tag breakdown — only non-excluded tags, walking full ancestor chain
+            # Tag breakdown — primary tag + ancestor chain, only non-excluded
             cur.execute(f"""
                 SELECT tg.name AS tag, SUM(t.amount)::float AS total, COUNT(DISTINCT t.id)::int AS count
                 FROM transactions t
-                JOIN transaction_tags tt ON tt.transaction_id = t.id
                 JOIN LATERAL (
                     WITH RECURSIVE chain AS (
-                        SELECT direct.id AS cid, direct.name, direct.excluded_from_spending
-                        FROM tags direct WHERE direct.id = tt.tag_id
+                        SELECT pt.id AS cid, pt.name, pt.excluded_from_spending
+                        FROM tags pt WHERE pt.id = t.primary_tag_id
                         UNION ALL
                         SELECT g.id, g.name, g.excluded_from_spending
                         FROM tags g JOIN chain c ON g.id = (SELECT group_tag_id FROM tags WHERE id = c.cid)
                     )
                     SELECT cid, name, excluded_from_spending FROM chain
                 ) tg ON TRUE
-                WHERE {wc} AND tg.excluded_from_spending = FALSE
+                WHERE {wc} AND t.primary_tag_id IS NOT NULL AND tg.excluded_from_spending = FALSE
                 GROUP BY tg.name
                 ORDER BY total DESC
             """, params)
             by_tag = [dict(r) for r in cur.fetchall()]
-            # Untagged total
+            # Untagged total (no primary tag)
             cur.execute(f"""
                 SELECT COALESCE(SUM(t.amount),0)::float AS total, COUNT(*)::int AS count
                 FROM transactions t
-                WHERE {wc}
-                AND t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt
-                                 JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s)
-            """, params + [uid])
+                WHERE {wc} AND t.primary_tag_id IS NULL
+            """, params)
             untagged = dict(cur.fetchone())
             # Tag hierarchy — from explicit group_tag_id
             cur.execute("""
@@ -1182,10 +1295,12 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                     RETURNING id, dedup_key
                 """, insert_rows, fetch=True)
 
-                # Upsert tags needed and build name→id map
+                # Upsert primary tags needed and build name→id map
                 all_needed_tags = set()
                 for desc in dedup_key_to_desc.values():
-                    all_needed_tags.update(gpt_tag_map.get(desc, []))
+                    primary = gpt_tag_map.get(desc)
+                    if primary:
+                        all_needed_tags.add(primary)
                 tag_name_to_id = {}
                 for name in all_needed_tags:
                     cur.execute(
@@ -1195,15 +1310,16 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                     )
                     tag_name_to_id[name] = cur.fetchone()[0]
 
-                # Assign tags to newly inserted transactions
+                # Assign primary tag to newly inserted transactions
                 for (tx_id, dk) in returned:
                     desc = dedup_key_to_desc.get(dk, "")
-                    for tag_name in gpt_tag_map.get(desc, []):
-                        tag_id = tag_name_to_id.get(tag_name)
+                    primary_name = gpt_tag_map.get(desc)
+                    if primary_name:
+                        tag_id = tag_name_to_id.get(primary_name)
                         if tag_id:
                             cur.execute(
-                                "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                                (tx_id, tag_id)
+                                "UPDATE transactions SET primary_tag_id=%s, primary_migration_status='auto' WHERE id=%s",
+                                (tag_id, tx_id)
                             )
 
                 cur.execute("""
@@ -1427,11 +1543,61 @@ def update_transaction_tags(tx_id: int, body: TagsUpdate, user: dict = Depends(r
                 )
     return {"ok": True, "id": tx_id, "tags": tag_names}
 
+class PrimaryTagUpdate(BaseModel):
+    primary_tag: Optional[str] = None  # null to clear
+
+@app.put("/api/transactions/{tx_id}/primary-tag")
+def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(require_edit)):
+    uid = user["id"]
+    with db() as conn:
+        with conn.cursor() as cur:
+            # Verify ownership
+            cur.execute("SELECT id, primary_tag_id FROM transactions WHERE id=%s AND user_id=%s", (tx_id, uid))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "Transaction not found")
+            old_primary_id = row[1]
+
+            if body.primary_tag is None:
+                # Clear primary tag — demote old primary to secondary
+                if old_primary_id:
+                    cur.execute(
+                        "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                        (tx_id, old_primary_id))
+                cur.execute("UPDATE transactions SET primary_tag_id=NULL WHERE id=%s", (tx_id,))
+                return {"ok": True, "id": tx_id, "primary_tag": None}
+
+            tag_name = body.primary_tag.strip()
+            if not tag_name:
+                raise HTTPException(400, "Tag name cannot be empty")
+
+            # Resolve (or create) the tag
+            cur.execute(
+                "INSERT INTO tags (user_id, name) VALUES (%s,%s) "
+                "ON CONFLICT (user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
+                (uid, tag_name))
+            new_tag_id = cur.fetchone()[0]
+
+            # If new primary was a secondary tag, remove it from transaction_tags
+            cur.execute(
+                "DELETE FROM transaction_tags WHERE transaction_id=%s AND tag_id=%s",
+                (tx_id, new_tag_id))
+
+            # If old primary exists and differs, demote it to secondary
+            if old_primary_id and old_primary_id != new_tag_id:
+                cur.execute(
+                    "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                    (tx_id, old_primary_id))
+
+            # Set new primary
+            cur.execute("UPDATE transactions SET primary_tag_id=%s WHERE id=%s", (new_tag_id, tx_id))
+    return {"ok": True, "id": tx_id, "primary_tag": tag_name}
+
 @app.post("/api/transactions/bulk-tag")
 def bulk_tag_transactions(body: dict, user: dict = Depends(require_edit)):
     ids = body.get("ids", [])
     tag_name = (body.get("tag") or "").strip()
-    action = body.get("action", "add")  # "add" or "remove"
+    action = body.get("action", "add")  # "add", "remove", or "set-primary"
     if not ids: raise HTTPException(400, "No IDs provided")
     if not tag_name: raise HTTPException(400, "Tag name required")
     uid = user["id"]
@@ -1446,6 +1612,23 @@ def bulk_tag_transactions(body: dict, user: dict = Depends(require_edit)):
                       AND tg.name = %s
                       AND tt.transaction_id = ANY(%s)
                 """, (uid, tag_name, ids))
+            elif action == "set-primary":
+                # Upsert tag
+                cur.execute(
+                    "INSERT INTO tags (user_id, name) VALUES (%s,%s) ON CONFLICT (user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
+                    (uid, tag_name))
+                tag_id = cur.fetchone()[0]
+                for tx_id in ids:
+                    # Remove new primary from secondary if present
+                    cur.execute("DELETE FROM transaction_tags WHERE transaction_id=%s AND tag_id=%s", (tx_id, tag_id))
+                    # Demote old primary to secondary if different
+                    cur.execute("SELECT primary_tag_id FROM transactions WHERE id=%s AND user_id=%s", (tx_id, uid))
+                    row = cur.fetchone()
+                    if row and row[0] and row[0] != tag_id:
+                        cur.execute(
+                            "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                            (tx_id, row[0]))
+                    cur.execute("UPDATE transactions SET primary_tag_id=%s WHERE id=%s AND user_id=%s", (tag_id, tx_id, uid))
             else:
                 # Upsert tag
                 cur.execute(
@@ -1459,6 +1642,82 @@ def bulk_tag_transactions(body: dict, user: dict = Depends(require_edit)):
                         (tx_id, tag_id)
                     )
     return {"ok": True, "updated": len(ids)}
+
+# ── Primary tag migration review ─────────────────────────────────────────────────
+@app.get("/api/migration/primary-tags")
+def get_migration_review(user: dict = Depends(require_owner)):
+    uid = user["id"]
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM transactions WHERE user_id=%s AND primary_migration_status='ambiguous'",
+                (uid,))
+            ambiguous_count = cur.fetchone()["n"]
+            cur.execute(f"""
+                SELECT t.id, t.date::text, t.description, t.amount::float, t.source,
+                       pt.name AS primary_tag,
+                       COALESCE(ARRAY(
+                           SELECT tg.name FROM transaction_tags tt
+                           JOIN tags tg ON tg.id = tt.tag_id
+                           WHERE tt.transaction_id = t.id ORDER BY tg.name
+                       ), '{{}}') AS secondary_tags
+                FROM transactions t
+                LEFT JOIN tags pt ON pt.id = t.primary_tag_id
+                WHERE t.user_id = %s AND t.primary_migration_status = 'ambiguous'
+                ORDER BY t.date DESC
+            """, (uid,))
+            transactions = [dict(r) for r in cur.fetchall()]
+    return {"ambiguous_count": ambiguous_count, "transactions": transactions}
+
+class MigrationPrimaryTagUpdate(BaseModel):
+    primary_tag: str
+
+@app.patch("/api/migration/primary-tags/{tx_id}")
+def update_migration_primary_tag(tx_id: int, body: MigrationPrimaryTagUpdate,
+                                  user: dict = Depends(require_owner)):
+    uid = user["id"]
+    tag_name = body.primary_tag.strip()
+    if not tag_name:
+        raise HTTPException(400, "Tag name cannot be empty")
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT primary_tag_id FROM transactions WHERE id=%s AND user_id=%s", (tx_id, uid))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "Transaction not found")
+            old_primary_id = row[0]
+
+            # Resolve tag
+            cur.execute(
+                "INSERT INTO tags (user_id, name) VALUES (%s,%s) "
+                "ON CONFLICT (user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
+                (uid, tag_name))
+            new_tag_id = cur.fetchone()[0]
+
+            # Remove new primary from secondary if present
+            cur.execute("DELETE FROM transaction_tags WHERE transaction_id=%s AND tag_id=%s", (tx_id, new_tag_id))
+
+            # Demote old primary to secondary if different
+            if old_primary_id and old_primary_id != new_tag_id:
+                cur.execute(
+                    "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                    (tx_id, old_primary_id))
+
+            cur.execute(
+                "UPDATE transactions SET primary_tag_id=%s, primary_migration_status='reviewed' WHERE id=%s",
+                (new_tag_id, tx_id))
+    return {"ok": True, "id": tx_id, "primary_tag": tag_name}
+
+@app.post("/api/migration/primary-tags/finalize")
+def finalize_migration(user: dict = Depends(require_owner)):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE transactions SET primary_migration_status='reviewed' "
+                "WHERE user_id=%s AND primary_migration_status='ambiguous'",
+                (user["id"],))
+            updated = cur.rowcount
+    return {"ok": True, "finalized": updated}
 
 # ── Upload history ────────────────────────────────────────────────────────────────
 @app.get("/api/uploads")
