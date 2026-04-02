@@ -1032,6 +1032,31 @@ function renderTagChips(s) {
         group.appendChild(childRow);
         buildSubtree(childName, childChipRow, group, depth + 1);
       });
+      // "(Misc)" chip — transactions tagged directly with the parent, not any child
+      const parentData = tagMap[parentName];
+      if (parentData) {
+        const childTotal = children.reduce((s, c) => s + (tagMap[c]?.total || 0), 0);
+        const childCount = children.reduce((s, c) => s + (tagMap[c]?.count || 0), 0);
+        const miscTotal = parentData.total - childTotal;
+        const miscCount = parentData.count - childCount;
+        if (miscCount > 0) {
+          const miscRow = document.createElement('div');
+          miscRow.className = 'tag-children-row';
+          miscRow.style.paddingLeft = (12 * depth) + 'px';
+          const miscConn = document.createElement('span');
+          miscConn.className = 'tag-child-connector';
+          miscConn.textContent = '└';
+          miscRow.appendChild(miscConn);
+          const miscChipRow = document.createElement('span');
+          miscChipRow.className = 'tag-chip-row';
+          const miscValue = `__exact:${parentName}__`;
+          const miscAmt = '$' + Math.round(miscTotal).toLocaleString('en-US');
+          miscChipRow.appendChild(makeTagChip('(Misc)', miscValue, '#6b7280',
+            `${miscCount} tx${miscCount !== 1 ? 's' : ''}`, miscAmt));
+          miscRow.appendChild(miscChipRow);
+          group.appendChild(miscRow);
+        }
+      }
     }
   }
 
@@ -1059,7 +1084,7 @@ function renderTagChips(s) {
       group.className = 'tag-group';
       const chipRow = document.createElement('div');
       chipRow.className = 'tag-chip-row';
-      chipRow.appendChild(makeTagChip('No Tag', '__none__', '#6b7280',
+      chipRow.appendChild(makeTagChip('(No Tag)', '__none__', '#6b7280',
         `${untagged.count} tx${untagged.count !== 1 ? 's' : ''}`, noTagAmt));
       group.appendChild(chipRow);
       tagChips.appendChild(group);

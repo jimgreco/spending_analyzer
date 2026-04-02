@@ -960,14 +960,22 @@ _TAG_MATCH_NONE = (
     "(t.primary_tag_id IS NULL"
     " AND t.id NOT IN (SELECT tt.transaction_id FROM transaction_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tg.user_id = %s))"
 )
+# Exact primary tag match (no hierarchy walk) — for "Misc" filter
+_TAG_MATCH_EXACT = (
+    "(t.primary_tag_id = (SELECT id FROM tags WHERE user_id = %s AND name = %s LIMIT 1))"
+)
 
 def _apply_tag_filter(where, params, tag, tag_match, uid):
-    named = [t for t in tag if t != "__none__"]
+    exact = [t[8:-2] for t in tag if t.startswith("__exact:") and t.endswith("__")]
+    named = [t for t in tag if t != "__none__" and not t.startswith("__exact:")]
     has_none = "__none__" in tag
-    if tag_match == "all" and named:
+    if tag_match == "all":
         for tname in named:
             where.append(_TAG_MATCH_ONE)
             params.extend([uid, tname, uid, tname])
+        for tname in exact:
+            where.append(_TAG_MATCH_EXACT)
+            params.extend([uid, tname])
         if has_none:
             where.append(_TAG_MATCH_NONE)
             params.append(uid)
@@ -979,6 +987,9 @@ def _apply_tag_filter(where, params, tag, tag_match, uid):
         if named:
             clauses.append(_TAG_MATCH_ANY)
             params.extend([uid, named, uid, named])
+        for tname in exact:
+            clauses.append(_TAG_MATCH_EXACT)
+            params.extend([uid, tname])
         where.append("(" + " OR ".join(clauses) + ")")
     return where, params
 
