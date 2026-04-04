@@ -260,7 +260,12 @@ def init_db():
     # Base schema (safe for both fresh and existing DBs)
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute(SCHEMA)
+            try:
+                cur.execute(SCHEMA)
+            except Exception as e:
+                # If it already exists, ignore common "already exists" errors during SERIAL creation
+                print(f"[init_db] Note: {e}")
+                conn.rollback()
 
     # Each migration in its own transaction — a failure in one doesn't block others.
     migrations = [
@@ -1387,7 +1392,17 @@ def get_tags(user: dict = Depends(get_current_user)):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 SELECT t.name, t.excluded_from_spending,
-                       g.name AS group_tag
+                       g.name AS group_tag,
+                       (
+                         WITH RECURSIVE descendants AS (
+                           SELECT t.id AS id
+                           UNION ALL
+                           SELECT c.id FROM tags c JOIN descendants d ON c.group_tag_id = d.id
+                         )
+                         SELECT COUNT(*) FROM transactions tx
+                         WHERE tx.primary_tag_id IN (SELECT id FROM descendants)
+                           AND tx.status = 'active'
+                       ) AS tx_count
                 FROM tags t
                 LEFT JOIN tags g ON g.id = t.group_tag_id
                 WHERE t.user_id=%s ORDER BY t.name

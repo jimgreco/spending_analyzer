@@ -1,4 +1,4 @@
-name: Deploy to Elastic Beanstalk
+name: Deploy to EC2
 
 on:
   push:
@@ -8,19 +8,21 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Create deployment package
-        run: cd webapp && zip -r ../deploy.zip . -x '.elasticbeanstalk/*'
+      - name: Transfer files to EC2
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
+          chmod 600 key.pem
+          # Sync the webapp folder to the server's spending directory
+          rsync -avz -e "ssh -i key.pem -o StrictHostKeyChecking=no" \
+            --exclude '.git' \
+            --exclude 'venv' \
+            --exclude '__pycache__' \
+            webapp/ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/spending/webapp/
 
-      - name: Deploy to EB
-        uses: einaregilsson/beanstalk-deploy@v22
-        with:
-          aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          application_name: spending-analyzer
-          environment_name: spending-analyzer-prod
-          region: us-east-2
-          version_label: ${{ github.sha }}
-          deployment_package: deploy.zip
-          wait_for_deployment: true
+      - name: Rebuild and Restart Spending
+        run: |
+          ssh -i key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+            "cd ~/deploy && docker-compose build spending && docker-compose up -d spending"
