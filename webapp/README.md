@@ -4,42 +4,7 @@ A personal spending tracker with drag-and-drop statement import, smart categoriz
 
 **Supports:** Chase (Amazon Prime Visa) · Apple Card · Citi · Coinbase · Bank of America
 
----
-
-## Deploy to Railway (recommended)
-
-Railway gives you a free PostgreSQL database and hosting.
-
-### 1 – Push code to GitHub
-
-```bash
-cd spending-dashboard       # this folder
-git init
-git add .
-git commit -m "initial commit"
-# Create a repo on github.com, then:
-git remote add origin https://github.com/YOUR_USER/spending-dashboard.git
-git push -u origin main
-```
-
-### 2 – Create Railway project
-
-1. Go to [railway.app](https://railway.app) → **New Project**
-2. Choose **Deploy from GitHub repo** → select your repo
-3. Railway will auto-detect Python and deploy
-
-### 3 – Add PostgreSQL
-
-1. In your Railway project → **+ New** → **Database** → **Add PostgreSQL**
-2. Railway automatically injects `DATABASE_URL` into your app — nothing else needed
-
-### 4 – Open your app
-
-Click the generated URL (e.g. `https://your-app.up.railway.app`)
-
----
-
-## Run locally
+## Local Setup
 
 ```bash
 # Install dependencies
@@ -56,16 +21,14 @@ DATABASE_URL=postgresql://spending:spending@localhost/spending python app.py
 
 Open http://localhost:8000
 
----
+## Deployment (Consolidated EC2)
 
-## Other cloud options
+This app is deployed as part of a consolidated Docker environment on EC2.
 
-The same `Procfile` works on:
-- **Heroku** – `heroku create && git push heroku main`, add Heroku Postgres addon
-- **Render** – connect GitHub repo, add PostgreSQL service, set `DATABASE_URL`
-- **Fly.io** – `fly launch`, add `fly postgres create`
-
----
+### Auto-Deployment
+Pushes to the `main` branch automatically deploy to the EC2 instance via GitHub Actions.
+- **Workflow**: `.github/workflows/deploy.yml`
+- **Mechanism**: `rsync` syncs the `webapp/` folder → `docker-compose up -d --build spending`.
 
 ## Usage
 

@@ -23,6 +23,7 @@ Managed in `~/deploy/.env` on the EC2 instance:
 - `SPENDING_GOOGLE_CLIENT_ID / SECRET`
 - `SPENDING_SECRET_KEY`
 - `DB_PASSWORD`
+- `INTERNAL_SYNC_SECRET`
 
 ## Performance Tuning
 The database is performance-tuned for the `t4g.small` instance (2GB RAM). Ensure `postgresql.conf` in the `/deploy` folder is used.
