@@ -1,5 +1,5 @@
-FROM python:3.11-slim
-RUN apt-get update && apt-get install -y libpq-dev gcc && rm -rf /var/lib/apt/lists/*
+FROM python:3.11-alpine
+RUN apk add --no-cache postgresql-dev gcc musl-dev libffi-dev
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
