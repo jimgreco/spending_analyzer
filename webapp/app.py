@@ -35,6 +35,14 @@ from dotenv import load_dotenv
 # ── Load .env (one level up from this file) ───────────────────────────────────────
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
+def _as_oauth_callback_url(value: str) -> str:
+    value = value.strip().rstrip("/")
+    if not value:
+        return ""
+    if value.endswith("/auth/google/callback"):
+        return value
+    return f"{value}/auth/google/callback"
+
 # ── Configuration ────────────────────────────────────────────────────────────────
 DATABASE_URL         = os.getenv("DATABASE_URL", "postgresql://spending:spending@localhost/spending")
 PORT                 = int(os.getenv("PORT", "8000"))
@@ -43,7 +51,10 @@ OPENAI_MODEL         = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 SECRET_KEY           = os.getenv("SECRET_KEY", secrets.token_hex(32))
-APP_URL              = os.getenv("APP_URL", "http://localhost:8000").rstrip("/")
+_ENV_APP_URL         = os.getenv("APP_URL", "").strip().rstrip("/")
+_ENV_CALLBACK_URL    = os.getenv("GOOGLE_CALLBACK_URL", "").strip().rstrip("/")
+APP_URL              = _ENV_APP_URL or _ENV_CALLBACK_URL.removesuffix("/auth/google/callback") or "http://localhost:8000"
+GOOGLE_CALLBACK_URL  = _as_oauth_callback_url(_ENV_CALLBACK_URL) or f"{APP_URL}/auth/google/callback"
 LOCAL_DEV            = os.getenv("LOCAL_DEV", "false").lower() in ("true", "1", "yes")
 OWNER_EMAIL          = os.getenv("OWNER_EMAIL", "")
 
@@ -843,11 +854,11 @@ def get_version():
 def auth_login():
     if LOCAL_DEV:
         return RedirectResponse("/", status_code=302)
-    if not GOOGLE_CLIENT_ID:
-        raise HTTPException(500, "GOOGLE_CLIENT_ID not configured")
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(500, "Google OAuth not configured")
     params = {
         "client_id":     GOOGLE_CLIENT_ID,
-        "redirect_uri":  f"{APP_URL}/auth/google/callback",
+        "redirect_uri":  GOOGLE_CALLBACK_URL,
         "response_type": "code",
         "scope":         "openid email profile",
         "access_type":   "offline",
@@ -859,8 +870,17 @@ def auth_login():
     )
 
 @app.get("/auth/google/callback")
-async def auth_callback(code: str, response: Response):
-    if not GOOGLE_CLIENT_ID:
+async def auth_callback(
+    response: Response,
+    code: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+):
+    if error:
+        raise HTTPException(400, f"OAuth error: {error_description or error}")
+    if not code:
+        raise HTTPException(400, "OAuth error: missing authorization code")
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(500, "Google OAuth not configured")
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -869,13 +889,23 @@ async def auth_callback(code: str, response: Response):
                 "code":          code,
                 "client_id":     GOOGLE_CLIENT_ID,
                 "client_secret": GOOGLE_CLIENT_SECRET,
-                "redirect_uri":  f"{APP_URL}/auth/google/callback",
+                "redirect_uri":  GOOGLE_CALLBACK_URL,
                 "grant_type":    "authorization_code",
             }
         )
-    tokens = token_resp.json()
-    if "error" in tokens:
-        raise HTTPException(400, f"OAuth error: {tokens.get('error_description', tokens['error'])}")
+    try:
+        tokens = token_resp.json()
+    except ValueError:
+        print(f"[oauth] token exchange failed: status={token_resp.status_code} body={token_resp.text[:500]}")
+        raise HTTPException(400, "OAuth error: token exchange failed")
+
+    if token_resp.status_code >= 400 or "error" in tokens:
+        error_code = tokens.get("error", "token_exchange_failed")
+        detail = tokens.get("error_description") or error_code
+        print(f"[oauth] token exchange failed: status={token_resp.status_code} error={error_code} detail={detail} callback={GOOGLE_CALLBACK_URL}")
+        if error_code == "invalid_grant" and detail == "Bad Request":
+            detail = "Google rejected the authorization code. Check that GOOGLE_CALLBACK_URL exactly matches the authorized redirect URI in Google Cloud."
+        raise HTTPException(400, f"OAuth error: {detail}")
 
     async with httpx.AsyncClient() as client:
         info_resp = await client.get(
@@ -905,7 +935,7 @@ async def auth_callback(code: str, response: Response):
         max_age=SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
-        secure=APP_URL.startswith("https://"),
+        secure=GOOGLE_CALLBACK_URL.lower().startswith("https://"),
     )
     return redirect
 
