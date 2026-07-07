@@ -305,6 +305,8 @@ def init_db():
          "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS dedup_of TEXT"),
         ("add import_file column",
          "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS import_file TEXT"),
+        ("add manually_corrected column",
+         "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS manually_corrected BOOLEAN DEFAULT FALSE"),
         ("add status index",
          "CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status)"),
         ("add dedup_key index",
@@ -660,6 +662,155 @@ def clean_description(desc: str) -> str:
     desc = re.sub(r'(?i)^SP\s+', '', desc)
     desc = re.sub(r'(?i)^\*?TST\*?\s*', '', desc)
     return desc.strip()
+
+# ── History-based tag assignment ─────────────────────────────────────────────────
+_HISTORY_NOISE_TOKENS = {
+    "APL", "APLPAY", "APPLEPAY", "AUTH", "AUTHORIZED", "CARD", "CHECKCARD",
+    "CRD", "DBT", "DEBIT", "ONLINE", "PENDING", "PIN", "POS", "PURCHASE",
+    "RECUR", "RECURRING", "SIGNATURE", "VISA", "WEB",
+}
+
+_HISTORY_MATCH_LIMIT = 5000
+_HISTORY_MIN_FUZZY_LEN = 8
+
+def _normalize_description_for_history(desc: str) -> str:
+    """Normalize merchant descriptions for repeat matching without preserving IDs."""
+    raw_tokens = re.findall(r"[A-Z0-9]+", (desc or "").upper())
+    tokens = []
+    for token in raw_tokens:
+        if token in _HISTORY_NOISE_TOKENS or token.isdigit():
+            continue
+        if any(ch.isdigit() for ch in token):
+            token = re.sub(r"^\d+", "", token)
+            token = re.sub(r"\d+$", "", token)
+            if len(token) < 2 or any(ch.isdigit() for ch in token):
+                continue
+        if len(token) < 2:
+            continue
+        tokens.append(token)
+    return " ".join(tokens) or " ".join(raw_tokens[:4])
+
+def _choose_history_assignment(examples: list, allow_null: bool = False) -> tuple:
+    scores = {}
+    for ex in examples:
+        tag = ex["tag"]
+        if tag is None and not allow_null:
+            continue
+        weight = 4 if ex["manual"] else 1
+        scores[tag] = scores.get(tag, 0) + weight
+    if not scores:
+        return None, False
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    tag, score = ranked[0]
+    second = ranked[1][1] if len(ranked) > 1 else 0
+    total = sum(scores.values())
+    accepted = score == total or (score >= 3 and score / total >= 0.67 and score - second >= 2)
+    return tag, accepted
+
+def assign_tags_from_history(user_id: int, rows: list) -> tuple:
+    """
+    Returns ({description: primary_tag}, {description, ...}).
+
+    The set contains descriptions with an explicit learned "no primary tag" match,
+    so GPT should not guess for them.
+    """
+    if not rows:
+        return {}, set()
+
+    desc_sources = {}
+    for row in rows:
+        desc = (row.get("description") or "").strip()
+        if not desc:
+            continue
+        desc_sources.setdefault(desc, set()).add((row.get("source") or "").strip().lower())
+    if not desc_sources:
+        return {}, set()
+
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT t.description, t.source, COALESCE(t.manually_corrected, FALSE) AS manually_corrected,
+                       pt.name AS primary_tag
+                FROM transactions t
+                LEFT JOIN tags pt ON pt.id = t.primary_tag_id AND pt.user_id = t.user_id
+                WHERE t.user_id = %s
+                  AND t.status = 'active'
+                  AND t.description <> ''
+                  AND (t.primary_tag_id IS NOT NULL OR t.manually_corrected = TRUE)
+                ORDER BY COALESCE(t.manually_corrected, FALSE) DESC, t.date DESC, t.id DESC
+                LIMIT %s
+            """, (user_id, _HISTORY_MATCH_LIMIT))
+            history_rows = [dict(r) for r in cur.fetchall()]
+
+    by_norm = {}
+    by_norm_source = {}
+    tagged_examples = []
+    for row in history_rows:
+        norm = _normalize_description_for_history(row["description"])
+        if not norm:
+            continue
+        ex = {
+            "norm": norm,
+            "source": (row.get("source") or "").strip().lower(),
+            "manual": bool(row.get("manually_corrected")),
+            "tag": row.get("primary_tag"),
+        }
+        by_norm.setdefault(norm, []).append(ex)
+        if ex["source"]:
+            by_norm_source.setdefault((norm, ex["source"]), []).append(ex)
+        if ex["tag"]:
+            tagged_examples.append(ex)
+
+    assignments = {}
+    learned_null = set()
+    unresolved = []
+
+    for desc, sources in desc_sources.items():
+        norm = _normalize_description_for_history(desc)
+        tag = None
+        accepted = False
+
+        for source in sources:
+            tag, accepted = _choose_history_assignment(
+                by_norm_source.get((norm, source), []), allow_null=True)
+            if accepted:
+                break
+
+        if not accepted:
+            tag, accepted = _choose_history_assignment(by_norm.get(norm, []), allow_null=True)
+
+        if accepted:
+            if tag:
+                assignments[desc] = tag
+            else:
+                learned_null.add(desc)
+        else:
+            unresolved.append((desc, norm, sources))
+
+    for desc, norm, sources in unresolved:
+        if len(norm) < _HISTORY_MIN_FUZZY_LEN:
+            continue
+        tag_scores = {}
+        for ex in tagged_examples:
+            if ex["norm"] == norm or len(ex["norm"]) < _HISTORY_MIN_FUZZY_LEN:
+                continue
+            ratio = SequenceMatcher(None, norm, ex["norm"]).ratio()
+            same_source = ex["source"] and ex["source"] in sources
+            if ratio < (0.90 if same_source else 0.95):
+                continue
+            score = ratio + (0.04 if same_source else 0) + (0.03 if ex["manual"] else 0)
+            tag_scores[ex["tag"]] = tag_scores.get(ex["tag"], 0) + score
+
+        if not tag_scores:
+            continue
+        ranked = sorted(tag_scores.items(), key=lambda item: item[1], reverse=True)
+        top_tag, top_score = ranked[0]
+        second_score = ranked[1][1] if len(ranked) > 1 else 0
+        if top_score >= 0.95 and top_score - second_score >= 0.05:
+            assignments[desc] = top_tag
+
+    return assignments, learned_null
 
 # ── Dedup key ─────────────────────────────────────────────────────────────────────
 def make_dedup_key(date: str, source: str, amount: float, description: str, seq: int = 1) -> str:
@@ -1299,15 +1450,22 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
         for r in rows:
             r["description"] = clean_description(r["description"])
 
-        # 2. Load user's tags for GPT assignment
+        # 2. Classify repeats from history, then load tags for GPT fallback
+        history_tag_map, history_null_descs = assign_tags_from_history(user_id, rows)
         with db() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT name FROM tags WHERE user_id=%s ORDER BY name", (user_id,))
                 tag_list = [r[0] for r in cur.fetchall()]
 
-        # 3. GPT tag assignment — no DB connection held
+        # 3. GPT tag assignment for anything history could not classify — no DB connection held
         unique_descs = list({r["description"] for r in rows})
-        gpt_tag_map = assign_tags_with_gpt(unique_descs, tag_list) if tag_list else {}
+        gpt_descs = [
+            desc for desc in unique_descs
+            if desc not in history_tag_map and desc not in history_null_descs
+        ]
+        gpt_tag_map = assign_tags_with_gpt(gpt_descs, tag_list) if tag_list else {}
+        primary_tag_map = {**gpt_tag_map, **history_tag_map}
+        history_tagged = history_untagged = gpt_tagged = 0
 
         # 4. Insert transactions, then tags
         dedup_keys = [r["dedup_key"] for r in rows]
@@ -1332,8 +1490,16 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                                         r["amount"], r["source"], r["dedup_key"],
                                         tx_status, r["dedup_key"] if is_dupe else None, import_name))
                     dedup_key_to_desc[r["dedup_key"]] = r["description"]
-                    if tx_status == "active": new_count  += 1
-                    else:                     dupe_count += 1
+                    if tx_status == "active":
+                        new_count += 1
+                        if r["description"] in history_tag_map:
+                            history_tagged += 1
+                        elif r["description"] in history_null_descs:
+                            history_untagged += 1
+                        elif r["description"] in gpt_tag_map:
+                            gpt_tagged += 1
+                    else:
+                        dupe_count += 1
 
                 returned = psycopg2.extras.execute_values(cur, """
                     INSERT INTO transactions
@@ -1346,7 +1512,7 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                 # Upsert primary tags needed and build name→id map
                 all_needed_tags = set()
                 for desc in dedup_key_to_desc.values():
-                    primary = gpt_tag_map.get(desc)
+                    primary = primary_tag_map.get(desc)
                     if primary:
                         all_needed_tags.add(primary)
                 tag_name_to_id = {}
@@ -1361,7 +1527,7 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                 # Assign primary tag to newly inserted transactions
                 for (tx_id, dk) in returned:
                     desc = dedup_key_to_desc.get(dk, "")
-                    primary_name = gpt_tag_map.get(desc)
+                    primary_name = primary_tag_map.get(desc)
                     if primary_name:
                         tag_id = tag_name_to_id.get(primary_name)
                         if tag_id:
@@ -1377,7 +1543,10 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                 """, (user_id, filename, file_hash, source, new_count, dupe_count))
 
         set_status("done", {"filename": filename, "status": "ok", "source": source,
-                            "new": new_count, "dupes": dupe_count})
+                            "new": new_count, "dupes": dupe_count,
+                            "history_tagged": history_tagged,
+                            "history_untagged": history_untagged,
+                            "gpt_tagged": gpt_tagged})
     except Exception as e:
         print(f"[upload_job:{job_id}] {type(e).__name__}: {e}")
         set_status("error", {"filename": filename, "status": "error",
@@ -1609,7 +1778,9 @@ def clear_transaction_tags(tx_id: int, user: dict = Depends(require_edit)):
             cur.execute("SELECT id FROM transactions WHERE id=%s AND user_id=%s", (tx_id, uid))
             if not cur.fetchone():
                 raise HTTPException(404, "Transaction not found")
-            cur.execute("UPDATE transactions SET primary_tag_id=NULL WHERE id=%s", (tx_id,))
+            cur.execute(
+                "UPDATE transactions SET primary_tag_id=NULL, manually_corrected=TRUE WHERE id=%s",
+                (tx_id,))
             cur.execute("DELETE FROM transaction_tags WHERE transaction_id=%s", (tx_id,))
     return {"ok": True, "id": tx_id, "tags": [], "primary_tag": None}
 
@@ -1634,7 +1805,9 @@ def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(req
                     cur.execute(
                         "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
                         (tx_id, old_primary_id))
-                cur.execute("UPDATE transactions SET primary_tag_id=NULL WHERE id=%s", (tx_id,))
+                cur.execute(
+                    "UPDATE transactions SET primary_tag_id=NULL, manually_corrected=TRUE WHERE id=%s",
+                    (tx_id,))
                 return {"ok": True, "id": tx_id, "primary_tag": None}
 
             tag_name = body.primary_tag.strip()
@@ -1660,7 +1833,9 @@ def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(req
                     (tx_id, old_primary_id))
 
             # Set new primary
-            cur.execute("UPDATE transactions SET primary_tag_id=%s WHERE id=%s", (new_tag_id, tx_id))
+            cur.execute(
+                "UPDATE transactions SET primary_tag_id=%s, manually_corrected=TRUE WHERE id=%s",
+                (new_tag_id, tx_id))
     return {"ok": True, "id": tx_id, "primary_tag": tag_name}
 
 @app.post("/api/transactions/bulk-tag")
@@ -1698,7 +1873,9 @@ def bulk_tag_transactions(body: dict, user: dict = Depends(require_edit)):
                         cur.execute(
                             "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
                             (tx_id, row[0]))
-                    cur.execute("UPDATE transactions SET primary_tag_id=%s WHERE id=%s AND user_id=%s", (tag_id, tx_id, uid))
+                    cur.execute(
+                        "UPDATE transactions SET primary_tag_id=%s, manually_corrected=TRUE WHERE id=%s AND user_id=%s",
+                        (tag_id, tx_id, uid))
             else:
                 # Upsert tag
                 cur.execute(
@@ -1774,7 +1951,7 @@ def update_migration_primary_tag(tx_id: int, body: MigrationPrimaryTagUpdate,
                     (tx_id, old_primary_id))
 
             cur.execute(
-                "UPDATE transactions SET primary_tag_id=%s, primary_migration_status='reviewed' WHERE id=%s",
+                "UPDATE transactions SET primary_tag_id=%s, primary_migration_status='reviewed', manually_corrected=TRUE WHERE id=%s",
                 (new_tag_id, tx_id))
     return {"ok": True, "id": tx_id, "primary_tag": tag_name}
 

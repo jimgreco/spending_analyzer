@@ -1978,7 +1978,13 @@ async function uploadFiles(files, force = false) {
     if (totalNew > 0 || totalDupes > 0) {
       const lines = results
         .filter(r => r.status === 'ok')
-        .map(r => `${r.filename}: ${r.new} new, ${r.dupes} dupes`);
+        .map(r => {
+          const classified = [];
+          if (r.history_tagged) classified.push(`${r.history_tagged} from history`);
+          if (r.history_untagged) classified.push(`${r.history_untagged} left untagged`);
+          if (r.gpt_tagged) classified.push(`${r.gpt_tagged} by GPT`);
+          return `${r.filename}: ${r.new} new, ${r.dupes} dupes${classified.length ? ` (${classified.join(', ')})` : ''}`;
+        });
       showToast(
         `✅ ${totalNew} new transaction${totalNew!==1?'s':''} imported`,
         lines.join('\n') + (totalDupes ? `\n${totalDupes} duplicate${totalDupes!==1?'s':''} stored — view in ⟳ Deduped tab` : ''),
