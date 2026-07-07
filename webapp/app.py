@@ -701,7 +701,9 @@ Return JSON in this exact format:
 
 Rules:
 - Include EVERY row that has a date and a non-zero amount — purchases, fees, interest, payments, refunds, credits, transfers, everything
-- amount: positive for charges/purchases/fees/outflows, negative for refunds/credits/payments received
+- amount: use the Spending Dashboard sign convention, not necessarily the sign printed on the statement
+- amount: positive for charges/purchases/fees/withdrawals/debits/payments made/outflows; negative for deposits/additions/income/interest/refunds/credits/payments received/inflows
+- If a statement groups transactions by section, use the section's meaning to set the sign: rows under deposits/additions/credits/income are inflows and must be negative; rows under withdrawals/subtractions/debits/payments/fees/purchases are outflows and must be positive, even if the statement prints the opposite sign
 - date: YYYY-MM-DD format
 - SKIP only: rows with no date, rows with $0.00 amount, pure header/summary/subtotal rows with no transaction meaning
 - Do NOT skip fees, interest, payments, transfers, or anything else — include them all"""
