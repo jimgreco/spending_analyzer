@@ -195,6 +195,12 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   border-radius:999px;padding:0 5px;font-size:.7rem;cursor:pointer;line-height:18px;
   transition:all .15s}
 .tag-add-btn:hover{border-color:var(--accent);color:var(--accent)}
+.tag-clear-all-btn{background:none;border:1px solid rgba(248,113,113,.35);color:var(--muted);
+  border-radius:999px;width:20px;height:20px;padding:0;font-size:.75rem;cursor:pointer;
+  line-height:18px;display:inline-flex;align-items:center;justify-content:center;
+  transition:all .15s;flex:0 0 auto}
+.tag-clear-all-btn:hover{border-color:var(--red);color:var(--red);background:rgba(248,113,113,.08)}
+.tag-clear-all-btn:disabled{opacity:.45;cursor:wait}
 .tag-chip.primary{background:rgba(99,102,241,.35);border:1px solid rgba(99,102,241,.5);font-weight:600;padding:1px 3px 1px 7px}
 .tag-chip.implicit{opacity:.5;padding:1px 7px}
 .tag-chip.implicit .tag-chip-del{display:none}
@@ -1619,6 +1625,9 @@ function tagsCell(t) {
   });
   // Add secondary tag button
   html += `<button class="tag-add-btn" onclick="startTagAdd(${t.id},this,event)" title="Add secondary tag">+</button>`;
+  if (t.primary_tag || secondaryTags.length) {
+    html += `<button class="tag-clear-all-btn" onclick="clearAllTagsFromTx(${t.id},this,event)" title="Remove all tags" aria-label="Remove all tags">&times;</button>`;
+  }
   // Set primary button (if no primary)
   if (!t.primary_tag) {
     html += `<button class="primary-set-btn" onclick="startPrimaryTagSet(${t.id},this,event)" title="Set primary tag">&#9873;</button>`;
@@ -1795,20 +1804,31 @@ async function removeTagFromTx(txId, tagName, evt) {
     const chip = evt.target.closest('.tag-chip');
     if (chip) {
       const cell = chip.closest('.tags-cell');
-      chip.remove();
-      // Make sure add btn is still there
-      if (cell && !cell.querySelector('.tag-add-btn')) {
-        const addBtn = document.createElement('button');
-        addBtn.className = 'tag-add-btn';
-        addBtn.title = 'Add tag';
-        addBtn.textContent = '+';
-        addBtn.onclick = (e) => startTagAdd(txId, addBtn, e);
-        cell.appendChild(addBtn);
-      }
+      const td = cell?.closest('td');
+      if (td) td.innerHTML = tagsCell(tx);
     }
     loadStats();
   } catch(e) {
     showToast('Failed to remove tag', e.message, 'error');
+  }
+}
+
+async function clearAllTagsFromTx(txId, btn, evt) {
+  evt.stopPropagation();
+  const tx = currentTxs.find(t => t.id === txId);
+  if (!tx) return;
+  btn.disabled = true;
+  try {
+    await api(`/api/transactions/${txId}/tags`, { method: 'DELETE' });
+    tx.tags = [];
+    tx.primary_tag = null;
+    tx.primary_tag_implicit = [];
+    const td = btn.closest('td');
+    if (td) td.innerHTML = tagsCell(tx);
+    loadStats();
+  } catch(e) {
+    btn.disabled = false;
+    showToast('Failed to remove tags', e.message, 'error');
   }
 }
 

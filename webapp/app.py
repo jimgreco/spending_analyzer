@@ -1601,6 +1601,18 @@ def update_transaction_tags(tx_id: int, body: TagsUpdate, user: dict = Depends(r
                 )
     return {"ok": True, "id": tx_id, "tags": tag_names}
 
+@app.delete("/api/transactions/{tx_id}/tags")
+def clear_transaction_tags(tx_id: int, user: dict = Depends(require_edit)):
+    uid = user["id"]
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM transactions WHERE id=%s AND user_id=%s", (tx_id, uid))
+            if not cur.fetchone():
+                raise HTTPException(404, "Transaction not found")
+            cur.execute("UPDATE transactions SET primary_tag_id=NULL WHERE id=%s", (tx_id,))
+            cur.execute("DELETE FROM transaction_tags WHERE transaction_id=%s", (tx_id,))
+    return {"ok": True, "id": tx_id, "tags": [], "primary_tag": None}
+
 class PrimaryTagUpdate(BaseModel):
     primary_tag: Optional[str] = None  # null to clear
 

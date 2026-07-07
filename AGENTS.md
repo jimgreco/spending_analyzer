@@ -138,6 +138,7 @@ Environment variables (set via EBS console or `eb setenv`):
 | POST | `/api/transactions/{id}/restore` | Restore soft-deleted |
 | POST | `/api/transactions/bulk-restore` | Bulk restore |
 | PUT | `/api/transactions/{id}/tags` | Replace all tags on a transaction — body: `{tags: [name, ...]}` |
+| DELETE | `/api/transactions/{id}/tags` | Remove all tags from a transaction, including primary and secondary tags |
 | POST | `/api/transactions/bulk-tag` | Add or remove a tag from many transactions — body: `{ids, tag, action: "add"\|"remove"}` |
 
 ### Stats
