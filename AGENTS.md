@@ -1,5 +1,33 @@
 # Spending Dashboard — AGENTS.md
 
+## Efficient Start
+
+- Use supplied context once. Before code edits, inspect `git status --short --branch`,
+  `git diff --stat`, and `git diff --cached --stat`, then relevant hunks. Preserve
+  unrelated work and stage only the requested scope when committing.
+- Start with the paths below and narrow `rg` searches. Batch independent reads;
+  reuse installed dependencies and build caches unless a change invalidates them.
+- Make routine reversible decisions and complete the authorized outcome. Avoid
+  speculative cleanup, repeated permission questions, and unrelated work.
+- Run meaningful checks for the changed surface once after edits settle, including
+  the repository's required gates. Repeat only when new evidence invalidates them.
+  Documentation-only edits need diff, link/path, and whitespace review.
+- For requested releases, follow the current workflow and verify the final pushed
+  SHA and applicable live results. Keep build, deployment, TestFlight upload, and
+  physical-device evidence distinct. Report the outcome and actual verification.
+
+## Local Pointers
+
+- API, SQL, auth, imports, and migrations: `webapp/app.py`; browser UI:
+  `webapp/index.html`; dependencies: `webapp/requirements.txt`.
+- Read only the relevant contract or pattern below; avoid loading statement
+  samples or private financial records unless the task needs that evidence.
+- Match validation to the edit: Python syntax/import checks plus the affected API
+  or browser journey. The frontend is served directly and has no bundler.
+- Current deployment source: `.github/workflows/deploy.yml` and the sibling
+  `../deploy/docker-compose.yml`. The Elastic Beanstalk notes below are legacy.
+
+
 ## Project Overview
 
 A full-stack personal finance tracker. Import bank statements (PDF/CSV), auto-tag transactions with AI, tag transactions with free-form global tags, view spending by tag/month, and share read/edit access with other users.
@@ -59,6 +87,14 @@ python app.py           # or: uvicorn app:app --reload --port 8000
 
 ## Deployment
 
+The current checked-in deployment is EC2/Docker Compose. On a push to `main`,
+`.github/workflows/deploy.yml` syncs `webapp/` to the server and rebuilds/restarts
+its `spending` service through the shared Compose project. Use that workflow and
+`../deploy/docker-compose.yml` for current deployment work.
+
+The Elastic Beanstalk instructions below are historical recovery context; use
+that platform only if the user explicitly requests restoring it.
+
 ### GitHub
 ```bash
 git add webapp/app.py webapp/index.html AGENTS.md   # (etc.)
@@ -66,7 +102,7 @@ git commit -m "message"
 git push origin main   # remote: git@github.com:jimgreco/spending_analyzer.git
 ```
 
-### Elastic Beanstalk (production)
+### Elastic Beanstalk (legacy recovery reference)
 Deployed from the `webapp/` subdirectory using the EB CLI.
 
 - **App:** `spending-analyzer`
