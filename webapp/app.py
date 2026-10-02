@@ -12,9 +12,8 @@ Auth:
 import os, re, io, json, hashlib, secrets, uuid, threading, subprocess
 from collections import Counter
 from datetime import datetime, timedelta
-from difflib import SequenceMatcher
 from contextlib import contextmanager
-from typing import List, Optional
+from typing import List, Optional, Literal
 from urllib.parse import urlencode
 
 import httpx
@@ -29,7 +28,8 @@ from openai import OpenAI
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Response, Depends, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from categorization import SYSTEM_PROMPT, prepare_context, request_payload, validate_results, review
 from dotenv import load_dotenv
 
 # ── Load .env (one level up from this file) ───────────────────────────────────────
@@ -48,6 +48,8 @@ DATABASE_URL         = os.getenv("DATABASE_URL", "postgresql://spending:spending
 PORT                 = int(os.getenv("PORT", "8000"))
 OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL         = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# Categorization can advance independently of the statement extraction model.
+OPENAI_TAG_MODEL     = os.getenv("OPENAI_TAG_MODEL", "").strip() or "gpt-6-astra"
 GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 SECRET_KEY           = os.getenv("SECRET_KEY", secrets.token_hex(32))
@@ -484,6 +486,22 @@ def init_db():
 
         ("add primary_migration_status to transactions",
          "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS primary_migration_status TEXT"),
+
+        ("add categorization guidance", """
+            CREATE TABLE IF NOT EXISTS categorization_settings (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                guide TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS correction_scope TEXT;
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS correction_note TEXT NOT NULL DEFAULT '';
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS needs_review BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS suggested_tag_id INTEGER REFERENCES tags(id) ON DELETE SET NULL;
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS categorization_reason TEXT NOT NULL DEFAULT '';
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS categorization_confidence TEXT;
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS categorization_example_ids INTEGER[] NOT NULL DEFAULT '{}';
+            CREATE INDEX IF NOT EXISTS idx_tx_review ON transactions(user_id) WHERE needs_review AND status='active';
+        """),
     ]
 
     for label, sql in migrations:
@@ -604,56 +622,71 @@ def require_owner(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 # ── GPT tag assignment ────────────────────────────────────────────────────────────
-def _gpt_tag_chunk(client, model, tag_list, chunk):
-    """Assign one primary tag to each transaction description in the chunk."""
-    items = "\n".join(f"{i}: {d}" for i, d in enumerate(chunk))
-    prompt = (
-        f"For each credit card transaction, pick the single best matching tag from this list: "
-        f"{', '.join(tag_list)}.\n"
-        f"If none fit, use null.\n\n"
-        f"Transactions:\n{items}\n\n"
-        f'Respond with JSON only: {{"results": [{{"index": 0, "primary_tag": "tag1"}}]}}'
-    )
+def _gpt_tag_chunk(client, model, tag_list, chunk, guide=""):
+    """Categorize individual rows with selected human examples, never AI history."""
     resp = client.chat.completions.create(
         model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
+        messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                  {"role": "user", "content": request_payload(tag_list, guide, chunk)}],
+        reasoning_effort="low",
+        max_completion_tokens=16384,
         response_format={"type": "json_object"},
     )
-    data = json.loads(resp.choices[0].message.content)
-    tag_set = set(tag_list)
-    result = {}
-    for item in data.get("results", []):
-        idx = item.get("index", -1)
-        if 0 <= idx < len(chunk):
-            primary = item.get("primary_tag")
-            if primary and primary in tag_set:
-                result[chunk[idx]] = primary
+    choice = resp.choices[0]
+    if choice.finish_reason == "length":
+        raise ValueError("Categorization response exceeded its token budget")
+    if choice.finish_reason != "stop":
+        raise ValueError("Categorization response was not completed")
+    return validate_results(json.loads(choice.message.content), tag_list, chunk)
+
+
+def assign_tags_with_gpt(rows: list, tag_list: list, guide="", history=None) -> list:
+    """One decision per input row; unavailable/invalid results go to review."""
+    if not rows:
+        return []
+    if not tag_list or not OPENAI_API_KEY:
+        reason = "Create categories before categorizing this transaction." if not tag_list else "AI categorization is unavailable; choose a category."
+        return [review(reason) for _ in rows]
+    contexts = prepare_context(rows, history or [])
+    result = [review("AI categorization failed; choose a category.") for _ in rows]
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    try:
+        with OpenAI(api_key=OPENAI_API_KEY, timeout=120) as client:
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {pool.submit(_gpt_tag_chunk, client, OPENAI_TAG_MODEL, tag_list,
+                                       contexts[i:i+20], guide): i
+                           for i in range(0, len(contexts), 20)}
+                for fut in as_completed(futures):
+                    try:
+                        decisions = fut.result()
+                        start = futures[fut]
+                        result[start:start+len(decisions)] = decisions
+                    except Exception as e:
+                        # Avoid logging prompts, private descriptions, or provider response bodies.
+                        print(f"[GPT tag chunk] {type(e).__name__}")
+    except Exception as e:
+        print(f"[GPT assign tags] {type(e).__name__}")
     return result
 
 
-def assign_tags_with_gpt(descriptions: list, tag_list: list) -> dict:
-    """Returns {description: 'primary_tag'} — assigns one primary tag per description."""
-    if not OPENAI_API_KEY or not descriptions or not tag_list:
-        return {}
-    try:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        CHUNK  = 80
-        chunks = [descriptions[i:i+CHUNK] for i in range(0, len(descriptions), CHUNK)]
-        result = {}
-        with ThreadPoolExecutor(max_workers=5) as pool:
-            futures = {pool.submit(_gpt_tag_chunk, client, OPENAI_MODEL, tag_list, ch): ch
-                       for ch in chunks}
-            for fut in as_completed(futures):
-                try:
-                    result.update(fut.result())
-                except Exception as e:
-                    print(f"[GPT tag chunk] {type(e).__name__}: {e}")
-        return result
-    except Exception as e:
-        print(f"[GPT assign tags] {type(e).__name__}: {e}")
-        return {}
+def load_categorization_context(user_id):
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT guide FROM categorization_settings WHERE user_id=%s", (user_id,))
+            setting = cur.fetchone()
+            cur.execute("""
+                SELECT t.id, t.date::text, t.description, t.amount::float, t.source,
+                       t.manually_corrected, t.correction_scope, t.correction_note,
+                       pt.name AS primary_tag
+                FROM transactions t
+                LEFT JOIN tags pt ON pt.id=t.primary_tag_id AND pt.user_id=t.user_id
+                WHERE t.user_id=%s AND t.status='active' AND t.manually_corrected=TRUE
+                  AND (t.correction_scope IS NULL OR t.correction_scope='similar')
+                ORDER BY t.date DESC, t.id DESC LIMIT 5000
+            """, (user_id,))
+            history = [dict(row) for row in cur.fetchall()]
+    return (setting["guide"] if setting else ""), history
+
 
 # ── Description cleaning ──────────────────────────────────────────────────────────
 def clean_description(desc: str) -> str:
@@ -662,155 +695,6 @@ def clean_description(desc: str) -> str:
     desc = re.sub(r'(?i)^SP\s+', '', desc)
     desc = re.sub(r'(?i)^\*?TST\*?\s*', '', desc)
     return desc.strip()
-
-# ── History-based tag assignment ─────────────────────────────────────────────────
-_HISTORY_NOISE_TOKENS = {
-    "APL", "APLPAY", "APPLEPAY", "AUTH", "AUTHORIZED", "CARD", "CHECKCARD",
-    "CRD", "DBT", "DEBIT", "ONLINE", "PENDING", "PIN", "POS", "PURCHASE",
-    "RECUR", "RECURRING", "SIGNATURE", "VISA", "WEB",
-}
-
-_HISTORY_MATCH_LIMIT = 5000
-_HISTORY_MIN_FUZZY_LEN = 8
-
-def _normalize_description_for_history(desc: str) -> str:
-    """Normalize merchant descriptions for repeat matching without preserving IDs."""
-    raw_tokens = re.findall(r"[A-Z0-9]+", (desc or "").upper())
-    tokens = []
-    for token in raw_tokens:
-        if token in _HISTORY_NOISE_TOKENS or token.isdigit():
-            continue
-        if any(ch.isdigit() for ch in token):
-            token = re.sub(r"^\d+", "", token)
-            token = re.sub(r"\d+$", "", token)
-            if len(token) < 2 or any(ch.isdigit() for ch in token):
-                continue
-        if len(token) < 2:
-            continue
-        tokens.append(token)
-    return " ".join(tokens) or " ".join(raw_tokens[:4])
-
-def _choose_history_assignment(examples: list, allow_null: bool = False) -> tuple:
-    scores = {}
-    for ex in examples:
-        tag = ex["tag"]
-        if tag is None and not allow_null:
-            continue
-        weight = 4 if ex["manual"] else 1
-        scores[tag] = scores.get(tag, 0) + weight
-    if not scores:
-        return None, False
-
-    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-    tag, score = ranked[0]
-    second = ranked[1][1] if len(ranked) > 1 else 0
-    total = sum(scores.values())
-    accepted = score == total or (score >= 3 and score / total >= 0.67 and score - second >= 2)
-    return tag, accepted
-
-def assign_tags_from_history(user_id: int, rows: list) -> tuple:
-    """
-    Returns ({description: primary_tag}, {description, ...}).
-
-    The set contains descriptions with an explicit learned "no primary tag" match,
-    so GPT should not guess for them.
-    """
-    if not rows:
-        return {}, set()
-
-    desc_sources = {}
-    for row in rows:
-        desc = (row.get("description") or "").strip()
-        if not desc:
-            continue
-        desc_sources.setdefault(desc, set()).add((row.get("source") or "").strip().lower())
-    if not desc_sources:
-        return {}, set()
-
-    with db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT t.description, t.source, COALESCE(t.manually_corrected, FALSE) AS manually_corrected,
-                       pt.name AS primary_tag
-                FROM transactions t
-                LEFT JOIN tags pt ON pt.id = t.primary_tag_id AND pt.user_id = t.user_id
-                WHERE t.user_id = %s
-                  AND t.status = 'active'
-                  AND t.description <> ''
-                  AND (t.primary_tag_id IS NOT NULL OR t.manually_corrected = TRUE)
-                ORDER BY COALESCE(t.manually_corrected, FALSE) DESC, t.date DESC, t.id DESC
-                LIMIT %s
-            """, (user_id, _HISTORY_MATCH_LIMIT))
-            history_rows = [dict(r) for r in cur.fetchall()]
-
-    by_norm = {}
-    by_norm_source = {}
-    tagged_examples = []
-    for row in history_rows:
-        norm = _normalize_description_for_history(row["description"])
-        if not norm:
-            continue
-        ex = {
-            "norm": norm,
-            "source": (row.get("source") or "").strip().lower(),
-            "manual": bool(row.get("manually_corrected")),
-            "tag": row.get("primary_tag"),
-        }
-        by_norm.setdefault(norm, []).append(ex)
-        if ex["source"]:
-            by_norm_source.setdefault((norm, ex["source"]), []).append(ex)
-        if ex["tag"]:
-            tagged_examples.append(ex)
-
-    assignments = {}
-    learned_null = set()
-    unresolved = []
-
-    for desc, sources in desc_sources.items():
-        norm = _normalize_description_for_history(desc)
-        tag = None
-        accepted = False
-
-        for source in sources:
-            tag, accepted = _choose_history_assignment(
-                by_norm_source.get((norm, source), []), allow_null=True)
-            if accepted:
-                break
-
-        if not accepted:
-            tag, accepted = _choose_history_assignment(by_norm.get(norm, []), allow_null=True)
-
-        if accepted:
-            if tag:
-                assignments[desc] = tag
-            else:
-                learned_null.add(desc)
-        else:
-            unresolved.append((desc, norm, sources))
-
-    for desc, norm, sources in unresolved:
-        if len(norm) < _HISTORY_MIN_FUZZY_LEN:
-            continue
-        tag_scores = {}
-        for ex in tagged_examples:
-            if ex["norm"] == norm or len(ex["norm"]) < _HISTORY_MIN_FUZZY_LEN:
-                continue
-            ratio = SequenceMatcher(None, norm, ex["norm"]).ratio()
-            same_source = ex["source"] and ex["source"] in sources
-            if ratio < (0.90 if same_source else 0.95):
-                continue
-            score = ratio + (0.04 if same_source else 0) + (0.03 if ex["manual"] else 0)
-            tag_scores[ex["tag"]] = tag_scores.get(ex["tag"], 0) + score
-
-        if not tag_scores:
-            continue
-        ranked = sorted(tag_scores.items(), key=lambda item: item[1], reverse=True)
-        top_tag, top_score = ranked[0]
-        second_score = ranked[1][1] if len(ranked) > 1 else 0
-        if top_score >= 0.95 and top_score - second_score >= 0.05:
-            assignments[desc] = top_tag
-
-    return assignments, learned_null
 
 # ── Dedup key ─────────────────────────────────────────────────────────────────────
 def make_dedup_key(date: str, source: str, amount: float, description: str, seq: int = 1) -> str:
@@ -1181,6 +1065,29 @@ def _apply_tag_filter(where, params, tag, tag_match, uid):
         where.append("(" + " OR ".join(clauses) + ")")
     return where, params
 
+class CategorizationGuideUpdate(BaseModel):
+    guide: str = Field(max_length=12000)
+
+
+@app.get("/api/categorization-guide")
+def get_categorization_guide(user: dict = Depends(get_current_user)):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT guide FROM categorization_settings WHERE user_id=%s", (user["id"],))
+            row = cur.fetchone()
+    return {"guide": row[0] if row else ""}
+
+
+@app.put("/api/categorization-guide")
+def save_categorization_guide(body: CategorizationGuideUpdate, user: dict = Depends(require_edit)):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO categorization_settings(user_id, guide) VALUES(%s,%s)
+                ON CONFLICT(user_id) DO UPDATE SET guide=EXCLUDED.guide, updated_at=NOW()
+            """, (user["id"], body.guide.strip()))
+    return {"guide": body.guide.strip()}
+
 # ── Transactions ──────────────────────────────────────────────────────────────────
 @app.get("/api/transactions")
 def get_transactions(
@@ -1194,7 +1101,9 @@ def get_transactions(
 ):
     uid = user["id"]
     where, params = ["t.user_id = %s"], [uid]
-    if status in ("active", "deleted", "deduped"):
+    if status == "review":
+        where.extend(["t.status = 'active'", "t.needs_review = TRUE"])
+    elif status in ("active", "deleted", "deduped"):
         where.append("t.status = %s"); params.append(status)
     if source:      where.append("t.source = %s");          params.append(source)
     if tag:
@@ -1220,7 +1129,10 @@ def get_transactions(
             cur.execute(f"""
                 SELECT t.id, t.date::text, t.description,
                        t.amount::float, t.source, t.import_file,
-                       t.status, t.dedup_of,
+                       t.status, t.dedup_of, t.correction_scope, t.correction_note,
+                       t.needs_review, st.name AS suggested_tag,
+                       t.categorization_reason, t.categorization_confidence,
+                       t.categorization_example_ids,
                        pt.name AS primary_tag,
                        COALESCE(ARRAY(
                            SELECT tg2.name FROM (
@@ -1241,6 +1153,7 @@ def get_transactions(
                        ), '{{}}') AS tags
                 FROM transactions t
                 LEFT JOIN tags pt ON pt.id = t.primary_tag_id
+                LEFT JOIN tags st ON st.id = t.suggested_tag_id AND st.user_id = t.user_id
                 WHERE {wc}
                 ORDER BY {sc} {sd}, t.id {sd}
                 LIMIT %s OFFSET %s
@@ -1450,22 +1363,14 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
         for r in rows:
             r["description"] = clean_description(r["description"])
 
-        # 2. Classify repeats from history, then load tags for GPT fallback
-        history_tag_map, history_null_descs = assign_tags_from_history(user_id, rows)
+        # 2. Snapshot owner-scoped guidance and human corrections; release DB for AI.
+        guide, history = load_categorization_context(user_id)
         with db() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT name FROM tags WHERE user_id=%s ORDER BY name", (user_id,))
                 tag_list = [r[0] for r in cur.fetchall()]
-
-        # 3. GPT tag assignment for anything history could not classify — no DB connection held
-        unique_descs = list({r["description"] for r in rows})
-        gpt_descs = [
-            desc for desc in unique_descs
-            if desc not in history_tag_map and desc not in history_null_descs
-        ]
-        gpt_tag_map = assign_tags_with_gpt(gpt_descs, tag_list) if tag_list else {}
-        primary_tag_map = {**gpt_tag_map, **history_tag_map}
-        history_tagged = history_untagged = gpt_tagged = 0
+        decisions = assign_tags_with_gpt(rows, tag_list, guide, history)
+        gpt_tagged = needs_review = 0
 
         # 4. Insert transactions, then tags
         dedup_keys = [r["dedup_key"] for r in rows]
@@ -1482,22 +1387,16 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
 
                 new_count = dupe_count = 0
                 insert_rows = []
-                dedup_key_to_desc = {}
-                for r in rows:
+                decision_by_key = {}
+                for r, decision in zip(rows, decisions):
                     is_dupe   = r["dedup_key"] in existing_keys
                     tx_status = "deduped" if is_dupe else "active"
                     insert_rows.append((user_id, r["date"], r["description"],
                                         r["amount"], r["source"], r["dedup_key"],
                                         tx_status, r["dedup_key"] if is_dupe else None, import_name))
-                    dedup_key_to_desc[r["dedup_key"]] = r["description"]
+                    decision_by_key[r["dedup_key"]] = decision
                     if tx_status == "active":
                         new_count += 1
-                        if r["description"] in history_tag_map:
-                            history_tagged += 1
-                        elif r["description"] in history_null_descs:
-                            history_untagged += 1
-                        elif r["description"] in gpt_tag_map:
-                            gpt_tagged += 1
                     else:
                         dupe_count += 1
 
@@ -1509,32 +1408,26 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                     RETURNING id, dedup_key
                 """, insert_rows, fetch=True)
 
-                # Upsert primary tags needed and build name→id map
-                all_needed_tags = set()
-                for desc in dedup_key_to_desc.values():
-                    primary = primary_tag_map.get(desc)
-                    if primary:
-                        all_needed_tags.add(primary)
-                tag_name_to_id = {}
-                for name in all_needed_tags:
-                    cur.execute(
-                        "INSERT INTO tags (user_id, name) VALUES (%s,%s) "
-                        "ON CONFLICT (user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
-                        (user_id, name)
-                    )
-                    tag_name_to_id[name] = cur.fetchone()[0]
-
-                # Assign primary tag to newly inserted transactions
-                for (tx_id, dk) in returned:
-                    desc = dedup_key_to_desc.get(dk, "")
-                    primary_name = primary_tag_map.get(desc)
-                    if primary_name:
-                        tag_id = tag_name_to_id.get(primary_name)
-                        if tag_id:
-                            cur.execute(
-                                "UPDATE transactions SET primary_tag_id=%s, primary_migration_status='auto' WHERE id=%s",
-                                (tag_id, tx_id)
-                            )
+                # Resolve only categories that still exist; do not resurrect deleted tags.
+                cur.execute("SELECT name, id FROM tags WHERE user_id=%s", (user_id,))
+                tag_ids = dict(cur.fetchall())
+                for tx_id, dk in returned:
+                    decision = decision_by_key[dk]
+                    if decision["primary_tag"] and decision["primary_tag"] not in tag_ids:
+                        decision = review("The suggested category was removed during import; choose a category.")
+                    if dk not in existing_keys:
+                        if decision["needs_review"]:
+                            needs_review += 1
+                        elif decision["primary_tag"]:
+                            gpt_tagged += 1
+                    cur.execute("""
+                        UPDATE transactions SET primary_tag_id=%s, primary_migration_status='auto',
+                            needs_review=%s, suggested_tag_id=%s, categorization_reason=%s,
+                            categorization_confidence=%s, categorization_example_ids=%s
+                        WHERE id=%s AND user_id=%s
+                    """, (tag_ids.get(decision["primary_tag"]), decision["needs_review"],
+                          tag_ids.get(decision["suggested_tag"]), decision["reason"],
+                          decision["confidence"], decision["example_ids"], tx_id, user_id))
 
                 cur.execute("""
                     INSERT INTO uploaded_files (user_id, filename, file_hash, source, tx_new, tx_dupes)
@@ -1544,8 +1437,7 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
 
         set_status("done", {"filename": filename, "status": "ok", "source": source,
                             "new": new_count, "dupes": dupe_count,
-                            "history_tagged": history_tagged,
-                            "history_untagged": history_untagged,
+                            "needs_review": needs_review,
                             "gpt_tagged": gpt_tagged})
     except Exception as e:
         print(f"[upload_job:{job_id}] {type(e).__name__}: {e}")
@@ -1779,13 +1671,19 @@ def clear_transaction_tags(tx_id: int, user: dict = Depends(require_edit)):
             if not cur.fetchone():
                 raise HTTPException(404, "Transaction not found")
             cur.execute(
-                "UPDATE transactions SET primary_tag_id=NULL, manually_corrected=TRUE WHERE id=%s",
+                """UPDATE transactions SET primary_tag_id=NULL, manually_corrected=TRUE,
+                    correction_scope='transaction', correction_note='', needs_review=FALSE,
+                    suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
+                    categorization_example_ids='{}' WHERE id=%s""",
                 (tx_id,))
             cur.execute("DELETE FROM transaction_tags WHERE transaction_id=%s", (tx_id,))
     return {"ok": True, "id": tx_id, "tags": [], "primary_tag": None}
 
 class PrimaryTagUpdate(BaseModel):
-    primary_tag: Optional[str] = None  # null to clear
+    primary_tag: Optional[str] = Field(default=None, max_length=200)  # null to clear
+    correction_scope: Literal["transaction", "similar"] = "transaction"
+    correction_note: str = Field(default="", max_length=1000)
+
 
 @app.put("/api/transactions/{tx_id}/primary-tag")
 def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(require_edit)):
@@ -1806,8 +1704,11 @@ def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(req
                         "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
                         (tx_id, old_primary_id))
                 cur.execute(
-                    "UPDATE transactions SET primary_tag_id=NULL, manually_corrected=TRUE WHERE id=%s",
-                    (tx_id,))
+                    """UPDATE transactions SET primary_tag_id=NULL, manually_corrected=TRUE,
+                        correction_scope=%s, correction_note=%s, needs_review=FALSE,
+                        suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
+                        categorization_example_ids='{}' WHERE id=%s""",
+                    (body.correction_scope, body.correction_note.strip(), tx_id))
                 return {"ok": True, "id": tx_id, "primary_tag": None}
 
             tag_name = body.primary_tag.strip()
@@ -1834,60 +1735,60 @@ def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(req
 
             # Set new primary
             cur.execute(
-                "UPDATE transactions SET primary_tag_id=%s, manually_corrected=TRUE WHERE id=%s",
-                (new_tag_id, tx_id))
+                """UPDATE transactions SET primary_tag_id=%s, manually_corrected=TRUE,
+                    correction_scope=%s, correction_note=%s, needs_review=FALSE,
+                    suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
+                    categorization_example_ids='{}' WHERE id=%s""",
+                (new_tag_id, body.correction_scope, body.correction_note.strip(), tx_id))
     return {"ok": True, "id": tx_id, "primary_tag": tag_name}
 
+class BulkTagUpdate(BaseModel):
+    ids: List[int] = Field(min_length=1, max_length=1000)
+    tag: str = Field(min_length=1, max_length=200)
+    action: Literal["add", "remove", "set-primary"] = "add"
+    correction_scope: Literal["transaction", "similar"] = "transaction"
+    correction_note: str = Field(default="", max_length=1000)
+
+
 @app.post("/api/transactions/bulk-tag")
-def bulk_tag_transactions(body: dict, user: dict = Depends(require_edit)):
-    ids = body.get("ids", [])
-    tag_name = (body.get("tag") or "").strip()
-    action = body.get("action", "add")  # "add", "remove", or "set-primary"
-    if not ids: raise HTTPException(400, "No IDs provided")
-    if not tag_name: raise HTTPException(400, "Tag name required")
+def bulk_tag_transactions(body: BulkTagUpdate, user: dict = Depends(require_edit)):
+    tag_name = body.tag.strip()
+    if not tag_name:
+        raise HTTPException(400, "Tag name required")
     uid = user["id"]
     with db() as conn:
         with conn.cursor() as cur:
-            if action == "remove":
+            cur.execute("SELECT id, primary_tag_id FROM transactions WHERE user_id=%s AND id=ANY(%s)",
+                        (uid, body.ids))
+            owned = cur.fetchall()
+            if not owned:
+                raise HTTPException(404, "Transactions not found")
+            ids = [row[0] for row in owned]
+            if body.action == "remove":
                 cur.execute("""
-                    DELETE FROM transaction_tags tt
-                    USING tags tg
-                    WHERE tg.id = tt.tag_id
-                      AND tg.user_id = %s
-                      AND tg.name = %s
-                      AND tt.transaction_id = ANY(%s)
+                    DELETE FROM transaction_tags tt USING tags tg
+                    WHERE tg.id=tt.tag_id AND tg.user_id=%s AND tg.name=%s
+                      AND tt.transaction_id=ANY(%s)
                 """, (uid, tag_name, ids))
-            elif action == "set-primary":
-                # Upsert tag
-                cur.execute(
-                    "INSERT INTO tags (user_id, name) VALUES (%s,%s) ON CONFLICT (user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
-                    (uid, tag_name))
-                tag_id = cur.fetchone()[0]
-                for tx_id in ids:
-                    # Remove new primary from secondary if present
-                    cur.execute("DELETE FROM transaction_tags WHERE transaction_id=%s AND tag_id=%s", (tx_id, tag_id))
-                    # Demote old primary to secondary if different
-                    cur.execute("SELECT primary_tag_id FROM transactions WHERE id=%s AND user_id=%s", (tx_id, uid))
-                    row = cur.fetchone()
-                    if row and row[0] and row[0] != tag_id:
-                        cur.execute(
-                            "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                            (tx_id, row[0]))
-                    cur.execute(
-                        "UPDATE transactions SET primary_tag_id=%s, manually_corrected=TRUE WHERE id=%s AND user_id=%s",
-                        (tag_id, tx_id, uid))
             else:
-                # Upsert tag
-                cur.execute(
-                    "INSERT INTO tags (user_id, name) VALUES (%s,%s) ON CONFLICT (user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
-                    (uid, tag_name)
-                )
+                cur.execute("""
+                    INSERT INTO tags(user_id,name) VALUES(%s,%s)
+                    ON CONFLICT(user_id,name) DO UPDATE SET name=EXCLUDED.name RETURNING id
+                """, (uid, tag_name))
                 tag_id = cur.fetchone()[0]
-                for tx_id in ids:
-                    cur.execute(
-                        "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                        (tx_id, tag_id)
-                    )
+                for tx_id, old_primary in owned:
+                    if body.action == "set-primary":
+                        cur.execute("DELETE FROM transaction_tags WHERE transaction_id=%s AND tag_id=%s", (tx_id, tag_id))
+                        if old_primary and old_primary != tag_id:
+                            cur.execute("INSERT INTO transaction_tags VALUES(%s,%s) ON CONFLICT DO NOTHING", (tx_id, old_primary))
+                        cur.execute("""
+                            UPDATE transactions SET primary_tag_id=%s, manually_corrected=TRUE,
+                                correction_scope=%s, correction_note=%s, needs_review=FALSE,
+                                suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
+                                categorization_example_ids='{}' WHERE id=%s AND user_id=%s
+                        """, (tag_id, body.correction_scope, body.correction_note.strip(), tx_id, uid))
+                    else:
+                        cur.execute("INSERT INTO transaction_tags VALUES(%s,%s) ON CONFLICT DO NOTHING", (tx_id, tag_id))
     return {"ok": True, "updated": len(ids)}
 
 # ── Primary tag migration review ─────────────────────────────────────────────────

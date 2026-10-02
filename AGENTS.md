@@ -63,6 +63,7 @@ LOCAL_DEV=true
 DATABASE_URL=postgresql://spending:spending@localhost:5434/spending
 OPENAI_API_KEY=sk-...   # Optional — falls back to no tags if absent
 OPENAI_MODEL=gpt-4.1-mini
+OPENAI_TAG_MODEL=gpt-6-astra
 
 # Run
 cd webapp && pip install -r requirements.txt
@@ -122,6 +123,7 @@ Environment variables (set via EBS console or `eb setenv`):
 - `DATABASE_URL` — RDS PostgreSQL connection string
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
+- `OPENAI_TAG_MODEL` — categorization only; defaults to `gpt-6-astra`
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL`
 - `OWNER_EMAIL` — the single account owner; invited users share this owner's data
 - `SECRET_KEY` — itsdangerous session signing key
@@ -137,7 +139,7 @@ Environment variables (set via EBS console or `eb setenv`):
 | Auth | Google OAuth 2.0 (or local dev bypass) |
 | Sessions | itsdangerous signed cookies (30-day) |
 | PDF/CSV parsing | GPT-only (pdfplumber for text extraction, no hand-coded parsers) |
-| AI tag assignment | OpenAI API (gpt-4.1-mini) |
+| AI tag assignment | OpenAI API (`OPENAI_TAG_MODEL`, default `gpt-6-astra`) |
 | Frontend | Vanilla JS + inline CSS, no frameworks |
 | Charts | Chart.js 4.4.1 |
 
@@ -289,10 +291,25 @@ DB migrations run on startup to retroactively clean existing records.
 6. `clean_description()` applied to all rows before GPT tag assignment and DB insert
 
 ### Tag Assignment Pipeline (on upload)
-GPT assigns zero or more tags per transaction from the user's existing tag list:
-1. `assign_tags_with_gpt(descriptions, tag_list)` — batch GPT call (gpt-4.1-mini); returns `{description: [tag, ...]}` map
-2. If no tags exist or GPT is unavailable, transactions are imported with no tags
-3. After bulk insert (via `execute_values` with `RETURNING id`), tags are upserted and `transaction_tags` rows inserted
+1. `load_categorization_context(user_id)` loads the saved guide and up to 5,000
+   active manual primary corrections. One-time corrections and automatic labels
+   are excluded; older manual corrections are legacy evidence with unknown scope.
+2. `categorization.py` retrieves up to six relevant manual examples per row using
+   description, amount, sign, source and recency, retaining conflicts for review.
+3. `assign_tags_with_gpt(rows, tag_list, guide, history)` sends rows in batches of
+   20 using `OPENAI_TAG_MODEL` (default `gpt-6-astra`), low reasoning and JSON mode.
+   It returns one validated decision per row, preserving amount/source differences.
+4. Confident results become primary tags. Conflicting, uncertain, invalid or failed
+   results remain unassigned with `needs_review`, an optional suggested tag and a
+   short reason. Broad merchants need a supported explicit preference and note.
+5. Human primary corrections store `correction_scope` (`transaction` or `similar`)
+   and `correction_note`, and clear review metadata. Clear-all is always one-time.
+
+`OPENAI_MODEL` remains the separate statement extraction setting. The guide and
+selected manual examples are sent to OpenAI during new imports; existing labels
+are not automatically rewritten. See `webapp/README.md` for the API contract and
+synthetic unit/integration checks. The integration suite requires a disposable
+local `_test` database and must never run against real financial data.
 
 ### Tag Exclusion
 A transaction is excluded from spending totals if **any** of its tags has `excluded_from_spending = TRUE`. This is enforced via a `NOT IN` subquery on `transaction_tags` in both `/api/stats` and `/api/transactions`. Excluded tags are also filtered out of the `by_tag` stats results.

@@ -486,6 +486,20 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   #cat-modal,#tag-modal{padding:20px;width:calc(100vw - 32px)}
   #invite-modal{padding:20px;width:calc(100vw - 32px)}
 }
+/* Categorization guide and human review */
+.status-tab[data-status=review].active{border-color:#f59e0b;color:#f59e0b}
+.category-dialog{margin:auto;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:min(640px,90vw);max-height:85vh;overflow:auto}
+.category-dialog::backdrop{background:#0009}
+.category-dialog h2{margin:0 0 12px}
+.category-dialog p{line-height:1.5}
+.category-dialog label{display:block;margin:14px 0 6px}
+.category-dialog textarea,.category-dialog input[type=text]{display:block;width:100%;box-sizing:border-box;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:10px;font:inherit}
+.category-dialog textarea{resize:vertical;min-height:90px}
+.category-dialog .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.category-dialog fieldset{border:1px solid var(--border);border-radius:6px;margin:16px 0;padding:0 14px 12px}
+.category-dialog .help{color:var(--muted);font-size:.85rem}
+.category-review{display:block;margin-top:6px;max-width:300px;white-space:normal;color:#f59e0b;font-size:.78rem}
+.category-edit{font-size:.75rem;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);padding:3px 7px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -511,6 +525,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 <!-- User header -->
 <div id="user-header">
   <div style="display:flex;gap:8px;margin-right:auto">
+    <button class="btn" onclick="openGuideDialog()">Categorization guide</button>
     <button class="btn" onclick="openTagModal()">⚙ <span class="btn-label">Tags</span></button>
   </div>
   <div id="user-menu-trigger" onclick="toggleUserMenu()">
@@ -632,6 +647,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   <!-- Status tabs -->
   <div class="status-tabs">
     <button class="status-tab active" data-status="active"  onclick="setViewStatus('active')">Active</button>
+    <button class="status-tab" data-status="review" onclick="setViewStatus('review')">Needs review</button>
     <button class="status-tab"        data-status="deleted" onclick="setViewStatus('deleted')">🗑 Deleted</button>
     <button class="status-tab"        data-status="deduped" onclick="setViewStatus('deduped')">⟳ Deduped</button>
     <span id="status-hint" style="font-size:.75rem;color:var(--muted);margin-left:4px"></span>
@@ -734,6 +750,34 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     </div>
   </div>
 </div>
+
+<dialog id="guide-dialog" class="category-dialog" aria-labelledby="guide-title">
+  <h2 id="guide-title">Categorization guide</h2>
+  <p class="help">Describe what your categories mean and any exceptions. This guide and relevant manual examples help categorize future imports. Existing transactions stay as they are.</p>
+  <label for="category-guide">Your instructions</label>
+  <textarea id="category-guide" rows="10" maxlength="12000" placeholder="For example: Groceries covers food for home. Restaurant delivery belongs in Dining. Amazon purchases can have different purposes; ask me to review unclear ones."></textarea>
+  <p id="guide-tags" class="help"></p>
+  <p class="help">The guide and up to six relevant manual examples per transaction are sent to OpenAI during categorization. One-time corrections are excluded from examples.</p>
+  <div class="dialog-actions"><button class="btn" onclick="document.getElementById('guide-dialog').close()">Close</button><button class="btn" id="save-guide-btn" onclick="saveGuide()">Save guide</button></div>
+</dialog>
+
+<dialog id="correction-dialog" class="category-dialog" aria-labelledby="correction-title">
+  <h2 id="correction-title">Review category</h2>
+  <p id="correction-transaction"></p>
+  <p id="correction-reason" class="help"></p>
+  <label for="correction-tag">Primary category</label>
+  <input id="correction-tag" type="text" list="correction-tag-options" maxlength="200" placeholder="Choose or enter a category">
+  <datalist id="correction-tag-options"></datalist>
+  <p class="help" id="correction-empty-help">Leave blank to keep this transaction without a primary category.</p>
+  <fieldset><legend>Apply this correction</legend>
+    <label><input type="radio" name="correction-scope" value="transaction" checked> <span id="correction-one-label">Just this transaction</span></label>
+    <label><input type="radio" name="correction-scope" value="similar"> Use for similar transactions</label>
+  </fieldset>
+  <p class="help">“Use for similar transactions” makes this an example for future imports. The amount, account and your note help determine when it applies.</p>
+  <label for="correction-note">Why this category? <span class="help">(optional)</span></label>
+  <textarea id="correction-note" maxlength="1000" rows="3" placeholder="Explain the purpose or an exception the AI should remember."></textarea>
+  <div class="dialog-actions"><button class="btn" onclick="document.getElementById('correction-dialog').close()">Cancel</button><button class="btn" id="save-correction-btn" onclick="saveCorrection()">Save correction</button></div>
+</dialog>
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -889,7 +933,7 @@ function setViewStatus(s) {
     bulkRestoreBtn.style.display = '';
     purgeBtn.style.display = '';
   } else {
-    hint.textContent = '';
+    hint.textContent = s === 'review' ? 'Uncertain suggestions are unassigned until reviewed. Other filters still apply; charts show all active spending.' : '';
     actionsHeader.style.display = 'none';
     bulkDeleteBtn.style.display  = '';
     bulkRestoreBtn.style.display = 'none';
@@ -916,6 +960,7 @@ async function loadTransactions() {
       page: currentPage, per_page: 100,
       sort_by: sortCol, sort_dir: sortDir
     }));
+    if (currentPage > data.pages) { currentPage = data.pages; return loadTransactions(); }
     renderTable(data.transactions);
     renderPagination(data.page, data.pages, data.total);
   } catch(e) { console.error('loadTransactions', e); }
@@ -1170,14 +1215,14 @@ function renderTable(txs) {
   currentTxs = txs || [];
   const tbody = document.getElementById('tx-body');
   const selectAllCb = document.getElementById('select-all-cb');
-  const showActions = viewStatus !== 'active';
+  const showActions = ['deleted', 'deduped'].includes(viewStatus);
 
   if (!txs || !txs.length) {
     const emptyMsg = viewStatus === 'deleted'
       ? 'No deleted transactions.'
       : viewStatus === 'deduped'
         ? 'No cross-statement duplicates found.'
-        : 'No transactions found. Drop statement files above to get started.';
+        : viewStatus === 'review' ? 'No transactions need review with these filters.' : 'No transactions found. Drop statement files above to get started.';
     tbody.innerHTML = `<tr><td colspan="${showActions ? 8 : 7}" style="padding:0">
       <div class="empty-state">
         <div class="big">${viewStatus === 'active' ? '📭' : '✓'}</div>
@@ -1626,11 +1671,11 @@ function tagsCell(t) {
   // Add secondary tag button
   html += `<button class="tag-add-btn" onclick="startTagAdd(${t.id},this,event)" title="Add secondary tag">+</button>`;
   if (t.primary_tag || secondaryTags.length) {
-    html += `<button class="tag-clear-all-btn" onclick="clearAllTagsFromTx(${t.id},this,event)" title="Remove all tags" aria-label="Remove all tags">&times;</button>`;
+    html += `<button class="tag-clear-all-btn" onclick="clearAllTagsFromTx(${t.id},this,event)" title="Remove all tags (this transaction only)" aria-label="Remove all tags (this transaction only)">&times;</button>`;
   }
-  // Set primary button (if no primary)
-  if (!t.primary_tag) {
-    html += `<button class="primary-set-btn" onclick="startPrimaryTagSet(${t.id},this,event)" title="Set primary tag">&#9873;</button>`;
+  html += `<button class="category-edit" onclick="openCorrection(${t.id})">${t.needs_review ? 'Review' : t.primary_tag ? 'Edit category' : 'Set category'}</button>`;
+  if (t.needs_review) {
+    html += `<span class="category-review">${t.suggested_tag ? `Suggestion: ${escHtml(t.suggested_tag)}. ` : ''}${escHtml(t.categorization_reason || 'Choose a category.')}</span>`;
   }
   return `<span class="tags-cell">${html}</span>`;
 }
@@ -1672,99 +1717,76 @@ function startTagAdd(txId, btn, evt) {
   inp.addEventListener('blur', () => setTimeout(commit, 200));
 }
 
-function startPrimaryTagSet(txId, btn, evt) {
-  evt.stopPropagation();
-  const cell = btn.closest('.tags-cell') || btn.parentElement;
-  const tx   = currentTxs.find(t => t.id === txId);
-  const exclude = [...(tx?.tags || [])];
-  if (tx?.primary_tag) exclude.push(tx.primary_tag);
-  const inp  = document.createElement('input');
-  inp.type        = 'text';
-  inp.className   = 'pill-select';
-  inp.placeholder = 'primary…';
-  inp.style.width = '90px';
-  btn.replaceWith(inp);
-  inp.focus();
-
-  const ac = attachTagAutocomplete(inp, {
-    exclude,
-    onPick: tag => { committed = true; inp.replaceWith(btn); setPrimaryTag(txId, tag, cell); }
-  });
-
-  let committed = false;
-  const commit = async () => {
-    if (committed) return;
-    committed = true;
-    ac.closeDropdown();
-    const name = inp.value.trim();
-    inp.replaceWith(btn);
-    if (!name) return;
-    await setPrimaryTag(txId, name, cell);
-  };
-  inp.addEventListener('keydown', e => {
-    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { committed = true; ac.closeDropdown(); inp.replaceWith(btn); }
-  }, true);
-  inp.addEventListener('blur', () => setTimeout(commit, 200));
+async function openGuideDialog() {
+  try {
+    const data = await api('/api/categorization-guide');
+    document.getElementById('category-guide').value = data.guide;
+    document.getElementById('category-guide').readOnly = currentUser?.role === 'read';
+    document.getElementById('save-guide-btn').hidden = currentUser?.role === 'read';
+    document.getElementById('guide-tags').textContent = `Available categories: ${tags.map(t => t.name).join(', ') || 'Create categories in Tags first.'}`;
+    document.getElementById('guide-dialog').showModal();
+  } catch(e) { showToast('Could not load guide', e.message, 'error'); }
 }
 
-async function setPrimaryTag(txId, tagName, cell) {
+async function saveGuide() {
+  const btn = document.getElementById('save-guide-btn');
+  btn.disabled = true;
   try {
-    await api(`/api/transactions/${txId}/primary-tag`, {
-      method: 'PUT',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ primary_tag: tagName })
-    });
-    const tx = currentTxs.find(t => t.id === txId);
-    if (tx) {
-      // If old primary exists and differs, it was demoted to secondary by backend
-      if (tx.primary_tag && tx.primary_tag !== tagName) {
-        tx.tags = [...new Set([...(tx.tags || []), tx.primary_tag])];
-      }
-      // If new primary was secondary, remove from secondary list
-      tx.tags = (tx.tags || []).filter(t => t !== tagName);
-      tx.primary_tag = tagName;
-      tx.primary_tag_implicit = []; // will be refreshed on next load
-    }
-    if (!tags.some(t => t.name === tagName)) { tags.push({name: tagName, excluded_from_spending: false}); tags.sort((a,b) => a.name.localeCompare(b.name)); }
-    const td = cell.closest('td');
-    if (td) td.innerHTML = tagsCell(tx);
-    await loadTags();
-    loadStats();
-  } catch(e) {
-    showToast('Failed to set primary tag', e.message, 'error');
-  }
+    await api('/api/categorization-guide', {method:'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({guide:document.getElementById('category-guide').value})});
+    document.getElementById('guide-dialog').close();
+    showToast('Guide saved', 'It will apply to future imports.', 'success');
+  } catch(e) { showToast('Could not save guide', e.message, 'error'); }
+  finally { btn.disabled = false; }
 }
 
-async function clearPrimaryTag(txId, evt) {
-  evt.stopPropagation();
+let correctionTarget = null;
+function openCorrection(txId, options = {}) {
+  const tx = currentTxs.find(t => t.id === txId);
+  const ids = options.ids || [txId];
+  if (!options.ids && !tx) return;
+  correctionTarget = {ids, bulk:!!options.ids};
+  document.getElementById('correction-title').textContent = tx?.needs_review ? 'Review category' : 'Edit category';
+  document.getElementById('correction-transaction').textContent = options.ids
+    ? `${ids.length} selected transactions` : `${tx.date} · ${tx.description} · $${Number(tx.amount).toFixed(2)} · ${tx.source}`;
+  document.getElementById('correction-reason').textContent = options.ids ? '' : tx.categorization_reason || '';
+  document.getElementById('correction-tag').value = options.tag !== undefined ? options.tag : tx?.suggested_tag || tx?.primary_tag || '';
+  document.getElementById('correction-tag-options').innerHTML = tags.map(t => `<option value="${escHtml(t.name)}"></option>`).join('');
+  document.getElementById('correction-note').value = options.ids ? '' : tx.correction_note || '';
+  const scope = !options.ids && tx.correction_scope === 'similar' ? 'similar' : 'transaction';
+  document.querySelectorAll('[name=correction-scope]').forEach(r => r.checked = r.value === scope);
+  document.getElementById('correction-one-label').textContent = options.ids ? 'Only the selected transactions' : 'Just this transaction';
+  document.getElementById('correction-empty-help').hidden = !!options.ids;
+  document.getElementById('save-correction-btn').hidden = currentUser?.role === 'read';
+  document.getElementById('correction-dialog').showModal();
+}
+
+async function saveCorrection() {
+  if (!correctionTarget) return;
+  const tag = document.getElementById('correction-tag').value.trim();
+  if (correctionTarget.bulk && !tag) { showToast('Choose a category for the selected transactions', '', 'warn'); return; }
+  const data = {correction_scope:document.querySelector('[name=correction-scope]:checked').value,
+                correction_note:document.getElementById('correction-note').value};
+  const btn = document.getElementById('save-correction-btn');
+  btn.disabled = true;
   try {
-    await api(`/api/transactions/${txId}/primary-tag`, {
-      method: 'PUT',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ primary_tag: null })
-    });
-    const tx = currentTxs.find(t => t.id === txId);
-    if (tx) {
-      // Old primary gets demoted to secondary by backend
-      if (tx.primary_tag) {
-        tx.tags = [...new Set([...(tx.tags || []), tx.primary_tag])];
-      }
-      tx.primary_tag = null;
-      tx.primary_tag_implicit = [];
-    }
-    const chip = evt.target.closest('.tag-chip');
-    if (chip) {
-      const cell = chip.closest('.tags-cell');
-      if (cell) {
-        const td = cell.closest('td');
-        if (td) td.innerHTML = tagsCell(tx);
-      }
-    }
-    loadStats();
-  } catch(e) {
-    showToast('Failed to clear primary tag', e.message, 'error');
-  }
+    const {ids, bulk} = correctionTarget;
+    await api(bulk ? '/api/transactions/bulk-tag' : `/api/transactions/${ids[0]}/primary-tag`, {
+      method:bulk ? 'POST' : 'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(bulk ? {...data, ids, tag, action:'set-primary'} : {...data, primary_tag:tag || null})});
+    document.getElementById('correction-dialog').close();
+    correctionTarget = null;
+    if (bulk) { document.getElementById('bulk-tag-input').value = ''; }
+    clearSelection();
+    showToast('Category saved', data.correction_scope === 'similar' ? 'Saved as an example for future imports.' : 'Saved as a one-time correction.', 'success');
+    await Promise.all([loadTags(), loadStats(), loadTransactions()]);
+  } catch(e) { showToast('Could not save category', e.message, 'error'); }
+  finally { btn.disabled = false; }
+}
+
+function clearPrimaryTag(txId, evt) {
+  evt.stopPropagation();
+  openCorrection(txId, {tag:''});
 }
 
 async function addTagToTx(txId, tagName, cell) {
@@ -1823,9 +1845,14 @@ async function clearAllTagsFromTx(txId, btn, evt) {
     tx.tags = [];
     tx.primary_tag = null;
     tx.primary_tag_implicit = [];
+    tx.needs_review = false;
+    tx.correction_scope = 'transaction';
+    tx.correction_note = '';
+    tx.suggested_tag = null;
+    tx.categorization_reason = '';
     const td = btn.closest('td');
     if (td) td.innerHTML = tagsCell(tx);
-    loadStats();
+    await Promise.all([loadStats(), loadTransactions()]);
   } catch(e) {
     btn.disabled = false;
     showToast('Failed to remove tags', e.message, 'error');
@@ -1983,6 +2010,7 @@ async function uploadFiles(files, force = false) {
           if (r.history_tagged) classified.push(`${r.history_tagged} from history`);
           if (r.history_untagged) classified.push(`${r.history_untagged} left untagged`);
           if (r.gpt_tagged) classified.push(`${r.gpt_tagged} by GPT`);
+          if (r.needs_review) classified.push(`${r.needs_review} need review`);
           return `${r.filename}: ${r.new} new, ${r.dupes} dupes${classified.length ? ` (${classified.join(', ')})` : ''}`;
         });
       showToast(
@@ -2139,6 +2167,7 @@ async function applyBulkTag(action) {
   const inp = document.getElementById('bulk-tag-input');
   const tagName = inp.value.trim();
   if (!tagName) { showToast('Enter a tag name', '', 'warn'); return; }
+  if (action === 'set-primary') { openCorrection(null, {ids:[...selectedIds], tag:tagName}); return; }
   try {
     const data = await api('/api/transactions/bulk-tag', {
       method: 'POST',
