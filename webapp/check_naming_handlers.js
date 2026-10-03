@@ -8,7 +8,8 @@ const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 const inline = '// ── State' + html.split('<script>\n// ── State')[1].split('</script>')[0];
 const elements = new Map();
 const element = id => {
-  if (!elements.has(id)) elements.set(id, {innerHTML:'', value:'', querySelector:() => null});
+  if (!elements.has(id)) elements.set(id, {innerHTML:'', value:'', querySelector:() => null,
+    addEventListener(){}});
   return elements.get(id);
 };
 const bad = "O');globalThis.syntheticHit=true;//";
