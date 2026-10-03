@@ -82,18 +82,35 @@ The migrations add `categorization_settings` plus correction scope/note, archive
 and review metadata on `transactions`. They are idempotent and do not rewrite
 existing labels.
 
+`GET/PUT /api/categorization-guide` manage guidance; the primary-tag and bulk-tag
+APIs accept `correction_scope` (`transaction` or `similar`) and `correction_note`.
+`GET /api/categorization-corrections` lists active transaction corrections by
+`kind` (`reusable`, `one-time`, or `archived`) with search and pagination.
+`DELETE /api/categorization-corrections/{id}` archives one correction and
+`POST /api/categorization-corrections/{id}/restore` restores it; both require edit
+access and enforce dataset ownership.
+`GET /api/transactions?status=review` returns active pending rows.
+
 ## Import reliability
 
-- Apple Card and Coinbase One Card PDFs with recognized statement summaries are
-  checked against their dated payment and transaction lines before saving. The
-  check compares date, signed amount, repeated-row count, and printed section
-  totals. Apple's undated Daily Cash Adjustment is included in its printed total
-  check but is not imported as a dated transaction.
+- Recognized Apple Card, Coinbase One Card, Bank of America, Citi, and Chase
+  Amazon PDFs are checked against their dated account-activity lines before
+  saving. The check compares date, signed amount, repeated-row count, and a
+  printed balance or section total when readable. BofA card transaction and
+  posting dates are both accepted. Apple's undated Daily Cash Adjustment is
+  included in its printed total check but is not imported as a dated row.
+  Chase's informational Shop with Points activity and Apple's installment
+  financing summaries are outside the current account-activity ledger.
 - If extraction omits dated rows, one focused extraction of those original lines
   runs, followed by the full check again. A truncated model response, failed
   chunk, invalid row, or unresolved mismatch saves no transactions. Other file
   formats still use the general extraction path without this statement-total
   check; verify their signs and totals before relying on an import.
+- New BofA PDF imports use the account suffix printed on the statement in their
+  deduplication keys and upload metadata. If the suffix cannot be verified,
+  import stops. An older matching key without verified account identity is kept
+  active and flagged for review; it is not silently collapsed across accounts.
+  Existing same-file rows still match their legacy keys on forced reimport.
 - `GET /api/upload/jobs` lists the latest owner-scoped jobs and their stages;
   `?filename=` filters by the original upload name.
   The dashboard shows these after refresh. A heartbeat marks work interrupted
@@ -104,15 +121,6 @@ existing labels.
   uploads of the same file serialize their final database write. A normal retry
   of an already imported file reports `already_imported`. The Reimport button
   verifies that the selected bytes match its upload record.
-`GET/PUT /api/categorization-guide` manage guidance; the primary-tag and bulk-tag
-APIs accept `correction_scope` (`transaction` or `similar`) and `correction_note`.
-`GET /api/categorization-corrections` lists active transaction corrections by
-`kind` (`reusable`, `one-time`, or `archived`) with search and pagination.
-`DELETE /api/categorization-corrections/{id}` archives one correction and
-`POST /api/categorization-corrections/{id}/restore` restores it; both require edit
-access and enforce dataset ownership.
-`GET /api/transactions?status=review` returns active pending rows.
-
 ## Verification
 
 From the repository root, run the synthetic unit checks (no database or live API):
@@ -124,8 +132,9 @@ python3 -m unittest discover -s webapp -p 'test_tag_model.py' -v
 The optional API/import integration suite needs a **disposable local PostgreSQL
 DB** whose name ends in `_test`. It clears test tables; never use a real dataset.
 It mocks the parser and OpenAI transport and never reads statement files.
-The synthetic statement unit tests also exercise the Apple refund, Coinbase
-payment, repeat-charge, total mismatch, and failed-recovery paths.
+The synthetic statement unit tests exercise Apple, Coinbase, BofA, Citi, and
+Chase refund, payment, credit-sign, repeated-row, total-mismatch, section,
+and failed-recovery paths.
 
 ```bash
 SPENDING_TEST_DATABASE_URL='postgresql://user@localhost/spending_test' \

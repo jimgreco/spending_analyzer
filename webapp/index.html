@@ -1072,7 +1072,7 @@ async function loadUploadJobs() {
     const el = document.getElementById('upload-jobs');
     el.innerHTML = recent.length ? `<div style="margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:8px">
       <strong>Recent import jobs</strong><div style="font-size:.83rem;color:var(--muted)">Jobs stay visible after a refresh. For an interrupted or failed job, select the same file again.</div>
-      ${recent.map(j => `<div style="margin-top:8px;overflow-wrap:anywhere">${escHtml(j.filename)} — ${escHtml(j.status)}${j.result?.message ? ': ' + escHtml(j.result.message) : j.result?.status === 'ok' ? `: ${j.result.new} new, ${j.result.dupes} dupes, ${j.result.skipped || 0} already in this file` : ''}</div>`).join('')}
+      ${recent.map(j => `<div style="margin-top:8px;overflow-wrap:anywhere">${escHtml(j.filename)} — ${escHtml(j.status)}${j.result?.message ? ': ' + escHtml(j.result.message) : j.result?.status === 'ok' ? `: ${j.result.new} new, ${j.result.dupes} dupes, ${j.result.skipped || 0} already in this file${j.result.possible_overlap ? `, ${j.result.possible_overlap} legacy overlaps to review` : ''}` : ''}</div>`).join('')}
       </div>` : '';
     clearTimeout(uploadJobRefreshTimer);
     const activeNow = jobs.some(j => active.has(j.status));
@@ -2257,6 +2257,7 @@ async function uploadFiles(files, force = false, expectedHash = '') {
           if (r.history_untagged) classified.push(`${r.history_untagged} left untagged`);
           if (r.gpt_tagged) classified.push(`${r.gpt_tagged} by GPT`);
           if (r.needs_review) classified.push(`${r.needs_review} need review`);
+          if (r.possible_overlap) classified.push(`${r.possible_overlap} possible legacy overlaps`);
           return `${r.filename}: ${r.new} new, ${r.dupes} dupes${classified.length ? ` (${classified.join(', ')})` : ''}`;
         });
       showToast(

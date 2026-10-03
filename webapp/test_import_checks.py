@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import test_tag_model as model_tests
-from import_checks import reconcile_card_statement
+from import_checks import reconcile_card_statement, detect_account_key
 
 app = model_tests.app
 
@@ -70,6 +70,71 @@ class ImportCheckTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '1 missing, 1 unexpected'):
             reconcile_card_statement([COINBASE_PAGE], 'Coinbase',
                 [{**r, 'amount':8412.03} if r['amount'] == -8412.03 else r for r in COINBASE_ROWS])
+
+    def test_bofa_account_aware_keys_and_checking_signs(self):
+        first = ('Bank of America\nAccount number: 4830 7761 5090\n'
+                 'Beginning balance on January 1, 2026 $1,000.00\n'
+                 'Ending balance on January 31, 2026 $950.00')
+        pages = [first, 'not activity',
+                 'Date Description Amount\n01/02/26 DEPOSIT 100.00\n01/03/26 WITHDRAWAL -150.00']
+        rows = [{'date':'2026-01-02','amount':-100}, {'date':'2026-01-03','amount':150}]
+        self.assertEqual(detect_account_key(pages,'Bank of America'),'bofa:5090')
+        self.assertEqual(reconcile_card_statement(pages,'Bank of America',rows,'checking.pdf')['net'],50)
+        with self.assertRaisesRegex(ValueError, '1 missing, 1 unexpected'):
+            reconcile_card_statement(pages,'Bank of America',
+                                     [rows[0],{'date':'2026-01-03','amount':-150}], 'checking.pdf')
+        with self.assertRaisesRegex(ValueError, '0 missing, 1 unexpected'):
+            reconcile_card_statement(pages,'Bank of America',rows+[rows[-1]],'checking.pdf')
+        same = ('2026-03-30','Bank of America',650000,
+                'Online Banking transfer from CHK',1)
+        self.assertNotEqual(app.make_dedup_key(*same,account_key='bofa:5090'),
+                            app.make_dedup_key(*same,account_key='bofa:5191'))
+        self.assertEqual(app.make_dedup_key(*same),
+                         app.make_dedup_key(*same,account_key=''))
+
+    def test_bofa_card_refund_yearend_credit_and_posting_date(self):
+        pages = ['Bank of America\nAccount# 4400 6671 6839 5188\n'
+                 'Previous Balance $100.00\nNew Balance Total $110.00', '',
+                 'Transactions\n09/01 09/02 SHOP 20.00\n09/03 09/04 REFUND 10.00CR']
+        rows = [{'date':'2026-09-02','amount':20}, {'date':'2026-09-03','amount':-10}]
+        self.assertEqual(reconcile_card_statement(pages,'Bank of America',rows,'2026-09-17.pdf')['net'],10)
+        with self.assertRaisesRegex(ValueError, '1 missing'):
+            reconcile_card_statement(pages,'Bank of America',rows[:1],'2026-09-17.pdf')
+        yearend = ['Bank of America\n2025 year-end summary of credit card transactions\n'
+                   'credit card ending in 5188\nTotal spent Total interest\n$20.00',
+                   '07/04/25 PLAYSTATION 10.00CR\n07/05/25 PLAYSTATION 30.00']
+        self.assertEqual(reconcile_card_statement(yearend,'Bank of America',[
+            {'date':'2025-07-04','amount':-10},{'date':'2025-07-05','amount':30}],
+            'BofA Personal 2025.pdf')['rows'],2)
+        with self.assertRaisesRegex(ValueError, '1 missing'):
+            reconcile_card_statement(yearend,'Bank of America',[
+                {'date':'2025-07-05','amount':30}], 'BofA Personal 2025.pdf')
+
+    def test_chase_reward_section_is_not_account_activity(self):
+        pages = ['Prime Visa', '',
+                 'Transaction Merchant Name or Transaction Description $ Amount\n'
+                 'PAYMENTS AND OTHER CREDITS\n02/09 AMAZON REFUND -645.33\n'
+                 'PURCHASE\n02/10 AMAZON PURCHASE 700.00\n'
+                 'Transaction Merchant Name or Transaction Description $ Amount Rewards\n'
+                 'SHOP WITH POINTS ACTIVITY\n02/11 CHASE SHOP WITH POINTS 3.00']
+        rows = [{'date':'2026-02-09','amount':-645.33},
+                {'date':'2026-02-10','amount':700}]
+        self.assertEqual(reconcile_card_statement(pages,'Amazon',rows,'Amazon Feb26.pdf')['rows'],2)
+        with self.assertRaisesRegex(ValueError, '1 missing'):
+            reconcile_card_statement(pages,'Amazon',rows[-1:],'Amazon Feb26.pdf')
+        with self.assertRaisesRegex(ValueError, 'unexpected dated rows'):
+            reconcile_card_statement(pages,'Amazon',rows+[
+                {'date':'2026-02-11','amount':3}], 'Amazon Feb26.pdf')
+
+    def test_citi_credit_sign_and_duplicate_row_multiplicity(self):
+        pages = ['Citi Double Cash\nBilling Period: 01/01/26-02/25/26\n'
+                 'Previous balance $1,000.00\nNew balance $1,005.00', '',
+                 '02/10 REWARD CREDIT -$5.00\n02/11 PURCHASE $10.00']
+        rows = [{'date':'2026-02-10','amount':-5},
+                {'date':'2026-02-11','amount':10}]
+        self.assertEqual(reconcile_card_statement(pages,'Citi',rows,'Citi 2025-02-25.pdf')['net'],5)
+        with self.assertRaisesRegex(ValueError, 'unexpected dated rows'):
+            reconcile_card_statement(pages,'Citi',rows+[rows[-1]],'Citi 2025-02-25.pdf')
 
     def test_printed_total_disagreement_blocks_import(self):
         with self.assertRaisesRegex(ValueError, 'transactions total disagrees'):

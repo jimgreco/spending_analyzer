@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from categorization import SYSTEM_PROMPT, prepare_context, request_payload, validate_results, review
-from import_checks import reconcile_card_statement, StatementMismatch
+from import_checks import reconcile_card_statement, detect_account_key, StatementMismatch
 from dotenv import load_dotenv
 
 # ── Load .env (one level up from this file) ───────────────────────────────────────
@@ -712,9 +712,11 @@ def clean_description(desc: str) -> str:
     return desc.strip()
 
 # ── Dedup key ─────────────────────────────────────────────────────────────────────
-def make_dedup_key(date: str, source: str, amount: float, description: str, seq: int = 1) -> str:
+def make_dedup_key(date: str, source: str, amount: float, description: str,
+                   seq: int = 1, account_key: str = '') -> str:
     norm = re.sub(r'[^A-Z0-9]', '', description.upper())[:12]
-    raw = f"{date}|{source}|{amount:.2f}|{norm}|{seq}"
+    raw = (f"{date}|{source}|{account_key}|{amount:.2f}|{norm}|{seq}" if account_key
+           else f"{date}|{source}|{amount:.2f}|{norm}|{seq}")
     return hashlib.md5(raw.encode()).hexdigest()
 
 # ── Source detection ──────────────────────────────────────────────────────────────
@@ -744,18 +746,19 @@ def parse_date(d: str) -> str:
     return d.strip()
 
 # ── GPT-based parser ──────────────────────────────────────────────────────────────
-GPT_PARSE_PROMPT = """You are a financial statement parser. Extract ALL rows that have a date, description, and non-zero dollar amount.
+GPT_PARSE_PROMPT = """You are a financial statement parser. Extract ALL current-period account activity rows that have a date, description, and non-zero dollar amount.
 
 Return JSON in this exact format:
 {"transactions": [{"date": "YYYY-MM-DD", "description": "merchant name or description", "amount": 0.00}, ...]}
 
 Rules:
-- Include EVERY row that has a date and a non-zero amount — purchases, fees, interest, payments, refunds, credits, transfers, everything
+- Include EVERY dated current-period account activity row — purchases, fees, interest, payments, refunds, credits, transfers, everything
 - amount: use the Spending Dashboard sign convention, not necessarily the sign printed on the statement
 - amount: positive for charges/purchases/fees/withdrawals/debits/payments made/outflows; negative for deposits/additions/income/interest/refunds/credits/payments received/inflows
 - If a statement groups transactions by section, use the section's meaning to set the sign: rows under deposits/additions/credits/income are inflows and must be negative; rows under withdrawals/subtractions/debits/payments/fees/purchases are outflows and must be positive, even if the statement prints the opposite sign
 - date: YYYY-MM-DD format
-- SKIP only: rows with no date, rows with $0.00 amount, pure header/summary/subtotal rows with no transaction meaning
+- Skip informational rewards/points activity sections (such as Chase Shop with Points) and Apple Card installment financing schedules that repeat earlier purchases. Their dated entries are not new account activity. For a year-end transaction summary, include the itemized transaction list but not category subtotals.
+- SKIP also: rows with no date, rows with $0.00 amount, pure header/summary/subtotal rows with no transaction meaning
 - Do NOT skip fees, interest, payments, transfers, or anything else — include them all"""
 
 def parse_with_gpt(text: str, filename: str) -> tuple:
@@ -856,6 +859,9 @@ def parse_file_bytes(content: bytes, filename: str) -> tuple:
         return [], None, gpt_error or f"No transactions found in '{filename}'"
 
     source = detect_source(text) or "Unknown"
+    account_key = detect_account_key(pages, source)
+    if pages and source == 'Bank of America' and not account_key:
+        return [], None, 'Bank of America account number could not be verified; no rows saved'
 
     for r in rows:
         r["date"] = parse_date(r["date"])
@@ -865,7 +871,7 @@ def parse_file_bytes(content: bytes, filename: str) -> tuple:
             return [], None, f"Statement extraction returned an invalid date: {r['date']}"
 
     try:
-        reconcile_card_statement(pages, source, rows)
+        reconcile_card_statement(pages, source, rows, filename)
     except StatementMismatch as mismatch:
         # One focused pass gives the model a chance to recover a skipped return
         # without asking it to reinterpret the full statement. Recheck everything.
@@ -881,7 +887,7 @@ def parse_file_bytes(content: bytes, filename: str) -> tuple:
             r['date'] = parse_date(r['date'])
         rows.extend(recovered)
         try:
-            reconcile_card_statement(pages, source, rows)
+            reconcile_card_statement(pages, source, rows, filename)
         except ValueError as exc:
             return [], None, str(exc)
     except ValueError as exc:
@@ -893,8 +899,15 @@ def parse_file_bytes(content: bytes, filename: str) -> tuple:
         r.setdefault("source", source)
         base = (r["date"], r["source"], r["amount"], r["description"])
         seq_counts[base] += 1
+        if account_key:
+            r['account_key'] = account_key
+            r['legacy_dedup_keys'] = [make_dedup_key(
+                r['date'], alias, r['amount'], r['description'], seq_counts[base])
+                for alias in ('Bank of America', 'BofA', 'BofA Checking')]
+            r['legacy_dedup_key'] = r['legacy_dedup_keys'][0]
         r["dedup_key"] = make_dedup_key(
-            r["date"], r["source"], r["amount"], r["description"], seq_counts[base])
+            r["date"], r["source"], r["amount"], r["description"],
+            seq_counts[base], account_key or '')
         if r['dedup_key'] in seen_keys:
             return [], None, 'Statement contains ambiguous duplicate row identities; no rows saved'
         seen_keys.add(r['dedup_key'])
@@ -1568,6 +1581,11 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
 
         # 4. Insert transactions, then tags
         dedup_keys = [r["dedup_key"] for r in rows]
+        legacy_keys = [key for r in rows for key in
+                       (r.get('legacy_dedup_keys') or [r.get('legacy_dedup_key')]) if key]
+        all_keys = list(set(dedup_keys + legacy_keys))
+        account_key = rows[0].get('account_key')
+        account_last4 = account_key.split(':')[-1] if account_key else None
         with db() as conn:
             with conn.cursor() as cur:
                 # Serialize one owner's final writes across workers, including
@@ -1576,7 +1594,7 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                     hashlib.sha256(f'upload-owner:{user_id}'.encode()).digest()[:8],
                     'big', signed=True)
                 cur.execute('SELECT pg_advisory_xact_lock(%s)', (lock_key,))
-                cur.execute("SELECT filename FROM uploaded_files WHERE user_id=%s AND file_hash=%s",
+                cur.execute("SELECT filename,card_last4 FROM uploaded_files WHERE user_id=%s AND file_hash=%s",
                             (user_id, file_hash))
                 row = cur.fetchone()
                 if row and not force:
@@ -1585,6 +1603,8 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                          'message':'File was already imported','new':0,'dupes':0})
                     return
                 import_name = row[0] if row else filename
+                if row and row[1] and account_last4 and row[1] != account_last4:
+                    raise ValueError('Printed account number disagrees with saved upload metadata')
 
                 imported_keys = set()
                 if row:
@@ -1594,21 +1614,27 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                         raise ValueError('Cannot safely reimport: multiple uploads share this filename')
                     cur.execute("""SELECT dedup_key FROM transactions WHERE user_id=%s
                         AND import_file=%s AND dedup_key=ANY(%s)""",
-                        (user_id, import_name, dedup_keys))
+                        (user_id, import_name, all_keys))
                     imported_keys = {r[0] for r in cur.fetchall()}
                 cur.execute("SELECT dedup_key FROM transactions WHERE user_id=%s AND dedup_key=ANY(%s) AND status='active'",
-                            (user_id, dedup_keys))
+                            (user_id, all_keys))
                 existing_keys = {r[0] for r in cur.fetchall()}
 
-                new_count = dupe_count = skipped = 0
+                new_count = dupe_count = skipped = possible_overlap = 0
                 insert_rows = []
                 decision_by_key = {}
                 for r, decision in zip(rows, decisions):
-                    if r['dedup_key'] in imported_keys:
+                    row_legacy_keys = [key for key in
+                                       (r.get('legacy_dedup_keys') or [r.get('legacy_dedup_key')]) if key]
+                    if r['dedup_key'] in imported_keys or any(key in imported_keys for key in row_legacy_keys):
                         skipped += 1
                         continue
                     is_dupe   = r["dedup_key"] in existing_keys
+                    legacy_overlap = (not is_dupe and any(key in existing_keys for key in row_legacy_keys))
                     tx_status = "deduped" if is_dupe else "active"
+                    if legacy_overlap:
+                        possible_overlap += 1
+                        decision = review('Possible match to an older import with unknown account; verify this row.')
                     insert_rows.append((user_id, r["date"], r["description"],
                                         r["amount"], r["source"], r["dedup_key"],
                                         tx_status, r["dedup_key"] if is_dupe else None, import_name))
@@ -1650,18 +1676,20 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
 
                 if row:
                     cur.execute("""UPDATE uploaded_files
-                        SET tx_new=COALESCE(tx_new,0)+%s, tx_dupes=COALESCE(tx_dupes,0)+%s
+                        SET tx_new=COALESCE(tx_new,0)+%s, tx_dupes=COALESCE(tx_dupes,0)+%s,
+                            card_last4=COALESCE(NULLIF(card_last4,''),%s)
                         WHERE user_id=%s AND file_hash=%s""",
-                        (new_count, dupe_count, user_id, file_hash))
+                        (new_count, dupe_count, account_last4, user_id, file_hash))
                 else:
                     cur.execute("""INSERT INTO uploaded_files
-                        (user_id, filename, file_hash, source, tx_new, tx_dupes)
-                        VALUES (%s,%s,%s,%s,%s,%s)""",
-                        (user_id, filename, file_hash, source, new_count, dupe_count))
+                        (user_id, filename, file_hash, source, tx_new, tx_dupes, card_last4)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                        (user_id, filename, file_hash, source, new_count, dupe_count, account_last4))
 
                 _finish_upload_job(cur, job_id, user_id, 'done',
                     {'filename': filename, 'status': 'ok', 'source': source,
                      'new': new_count, 'dupes': dupe_count, 'skipped': skipped,
+                     'possible_overlap': possible_overlap,
                      'needs_review': needs_review, 'gpt_tagged': gpt_tagged})
     except Exception as e:
         print(f"[upload_job:{job_id}] {type(e).__name__}: {e}")

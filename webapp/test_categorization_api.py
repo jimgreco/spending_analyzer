@@ -3,6 +3,7 @@ Set SPENDING_TEST_DATABASE_URL to a local database whose name ends in _test.
 Never point this suite at a database containing real data: it clears test tables.
 """
 import os
+import hashlib
 import threading
 import unittest
 from unittest.mock import patch
@@ -265,6 +266,73 @@ class CategorizationApiTests(unittest.TestCase):
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id=%s AND import_file='race.csv'",(self.uid,))
                 self.assertEqual(cur.fetchone()[0],1)
+
+    def test_same_transfer_on_distinct_bofa_accounts_stays_active(self):
+        description='Online Banking transfer from CHK'
+        args=('2026-03-30','Bank of America',650000,description)
+        legacy=app.make_dedup_key(*args)
+        def account_row(last4):
+            return dict(transaction(description=description,amount=650000,source='Bank of America'),
+                date='2026-03-30',account_key='bofa:'+last4,legacy_dedup_key=legacy,
+                dedup_key=app.make_dedup_key(*args,account_key='bofa:'+last4))
+        for name,last4 in [('joint.csv','5090'),('jim.csv','5191')]:
+            job_id='account-'+last4
+            with app.db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute('INSERT INTO upload_jobs(id,user_id,filename) VALUES(%s,%s,%s)',
+                                (job_id,self.uid,name))
+            with patch.object(app,'parse_file_bytes',return_value=([account_row(last4)],'Bank of America',None)), \
+                 patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Synthetic review.')]):
+                app._process_upload_job(job_id,self.uid,name,name.encode(),False)
+            self.assertEqual(self.client.get(f'/api/upload/status/{job_id}').json()['result']['new'],1)
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id=%s AND status='active' AND amount=650000",(self.uid,))
+                self.assertEqual(cur.fetchone()[0],2)
+                cur.execute("SELECT card_last4 FROM uploaded_files WHERE user_id=%s ORDER BY filename",(self.uid,))
+                self.assertEqual({r[0] for r in cur.fetchall()},{'5090','5191'})
+
+        # A legacy collision with no verified account is kept active for review.
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""INSERT INTO transactions(user_id,date,description,amount,source,dedup_key,
+                    status,import_file) VALUES(%s,'2026-03-30',%s,650000,'Bank of America',%s,
+                    'active','old-unknown.csv')""",(self.uid,description,legacy))
+                cur.execute("INSERT INTO upload_jobs(id,user_id,filename) VALUES('account-9142',%s,'trust.csv')",(self.uid,))
+        with patch.object(app,'parse_file_bytes',return_value=([account_row('9142')],'Bank of America',None)), \
+             patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Synthetic review.')]):
+            app._process_upload_job('account-9142',self.uid,'trust.csv',b'trust bytes',False)
+        result=self.client.get('/api/upload/status/account-9142').json()['result']
+        self.assertEqual((result['new'],result['dupes'],result['possible_overlap']),(1,0,1))
+        self.assertEqual(self.client.get('/api/transactions?status=review').json()['total'],3)
+
+    def test_forced_legacy_bofa_reimport_skips_existing_row(self):
+        content=b'old statement bytes'
+        file_hash=hashlib.md5(content).hexdigest()
+        args=('2026-03-30','Bank of America',650000,'Online Banking transfer from CHK')
+        old_key=app.make_dedup_key(args[0],'BofA',args[2],args[3])
+        new_key=app.make_dedup_key(*args,account_key='bofa:5090')
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""INSERT INTO uploaded_files(user_id,filename,file_hash,source,tx_new)
+                    VALUES(%s,'old-bofa.pdf',%s,'BofA',1)""",(self.uid,file_hash))
+                cur.execute("""INSERT INTO transactions(user_id,date,description,amount,source,
+                    dedup_key,status,import_file,manually_corrected) VALUES
+                    (%s,'2026-03-30',%s,650000,'BofA',%s,'active','old-bofa.pdf',TRUE)""",
+                    (self.uid,args[3],old_key))
+                cur.execute("INSERT INTO upload_jobs(id,user_id,filename) VALUES('legacy-force',%s,'old-bofa.pdf')",(self.uid,))
+        row=dict(transaction(description=args[3],amount=650000,source='Bank of America'),
+                 date=args[0],account_key='bofa:5090',legacy_dedup_key=old_key,
+                 legacy_dedup_keys=[app.make_dedup_key(*args),old_key],dedup_key=new_key)
+        with patch.object(app,'parse_file_bytes',return_value=([row],'Bank of America',None)), \
+             patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Synthetic review.')]):
+            app._process_upload_job('legacy-force',self.uid,'old-bofa.pdf',content,True)
+        result=self.client.get('/api/upload/status/legacy-force').json()['result']
+        self.assertEqual((result['new'],result['dupes'],result['skipped']),(0,0,1))
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*),BOOL_AND(manually_corrected) FROM transactions WHERE user_id=%s AND import_file='old-bofa.pdf'",(self.uid,))
+                self.assertEqual(cur.fetchone(),(1,True))
 
 
 if __name__=='__main__':unittest.main()

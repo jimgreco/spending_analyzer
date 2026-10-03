@@ -14,6 +14,23 @@ APPLE_DATE = re.compile(r"^(\d{2}/\d{2}/\d{4})\s+(.+)$")
 COINBASE_DATE = re.compile(r"^([A-Z][a-z]{2} \d{1,2}, \d{4})\s+(.+)$")
 
 
+def detect_account_key(pages, source):
+    """Use the account printed on a BofA statement, never a linked account."""
+    if source != 'Bank of America' or not pages:
+        return None
+    first = pages[0]
+    match = re.search(r'Account\s*(?:number|#)\s*:?\s*((?:\d[ -]*){8,})',
+                      first, re.I)
+    if match:
+        digits = re.sub(r'\D', '', match.group(1))
+        if len(digits) >= 8:
+            return 'bofa:' + digits[-4:]
+    match = re.search(r'credit card ending in\s+(\d{4})', first, re.I)
+    if match:
+        return 'bofa:' + match.group(1)
+    return None
+
+
 class StatementMismatch(ValueError):
     def __init__(self, message, missing_lines=None, extra=0):
         super().__init__(message)
@@ -30,14 +47,166 @@ def _printed_total(text, pattern):
     return cents(match.group(1)) if match else None
 
 
-def reconcile_card_statement(pages, source, rows):
+def _statement_year_month(first, filename):
+    # The statement period wins over a filename; one saved Citi PDF is
+    # misnamed with 2025 even though its printed billing period is in 2026.
+    match = re.search(r'Billing Period:\s*\d{2}/\d{2}/\d{2}-\d{2}/\d{2}/(\d{2})', first)
+    if match:
+        return 2000 + int(match.group(1)), int(re.search(
+            r'Billing Period:\s*\d{2}/\d{2}/\d{2}-([0-9]{2})', first).group(1))
+    match = re.search(r'20\d{2}-(\d{2})(?:-\d{2})?', filename)
+    if match:
+        year = int(filename[match.start():match.start()+4])
+        return year, int(match.group(1))
+    match = re.search(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[ -]?(20\d{2}|\d{2})\b',
+                      filename, re.I)
+    if match:
+        year = int(match.group(2))
+        return (year if year > 2000 else 2000+year,
+                datetime.strptime(match.group(1).title(), '%b').month)
+    match = re.search(r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+(20\d{2})', first)
+    if match:
+        return int(match.group(2)), datetime.strptime(match.group(1), '%B').month
+    return None
+
+
+def _reconcile_other_cards(pages, source, rows, filename):
+    """Check transaction ledgers for recognized BofA, Citi, and Chase layouts."""
+    first = pages[0]
+    text = '\n'.join(pages)
+    kind = None
+    printed = None
+    if source == 'Bank of America':
+        if 'Beginning balance on' in first and 'Ending balance on' in first:
+            kind = 'bofa_checking'
+            begin = _printed_total(first, r'Beginning balance on[^\n]*?(\$[\d,]+\.\d{2})')
+            end = _printed_total(first, r'Ending balance on[^\n]*?(\$[\d,]+\.\d{2})')
+            if begin is not None and end is not None:
+                printed = begin - end
+        elif 'year-end summary of credit card transactions' in first.lower():
+            kind = 'bofa_yearend'
+            printed = _printed_total(first, r'Total spent Total interest\s+(\$[\d,]+\.\d{2})')
+        elif 'Previous Balance' in first and 'New Balance Total' in first:
+            kind = 'bofa_card'
+            begin = _printed_total(first, r'Previous Balance\s+(\$[\d,]+\.\d{2})')
+            end = _printed_total(first, r'New Balance Total\s+(\$[\d,]+\.\d{2})')
+            if begin is not None and end is not None:
+                printed = end - begin
+    elif source == 'Amazon' and re.search(
+            r'^Transaction Merchant Name or Transaction Description \$ Amount\s*$', text, re.M):
+        # Chase's extracted account-activity title can have doubled letters;
+        # the transaction header is the reliable section marker.
+        kind = 'amazon'
+        begin = _printed_total(first, r'Previous Balance\s+(\$[\d,]+\.\d{2})')
+        end = _printed_total(first, r'New Balance\s+(\$[\d,]+\.\d{2})')
+        if begin is not None and end is not None:
+            printed = end - begin
+    elif source == 'Citi' and 'Billing Period:' in first:
+        kind = 'citi'
+        begin = _printed_total(first, r'Previous balance\s+(\$[\d,]+\.\d{2})')
+        end = _printed_total(first, r'New balance\s+(\$[\d,]+\.\d{2})')
+        if begin is not None and end is not None:
+            printed = end - begin
+    if not kind:
+        return None
+    period = _statement_year_month(first, filename)
+    if kind in ('bofa_card', 'citi', 'amazon') and period is None:
+        raise ValueError('Statement period could not be verified for reconciliation')
+
+    ledger = []
+    def add(date, amount, line, alternate=None):
+        if amount:
+            ledger.append((date, alternate, amount, line))
+
+    for page_number, page in enumerate(pages, 1):
+        if kind == 'amazon':
+            in_activity = in_rewards = False
+        for line in page.splitlines():
+            line = line.strip()
+            if kind == 'amazon':
+                if ('Transaction Merchant Name or Transaction Description $ Amount' in line
+                        and 'Rewards' not in line):
+                    in_activity = True
+                if ('Transaction Merchant Name or Transaction Description $ Amount Rewards' in line
+                        or line in ('SHOP WITH POINTS ACTIVITY','PURCHASES AND REDEMPTIONS',
+                                    'RETURNS AND OTHER CREDITS')):
+                    in_rewards = True
+                if page_number < 3 or not in_activity or in_rewards:
+                    continue
+                match = re.match(r'^(\d{2})/(\d{2})\s+.+?\s+(-?[\d,]+\.\d{2})$', line)
+                if match:
+                    month, day = int(match.group(1)), int(match.group(2))
+                    year = period[0] - (month > period[1])
+                    add(datetime(year,month,day).strftime('%Y-%m-%d'),
+                        cents(match.group(3)), line)
+            elif kind == 'bofa_checking' and page_number >= 3:
+                match = re.match(r'^(\d{2}/\d{2}/\d{2})\s+.+?\s+(-?[\d,]+\.\d{2})$', line)
+                if match:
+                    date = datetime.strptime(match.group(1), '%m/%d/%y').strftime('%Y-%m-%d')
+                    add(date, -cents(match.group(2)), line)
+            elif kind == 'bofa_yearend' and page_number >= 2:
+                match = re.match(r'^(\d{2}/\d{2}/\d{2})\s+.+?\s+(-?[\d,]+\.\d{2})(CR)?$', line)
+                if match:
+                    date = datetime.strptime(match.group(1), '%m/%d/%y').strftime('%Y-%m-%d')
+                    amount = -abs(cents(match.group(2))) if match.group(3) else cents(match.group(2))
+                    add(date, amount, line)
+            elif kind in ('bofa_card', 'citi') and page_number >= 3:
+                pattern = (r'^(\d{2})/(\d{2})\s+(\d{2})/(\d{2})\s+.+?\s+(-?[\d,]+\.\d{2})(CR)?$'
+                           if kind == 'bofa_card' else
+                           r'^(\d{2})/(\d{2})(?:\s+(\d{2})/(\d{2}))?\s+.+?\s+(-?\$[\d,]+\.\d{2})(?:\s|$)')
+                match = re.match(pattern, line)
+                if match:
+                    month, day = int(match.group(1)), int(match.group(2))
+                    date = datetime(period[0] - (month > period[1]),month,day).strftime('%Y-%m-%d')
+                    alternate = None
+                    if match.group(3):
+                        post_month, post_day = int(match.group(3)), int(match.group(4))
+                        alternate = datetime(period[0] - (post_month > period[1]),
+                                             post_month,post_day).strftime('%Y-%m-%d')
+                    amount = (-abs(cents(match.group(5))) if kind == 'bofa_card' and match.group(6)
+                              else cents(match.group(5)))
+                    add(date, amount, line, alternate)
+
+    if not ledger:
+        raise ValueError('Statement reconciliation found no dated account-activity rows')
+    total = sum(item[2] for item in ledger)
+    if printed is not None and total != printed:
+        raise ValueError('Statement printed total disagrees with dated account activity')
+
+    remaining = Counter((str(r['date']), cents(r['amount'])) for r in rows)
+    missing = []
+    for entry in ledger:
+        key = (entry[0], entry[2])
+        if remaining[key]:
+            remaining[key] -= 1
+        else:
+            missing.append(entry)
+    unmatched = []
+    for entry in missing:
+        key = (entry[1], entry[2])
+        if entry[1] and remaining[key]:
+            remaining[key] -= 1
+        else:
+            unmatched.append(entry)
+    extra = sum(remaining.values())
+    if unmatched or extra:
+        raise StatementMismatch(
+            f'Statement reconciliation failed: {len(unmatched)} missing, {extra} unexpected dated rows; '
+            f'dated net {total/100:.2f}. No rows were saved.',
+            missing_lines=[f'account activity: {entry[3]}' for entry in unmatched], extra=extra)
+    return {'rows':len(ledger), 'net':round(total/100,2)}
+
+
+def reconcile_card_statement(pages, source, rows, filename=''):
     """Return a reconciliation summary or raise ValueError before DB insertion.
 
     Match a multiset of (date, signed amount), which catches missing identical
     small charges as well as missing credits. Descriptions remain GPT's concern.
     """
-    if source not in ('Apple Card', 'Coinbase') or not pages:
+    if not pages:
         return None
+    if source not in ('Apple Card', 'Coinbase'):
+        return _reconcile_other_cards(pages, source, rows, filename)
     text = '\n'.join(pages)
     if source == 'Apple Card':
         if not re.search(r'^Total charges, credits and returns\s', text, re.M):
