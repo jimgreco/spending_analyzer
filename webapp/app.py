@@ -1184,7 +1184,7 @@ def restore_categorization_correction(tx_id: int, user: dict = Depends(require_e
 # ── Transactions ──────────────────────────────────────────────────────────────────
 @app.get("/api/transactions")
 def get_transactions(
-    page: int = 1, per_page: int = 100,
+    page: int = Query(1, ge=1, le=1000000), per_page: int = Query(100, ge=1, le=100),
     source: str = "", tag: List[str] = Query([]), tag_match: str = "any",
     search: str = "", date_from: str = "", date_to: str = "",
     import_file: str = "", card_last4: str = "",
@@ -1526,9 +1526,13 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                     INSERT INTO uploaded_files (user_id, filename, file_hash, source, tx_new, tx_dupes)
                     VALUES (%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (user_id, file_hash) DO NOTHING
+                    RETURNING id
                 """, (user_id, filename, file_hash, source, new_count, dupe_count))
+                new_upload = cur.fetchone()
 
-        set_status("done", {"filename": filename, "status": "ok", "source": source,
+        set_status("done", {"filename": filename, "file_hash": file_hash,
+                            "new_upload_id": new_upload[0] if new_upload and not force else None,
+                            "status": "ok", "source": source,
                             "new": new_count, "dupes": dupe_count,
                             "needs_review": needs_review,
                             "gpt_tagged": gpt_tagged})
@@ -2004,6 +2008,66 @@ def get_uploads(user: dict = Depends(get_current_user), limit: int = 25, offset:
 class UploadRename(BaseModel):
     old_name: str
     new_name: str
+
+class UploadDisplayName(BaseModel):
+    job_id: str
+    new_name: str = Field(min_length=1, max_length=200)
+
+@app.patch("/api/uploads/display-name")
+def name_new_upload(body: UploadDisplayName, user: dict = Depends(require_edit)):
+    """Name one completed new import, without changing its parser or account identity."""
+    new = body.new_name.strip()
+    if not new or '/' in new or '\\' in new or any(ord(c) < 32 for c in new):
+        raise HTTPException(400, "Invalid display filename")
+    with db() as conn:
+        with conn.cursor() as cur:
+            lock_key = int.from_bytes(hashlib.sha256(f'upload-owner:{user["id"]}'.encode()).digest()[:8],
+                                      'big', signed=True)
+            cur.execute('SELECT pg_advisory_xact_lock(%s)', (lock_key,))
+            cur.execute("SELECT status, result_json FROM upload_jobs WHERE id=%s AND user_id=%s FOR UPDATE",
+                        (body.job_id, user["id"]))
+            job = cur.fetchone()
+            if not job:
+                raise HTTPException(404, "Upload job not found")
+            result = json.loads(job[1]) if job[1] else {}
+            if job[0] != 'done' or result.get('status') != 'ok' or not result.get('file_hash') or not result.get('new_upload_id'):
+                raise HTTPException(409, "Only a completed new import can be named")
+            if result.get('display_name'):
+                if result['display_name'] == new:
+                    return {"ok": True, "old_name": result['filename'], "new_name": new, "updated": 0}
+                raise HTTPException(409, "This import was already named")
+            cur.execute("SELECT filename FROM uploaded_files WHERE id=%s AND user_id=%s AND file_hash=%s FOR UPDATE",
+                        (result['new_upload_id'], user["id"], result['file_hash']))
+            upload = cur.fetchone()
+            if not upload:
+                raise HTTPException(404, "Import record not found")
+            old = upload[0]
+            if old != result.get('filename'):
+                raise HTTPException(409, "Import filename changed; review it in history")
+            if not re.search(r'\.(pdf|csv)$', new, re.I) or new.rsplit('.', 1)[-1].lower() != old.rsplit('.', 1)[-1].lower():
+                raise HTTPException(400, "Keep the original file extension")
+            if old == new:
+                result['display_name'] = new
+                cur.execute("UPDATE upload_jobs SET result_json=%s WHERE id=%s AND user_id=%s",
+                            (json.dumps(result), body.job_id, user['id']))
+                return {"ok": True, "old_name": old, "new_name": new, "updated": 0}
+            cur.execute("SELECT COUNT(*) FROM uploaded_files WHERE user_id=%s AND filename=%s",
+                        (user["id"], old))
+            if cur.fetchone()[0] != 1:
+                raise HTTPException(409, "Original filename is shared by multiple imports; rename manually after review")
+            cur.execute("SELECT 1 FROM uploaded_files WHERE user_id=%s AND filename=%s",
+                        (user["id"], new))
+            if cur.fetchone():
+                raise HTTPException(409, "Display filename already exists")
+            cur.execute("UPDATE uploaded_files SET filename=%s WHERE id=%s AND user_id=%s AND file_hash=%s",
+                        (new, result['new_upload_id'], user["id"], result['file_hash']))
+            cur.execute("UPDATE transactions SET import_file=%s WHERE user_id=%s AND import_file=%s",
+                        (new, user["id"], old))
+            updated = cur.rowcount
+            result['display_name'] = new
+            cur.execute("UPDATE upload_jobs SET result_json=%s WHERE id=%s AND user_id=%s",
+                        (json.dumps(result), body.job_id, user['id']))
+    return {"ok": True, "old_name": old, "new_name": new, "updated": updated}
 
 @app.patch("/api/uploads/rename")
 def rename_upload(body: UploadRename, user: dict = Depends(require_edit)):

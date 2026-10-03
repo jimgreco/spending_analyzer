@@ -500,6 +500,28 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 .category-dialog .help{color:var(--muted);font-size:.85rem}
 .category-review{display:block;margin-top:6px;max-width:300px;white-space:normal;color:#f59e0b;font-size:.78rem}
 .category-edit{font-size:.75rem;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);padding:3px 7px;cursor:pointer}
+.workflow-nav{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.workflow-nav .active{background:var(--accent);color:#fff}
+.role-label{color:var(--muted);font-size:.78rem;white-space:nowrap}
+body[data-role=read] #bulk-bar,body[data-role=read] #upload-zone,body[data-role=read] #select-all-cb,
+body[data-role=read] #tx-body input[type=checkbox],body[data-role=read] .tag-chip-del,
+body[data-role=read] .tag-add-btn,body[data-role=read] .tag-clear-all-btn,
+body[data-role=read] .category-edit,body[data-role=read] #history-table button,
+body[data-role=read] #history-table .import-name-text,body[data-role=read] #history-table .import-source-tag,
+body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal .cat-add-row{display:none!important}
+.load-error{border:1px solid var(--red);background:rgba(239,68,68,.08);padding:10px 14px;border-radius:8px;margin:10px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.load-error[hidden],.review-queue[hidden]{display:none}
+.review-queue{border:1px solid var(--amber);background:var(--surface);border-radius:12px;padding:18px;margin:12px 0;display:grid;gap:12px}
+.review-queue h2{font-size:1.1rem}
+.review-queue .review-meta{color:var(--muted);font-size:.85rem}
+.review-queue .review-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.review-queue .review-reason{color:var(--muted);line-height:1.4}
+.intake-row{border:1px solid var(--border);border-radius:8px;padding:12px;margin:10px 0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.intake-row label{margin:0}
+.intake-row .wide{grid-column:1/-1}
+.intake-row input{width:100%}
+.intake-row .filename{overflow-wrap:anywhere}
+:focus-visible{outline:2px solid var(--accent2);outline-offset:2px}
 /* Transaction category rules page */
 .rules-page[hidden]{display:none}
 .rules-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
@@ -531,6 +553,13 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 @media(max-width:640px){
   #user-header{flex-wrap:wrap}
   #user-header .header-actions{flex-wrap:wrap}
+  .workflow-nav{width:100%;overflow-x:auto;flex-wrap:nowrap}
+  .workflow-nav .btn{white-space:nowrap}
+  .status-tabs{flex-wrap:wrap}
+  #status-hint{width:100%;order:2;margin:4px 0 0!important;line-height:1.35}
+  .intake-row{grid-template-columns:1fr}
+  .review-queue{padding:12px}
+  #history-table{display:block;overflow-x:auto}
   .rules-heading{display:block}
   .rules-heading .btn{margin-top:12px}
   .rules-toolbar input{width:100%}
@@ -560,15 +589,18 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 
 <!-- User header -->
 <div id="user-header">
-  <div class="header-actions" style="display:flex;gap:8px;margin-right:auto">
-    <button class="btn" id="rules-nav-btn" onclick="openRulesPage()">Category rules</button>
-    <button class="btn" onclick="openGuideDialog()">Categorization guide</button>
-    <button class="btn" onclick="openTagModal()">⚙ <span class="btn-label">Tags</span></button>
-  </div>
-  <div id="user-menu-trigger" onclick="toggleUserMenu()">
+  <nav class="header-actions workflow-nav" aria-label="Main navigation" style="margin-right:auto">
+    <button class="btn" data-destination="import" onclick="navigateTo('import')">Import</button>
+    <button class="btn" data-destination="review" onclick="navigateTo('review')">Review</button>
+    <button class="btn" data-destination="analyze" onclick="navigateTo('analyze')">Analyze</button>
+    <button class="btn" id="rules-nav-btn" data-destination="rules" onclick="navigateTo('rules')">Rules</button>
+    <button class="btn" id="access-nav-btn" data-destination="access" onclick="navigateTo('access')" hidden>Access</button>
+    <span class="role-label" id="role-label"></span>
+  </nav>
+  <button id="user-menu-trigger" class="btn" onclick="toggleUserMenu()" aria-label="Account menu" aria-expanded="false">
     <div id="user-avatar-wrap"></div>
     <span id="user-name"></span>
-  </div>
+  </button>
   <div id="user-dropdown">
     <button class="logout-btn" onclick="logout()">Sign out</button>
   </div>
@@ -601,7 +633,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   </div>
 
   <!-- Upload zone -->
-  <div id="upload-zone" onclick="document.getElementById('file-input').click()">
+  <div id="upload-zone" role="button" tabindex="0" aria-label="Choose PDF or CSV statements to import" onclick="document.getElementById('file-input').click()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();document.getElementById('file-input').click()}">
     <div class="icon">📄</div>
     <div class="text">
       <strong>Drop PDF or CSV statements here</strong>
@@ -651,7 +683,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 
   <!-- Filter bar -->
   <div class="filter-bar">
-    <input type="search" id="search" placeholder="🔍  Search description…" oninput="debounce(applyFilters,300)()">
+    <input type="search" id="search" aria-label="Search transaction descriptions" placeholder="🔍  Search description…" oninput="scheduleSearch()">
     <select id="filter-source" onchange="applyFilters()">
       <option value="">All Issuers</option>
     </select>
@@ -669,9 +701,9 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <!-- Date range row -->
     <div class="filter-row">
       <span class="filter-row-label">Date</span>
-      <input type="date" id="filter-date-from" onchange="onDateInput()" title="From">
+      <input type="date" id="filter-date-from" onchange="onDateInput()" title="From" aria-label="Start date">
       <span class="filter-row-label">—</span>
-      <input type="date" id="filter-date-to" onchange="onDateInput()" title="To">
+      <input type="date" id="filter-date-to" onchange="onDateInput()" title="To" aria-label="End date">
       <button class="preset-btn" id="preset-all"        onclick="setDatePreset('all')">All</button>
       <button class="preset-btn" id="preset-month"      onclick="setDatePreset('month')">MTD</button>
       <button class="preset-btn" id="preset-ytd"        onclick="setDatePreset('ytd')">YTD</button>
@@ -681,15 +713,30 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     </div>
   </div>
 
+  <div id="dashboard-error" class="load-error" role="alert" hidden><span id="dashboard-error-text"></span><button class="btn" onclick="refreshAll()">Retry</button></div>
+
   <!-- Status tabs -->
   <div class="status-tabs">
-    <button class="status-tab active" data-status="active"  onclick="setViewStatus('active')">Active</button>
-    <button class="status-tab" data-status="review" onclick="setViewStatus('review')">Needs review</button>
-    <button class="status-tab"        data-status="deleted" onclick="setViewStatus('deleted')">🗑 Deleted</button>
-    <button class="status-tab"        data-status="deduped" onclick="setViewStatus('deduped')">⟳ Deduped</button>
+    <button class="status-tab active" data-status="active" aria-pressed="true" onclick="setViewStatus('active')">Active</button>
+    <button class="status-tab" data-status="review" aria-pressed="false" onclick="setViewStatus('review')">Needs review</button>
+    <button class="status-tab" data-status="deleted" aria-pressed="false" onclick="setViewStatus('deleted')">🗑 Deleted</button>
+    <button class="status-tab" data-status="deduped" aria-pressed="false" onclick="setViewStatus('deduped')">⟳ Deduped</button>
     <span id="status-hint" style="font-size:.75rem;color:var(--muted);margin-left:4px"></span>
     <button id="purge-deduped-btn" onclick="purgeDeduped()" style="display:none;margin-left:auto;background:none;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:4px 12px;font-size:.8rem;cursor:pointer">🗑 Purge All</button>
   </div>
+
+  <section id="review-queue" class="review-queue" aria-labelledby="review-queue-title" hidden>
+    <h2 id="review-queue-title">Needs review</h2>
+    <p id="review-progress" class="review-meta" role="status" aria-live="polite"></p>
+    <div id="review-item"></div>
+    <p id="review-reason" class="review-reason"></p>
+    <div class="review-actions">
+      <button class="btn" id="review-prev" onclick="moveReview(-1)" aria-label="Previous review item">← Previous</button>
+      <button class="btn" id="review-next" onclick="moveReview(1)" aria-label="Next review item">Next →</button>
+      <button class="btn" id="review-edit" onclick="editReviewItem()">Choose category</button>
+    </div>
+  <p class="review-meta">Use ← and → outside text fields. Selection below applies only to checked rows on the current page.</p>
+  </section>
 
   <!-- Transaction table -->
   <div class="table-box">
@@ -701,7 +748,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <table>
       <thead>
         <tr>
-          <th class="col-check"><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this.checked)"></th>
+          <th class="col-check"><input type="checkbox" id="select-all-cb" aria-label="Select all visible transactions on this page" onchange="toggleSelectAll(this.checked)"></th>
           <th onclick="sortBy('date')">Date</th>
           <th onclick="sortBy('amount')" style="text-align:right">Amount</th>
           <th onclick="sortBy('description')">Description</th>
@@ -734,9 +781,9 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   <div class="rules-toolbar">
     <input id="rules-search" type="search" maxlength="200" placeholder="Search description, account, category, or note…" aria-label="Search category rules" oninput="searchCorrections()">
     <div class="rules-tabs" role="group" aria-label="Correction type">
-      <button class="btn active" data-kind="reusable" onclick="selectCorrectionKind('reusable')">Reusable <span class="rules-count" id="rules-count-reusable"></span></button>
-      <button class="btn" data-kind="one-time" onclick="selectCorrectionKind('one-time')">One-time <span class="rules-count" id="rules-count-one-time"></span></button>
-      <button class="btn" data-kind="archived" onclick="selectCorrectionKind('archived')">Archived <span class="rules-count" id="rules-count-archived"></span></button>
+      <button class="btn active" data-kind="reusable" aria-pressed="true" onclick="selectCorrectionKind('reusable')">Reusable <span class="rules-count" id="rules-count-reusable"></span></button>
+      <button class="btn" data-kind="one-time" aria-pressed="false" onclick="selectCorrectionKind('one-time')">One-time <span class="rules-count" id="rules-count-one-time"></span></button>
+      <button class="btn" data-kind="archived" aria-pressed="false" onclick="selectCorrectionKind('archived')">Archived <span class="rules-count" id="rules-count-archived"></span></button>
     </div>
   </div>
   <p id="rules-explainer" class="rules-explainer"></p>
@@ -747,7 +794,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 <!-- Bulk action bar -->
 <div id="bulk-bar">
   <div class="bulk-row">
-    <span id="bulk-count">0 selected</span>
+    <span id="bulk-count">0 selected on this page</span>
     <button class="bulk-delete" id="bulk-delete-btn" onclick="deleteSelected()">🗑 Delete</button>
     <button class="bulk-restore-btn" id="bulk-restore-btn" style="display:none" onclick="restoreSelected()">↩ Restore</button>
     <button class="bulk-clear" onclick="clearSelection()">✕</button>
@@ -839,6 +886,14 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   <div class="dialog-actions"><button class="btn" onclick="document.getElementById('correction-dialog').close()">Cancel</button><button class="btn" id="save-correction-btn" onclick="saveCorrection()">Save correction</button></div>
 </dialog>
 
+<dialog id="intake-dialog" class="category-dialog" aria-labelledby="intake-title">
+  <h2 id="intake-title">Confirm import details</h2>
+  <p class="help">Give each new file an account and period name. Suggestions from earlier filenames are editable. This names the import only; the parser determines transaction account identity and deduplication. Check the import result before changing account mappings.</p>
+  <div id="intake-files"></div>
+  <p id="intake-error" role="alert" class="help"></p>
+  <div class="dialog-actions"><button class="btn" onclick="document.getElementById('intake-dialog').close()">Cancel</button><button class="btn" id="intake-confirm" onclick="confirmIntake()">Import files</button></div>
+</dialog>
+
 <dialog id="archive-correction-dialog" class="category-dialog" aria-labelledby="archive-correction-title">
   <h2 id="archive-correction-title">Archive correction?</h2>
   <p id="archive-correction-message"></p>
@@ -868,6 +923,13 @@ let viewStatus   = 'active';  // 'active' | 'deleted' | 'deduped'
 let allSources = [];   // sorted alphabetically; populated in renderUploadHistory
 let uploadsList = [];  // accumulated paginated uploads for the history table
 let uploadsTotal = 0;  // total upload count from server
+let uploadNames = new Set();
+let txRequest = 0, statsRequest = 0, uploadsRequest = 0;
+let reviewFocusId = null;
+let reviewIndex = 0;
+let reviewTotal = 0;
+let intakeFiles = [];
+let uploadInFlight = false;
 
 const CAT_PALETTE = [
   '#6366f1','#22d3ee','#10b981','#f59e0b','#ef4444','#8b5cf6',
@@ -909,7 +971,8 @@ async function checkAuth() {
     if (user.is_owner) checkMigrationBanner();
     applyPageFromHash();
   } catch(e) {
-    document.getElementById('login-overlay').classList.add('visible');
+    if (!currentUser) document.getElementById('login-overlay').classList.add('visible');
+    else showLoadError('Could not load the dashboard. Try again.');
   }
 }
 
@@ -917,9 +980,18 @@ let currentUser = null;
 
 function showUserHeader(user) {
   currentUser = user;
+  document.body.dataset.role = user.role;
   const header = document.getElementById('user-header');
   header.classList.add('visible');
   document.getElementById('user-name').textContent = user.name || user.email;
+  document.getElementById('role-label').textContent = user.is_owner ? 'Owner' : user.role === 'read' ? 'Viewer' : 'Editor';
+  document.getElementById('access-nav-btn').hidden = !user.is_owner;
+  document.querySelector('[data-destination=import]').hidden = user.role === 'read';
+  document.querySelectorAll('#bulk-bar button,#bulk-bar input').forEach(el => { el.disabled = user.role === 'read'; });
+  document.getElementById('bulk-bar').hidden = user.role === 'read';
+  document.getElementById('tag-new-input').disabled = user.role === 'read';
+  document.getElementById('save-guide-btn').hidden = user.role === 'read';
+  document.getElementById('upload-zone').hidden = user.role === 'read';
   const wrap = document.getElementById('user-avatar-wrap');
   if (user.picture) {
     wrap.innerHTML = `<img class="user-avatar" src="${escHtml(user.picture)}" alt="">`;
@@ -939,7 +1011,8 @@ function showUserHeader(user) {
 }
 
 function toggleUserMenu() {
-  document.getElementById('user-dropdown').classList.toggle('open');
+  const open = document.getElementById('user-dropdown').classList.toggle('open');
+  document.getElementById('user-menu-trigger').setAttribute('aria-expanded', String(open));
 }
 
 document.addEventListener('click', e => {
@@ -960,6 +1033,14 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+function showLoadError(message) {
+  const box = document.getElementById('dashboard-error');
+  document.getElementById('dashboard-error-text').textContent = message;
+  box.hidden = false;
+}
+
+function clearLoadError() { document.getElementById('dashboard-error').hidden = true; }
+
 function buildFilterParams(extra = {}) {
   const p = new URLSearchParams({
     source:      document.getElementById('filter-source').value,
@@ -978,9 +1059,22 @@ function buildFilterParams(extra = {}) {
 
 // ── Status view ────────────────────────────────────────────────────────────────
 function setViewStatus(s) {
+  clearLoadError();
   viewStatus = s;
   document.querySelectorAll('.status-tab').forEach(t =>
-    t.classList.toggle('active', t.dataset.status === s));
+    { t.classList.toggle('active', t.dataset.status === s); t.setAttribute('aria-pressed', String(t.dataset.status === s)); });
+  document.getElementById('review-queue').hidden = s !== 'review';
+  reviewFocusId = null;
+  reviewIndex = 0;
+  if (!document.getElementById('dashboard-page').hidden) {
+    const destination = s === 'review' ? 'review' : 'analyze';
+    history.replaceState(null, '', location.pathname + location.search + '#' + destination);
+    document.querySelectorAll('[data-destination]').forEach(btn => {
+      const active = btn.dataset.destination === destination;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-current', active ? 'page' : 'false');
+    });
+  }
 
   const hint = document.getElementById('status-hint');
   const actionsHeader = document.getElementById('col-actions-header');
@@ -1015,23 +1109,29 @@ function setViewStatus(s) {
 
 // ── Data loading ───────────────────────────────────────────────────────────────
 async function loadStats() {
+  const request = ++statsRequest;
   try {
-    stats = await api('/api/stats?' + buildFilterParams());
+    const data = await api('/api/stats?' + buildFilterParams());
+    if (request !== statsRequest) return;
+    stats = data;
     renderCards(stats);
     renderCharts(stats);
-  } catch(e) { console.error('loadStats', e); }
+  } catch(e) { if (request === statsRequest) showLoadError('Could not load spending totals.'); }
 }
 
 async function loadTransactions() {
+  const request = ++txRequest;
   try {
     const data = await api('/api/transactions?' + buildFilterParams({
       page: currentPage, per_page: 100,
       sort_by: sortCol, sort_dir: sortDir
     }));
+    if (request !== txRequest) return;
     if (currentPage > data.pages) { currentPage = data.pages; return loadTransactions(); }
     renderTable(data.transactions);
     renderPagination(data.page, data.pages, data.total);
-  } catch(e) { console.error('loadTransactions', e); }
+    renderReviewQueue(data);
+  } catch(e) { if (request === txRequest) showLoadError('Could not load transactions.'); }
 }
 
 async function loadTags() {
@@ -1043,24 +1143,28 @@ async function loadTags() {
     sel.innerHTML = '<option value="">Add tag filter…</option>' +
       '<option value="__none__">No Tag</option>' +
       tagNames.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('');
-  } catch(e) { console.error('loadTags', e); }
+  } catch(e) { showLoadError('Could not load categories.'); }
 }
 
 async function loadUploadHistory(append = false) {
+  const request = ++uploadsRequest;
   try {
     const offset = append ? uploadsList.length : 0;
     const data = await api(`/api/uploads?limit=25&offset=${offset}`);
+    if (request !== uploadsRequest) return;
     if (append) {
       uploadsList = uploadsList.concat(data.uploads);
     } else {
       uploadsList = data.uploads;
     }
     uploadsTotal = data.total;
+    uploadNames = new Set(data.all_filenames || []);
     renderUploadHistory(uploadsList, data);
-  } catch(e) { console.error('loadUploadHistory', e); }
+  } catch(e) { if (request === uploadsRequest) showLoadError('Could not load import history.'); }
 }
 
 async function refreshAll() {
+  clearLoadError();
   await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
 }
 
@@ -1100,6 +1204,11 @@ function makeTagChip(label, value, color, title, amt) {
     updateFilterBadges();
     applyFilters();
   };
+  chip.setAttribute('role', 'button');
+  chip.setAttribute('tabindex', '0');
+  chip.setAttribute('aria-pressed', String(active));
+  chip.setAttribute('aria-label', `${label}, ${title}${amt ? ', ' + amt : ''}`);
+  chip.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); chip.click(); } };
   return chip;
 }
 
@@ -1313,6 +1422,7 @@ function renderTable(txs) {
     <tr class="${sel ? 'selected' : ''} status-${t.status || 'active'}">
       <td class="col-check">
         <input type="checkbox" data-id="${t.id}" ${sel ? 'checked' : ''}
+               aria-label="Select ${escHtml(t.description)} on this page"
                onchange="toggleRow(this)">
       </td>
       <td style="white-space:nowrap">${t.date}</td>
@@ -1343,6 +1453,60 @@ function renderPagination(page, pages, total) {
     document.getElementById(`page-info${suffix}`).textContent = label;
   });
 }
+
+function renderReviewQueue(data) {
+  const queue = document.getElementById('review-queue');
+  if (viewStatus !== 'review') { queue.hidden = true; return; }
+  queue.hidden = false;
+  reviewTotal = data.total;
+  const rows = data.transactions || [];
+  if (!rows.length) {
+    document.getElementById('review-progress').textContent = 'No items need review with these filters.';
+    document.getElementById('review-item').textContent = '';
+    document.getElementById('review-reason').textContent = '';
+    ['review-prev','review-next','review-edit'].forEach(id => document.getElementById(id).disabled = true);
+    return;
+  }
+  let index = rows.findIndex(row => row.id === reviewFocusId);
+  if (index < 0) index = Math.min(reviewIndex, rows.length - 1);
+  reviewIndex = index;
+  const row = rows[index];
+  reviewFocusId = row.id;
+  const position = (data.page - 1) * data.per_page + index + 1;
+  document.getElementById('review-progress').textContent = `${position} of ${data.total} pending with current filters`;
+  document.getElementById('review-item').textContent = `${row.date} · ${row.description} · ${Number(row.amount).toLocaleString('en-US',{style:'currency',currency:'USD'})} · ${row.source || 'Unknown account'} · Suggested: ${row.suggested_tag || 'None'}`;
+  document.getElementById('review-reason').textContent = row.categorization_reason || 'No explanation was supplied.';
+  document.getElementById('review-prev').disabled = position <= 1;
+  document.getElementById('review-next').disabled = position >= data.total;
+  document.getElementById('review-edit').disabled = currentUser?.role === 'read';
+  document.getElementById('review-edit').textContent = currentUser?.role === 'read' ? 'View only' : 'Choose category';
+}
+
+function moveReview(direction) {
+  if (viewStatus !== 'review' || !reviewTotal) return;
+  const next = reviewIndex + direction;
+  if (next >= 0 && next < currentTxs.length) {
+    reviewIndex = next;
+    reviewFocusId = currentTxs[next].id;
+    renderReviewQueue({transactions:currentTxs,total:reviewTotal,page:currentPage,per_page:100});
+  } else if ((direction > 0 && currentPage < totalPages) || (direction < 0 && currentPage > 1)) {
+    currentPage += direction;
+    reviewIndex = direction > 0 ? 0 : 99;
+    reviewFocusId = null;
+    clearSelection();
+    loadTransactions();
+  }
+}
+
+function editReviewItem() { if (reviewFocusId && currentUser?.role !== 'read') openCorrection(reviewFocusId); }
+
+document.addEventListener('keydown', e => {
+  if (viewStatus !== 'review' || document.querySelector('dialog[open]') ||
+      /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    e.preventDefault(); moveReview(e.key === 'ArrowRight' ? 1 : -1);
+  }
+});
 
 // ── Date range presets ─────────────────────────────────────────────────────────
 function fmtDate(d) {
@@ -1818,8 +1982,7 @@ const searchCorrections = debounce(() => { correctionOffset = 0; loadCorrections
 window.addEventListener('hashchange', () => { if (currentUser) applyPageFromHash(); });
 
 function openRulesPage() {
-  location.hash = 'category-rules';
-  applyPageFromHash();
+  navigateTo('rules');
 }
 
 function closeRulesPage() {
@@ -1828,21 +1991,45 @@ function closeRulesPage() {
 }
 
 function applyPageFromHash() {
-  const showingRules = location.hash === '#category-rules';
+  const requested = location.hash === '#category-rules' ? 'rules' : (location.hash.slice(1) || 'analyze');
+  const destination = (requested === 'import' && currentUser?.role === 'read') ||
+    (requested === 'access' && !currentUser?.is_owner) ? 'analyze' : requested;
+  const showingRules = destination === 'rules';
   document.getElementById('dashboard-page').hidden = showingRules;
   document.getElementById('rules-page').hidden = !showingRules;
-  document.getElementById('rules-nav-btn').classList.toggle('active', showingRules);
+  document.querySelectorAll('[data-destination]').forEach(btn => {
+    const active = btn.dataset.destination === destination;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-current', active ? 'page' : 'false');
+  });
   if (showingRules) {
     clearSelection();
     loadCorrections();
+  } else if (destination === 'review' && viewStatus !== 'review') {
+    setViewStatus('review');
+    document.getElementById('review-queue').scrollIntoView({block:'start'});
+  } else if (destination === 'import') {
+    document.getElementById('upload-zone').scrollIntoView({block:'start'});
+  } else if (destination === 'analyze') {
+    if (viewStatus === 'review') setViewStatus('active');
+    document.querySelector('.cards').scrollIntoView({block:'start'});
+  } else if (destination === 'access' && currentUser?.is_owner) {
+    openInviteModal();
   }
+}
+
+function navigateTo(destination) {
+  if (destination === 'access' && !currentUser?.is_owner) return;
+  const hash = destination === 'rules' ? 'category-rules' : destination;
+  if (location.hash === '#' + hash) applyPageFromHash();
+  else location.hash = hash;
 }
 
 function selectCorrectionKind(kind) {
   correctionKind = kind;
   correctionOffset = 0;
   document.querySelectorAll('.rules-tabs [data-kind]').forEach(btn =>
-    btn.classList.toggle('active', btn.dataset.kind === kind));
+    { btn.classList.toggle('active', btn.dataset.kind === kind); btn.setAttribute('aria-pressed', String(btn.dataset.kind === kind)); });
   loadCorrections();
 }
 
@@ -1872,7 +2059,7 @@ async function loadCorrections() {
     renderCorrections(data);
   } catch (e) {
     if (request === correctionRequest) {
-      list.innerHTML = `<div class="rules-empty">Could not load corrections: ${escHtml(e.message)}</div>`;
+      list.innerHTML = `<div class="rules-empty" role="alert">Could not load corrections. <button class="btn" onclick="loadCorrections()">Retry</button></div>`;
       document.getElementById('rules-pager').innerHTML = '';
     }
   }
@@ -1950,7 +2137,11 @@ async function restoreManagedCorrection(id) {
 }
 
 let correctionTarget = null;
+let savingCorrection = false;
+document.getElementById('correction-dialog').addEventListener('cancel', e => { if (savingCorrection) e.preventDefault(); });
+document.getElementById('correction-dialog').addEventListener('close', () => { if (!savingCorrection) correctionTarget = null; });
 function openCorrection(txId, options = {}) {
+  if (savingCorrection || currentUser?.role === 'read') return;
   const tx = options.managed ? managedCorrections.find(t => t.id === txId) : currentTxs.find(t => t.id === txId);
   const ids = options.ids || [txId];
   if (!options.ids && !tx) return;
@@ -1971,13 +2162,16 @@ function openCorrection(txId, options = {}) {
 }
 
 async function saveCorrection() {
-  if (!correctionTarget) return;
+  if (!correctionTarget || savingCorrection || currentUser?.role === 'read') return;
   const tag = document.getElementById('correction-tag').value.trim();
   if (correctionTarget.bulk && !tag) { showToast('Choose a category for the selected transactions', '', 'warn'); return; }
   const data = {correction_scope:document.querySelector('[name=correction-scope]:checked').value,
                 correction_note:document.getElementById('correction-note').value};
   const btn = document.getElementById('save-correction-btn');
+  savingCorrection = true;
   btn.disabled = true;
+  const cancelBtn = document.querySelector('#correction-dialog .dialog-actions button');
+  cancelBtn.disabled = true;
   try {
     const {ids, bulk, managed} = correctionTarget;
     await api(bulk ? '/api/transactions/bulk-tag' : `/api/transactions/${ids[0]}/primary-tag`, {
@@ -1991,7 +2185,7 @@ async function saveCorrection() {
     await Promise.all([loadTags(), loadStats(), loadTransactions()]);
     if (managed) await loadCorrections();
   } catch(e) { showToast('Could not save category', e.message, 'error'); }
-  finally { btn.disabled = false; }
+  finally { savingCorrection = false; btn.disabled = false; cancelBtn.disabled = false; }
 }
 
 function clearPrimaryTag(txId, evt) {
@@ -2087,10 +2281,23 @@ function toggleTagMatch() {
 }
 
 function applyFilters() {
+  clearLoadError();
   currentPage = 1;
+  reviewFocusId = null;
+  reviewIndex = 0;
   clearSelection();
   loadStats();
   loadTransactions();
+}
+
+const debouncedApplyFilters = debounce(applyFilters, 300);
+function scheduleSearch() {
+  ++txRequest;
+  ++statsRequest;
+  reviewFocusId = null;
+  reviewIndex = 0;
+  clearSelection();
+  debouncedApplyFilters();
 }
 
 function onTagDropdownChange() {
@@ -2135,6 +2342,7 @@ function sortBy(col) {
   const th = document.querySelectorAll('thead th')[colMap[col]];
   if (th) th.classList.add(sortDir);
   currentPage = 1;
+  clearSelection();
   loadTransactions();
 }
 
@@ -2142,6 +2350,9 @@ function changePage(delta) {
   const np = currentPage + delta;
   if (np < 1 || np > totalPages) return;
   currentPage = np;
+  reviewFocusId = null;
+  reviewIndex = 0;
+  clearSelection();
   loadTransactions();
   window.scrollTo(0, document.querySelector('.filter-bar').offsetTop - 20);
 }
@@ -2166,7 +2377,7 @@ function setupDragDrop() {
     overlay.classList.remove('active');
     const files = Array.from(e.dataTransfer.files).filter(
       f => f.name.match(/\.(pdf|csv)$/i));
-    if (files.length) uploadFiles(files);
+    if (files.length) queueImport(files);
     else showToast('No supported files', 'Please drop PDF or CSV files.', 'warn');
   });
 
@@ -2180,11 +2391,84 @@ function setupDragDrop() {
 
 function handleFileInput(files) {
   const arr = Array.from(files).filter(f => f.name.match(/\.(pdf|csv)$/i));
-  if (arr.length) uploadFiles(arr);
+  if (arr.length) queueImport(arr);
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────────
-async function uploadFiles(files, force = false) {
+function suggestImportDetails(file) {
+  const stem = file.name.replace(/\.(pdf|csv)$/i, '');
+  const match = stem.match(/(?:^|\D)(20\d{2})[-_ ]?([01]\d)(?:\D|$)/) || stem.match(/(?:^|\D)([01]\d)[-_ ](20\d{2})(?:\D|$)/);
+  const period = match ? (match[1].startsWith('20') ? `${match[1]}-${match[2]}` : `${match[2]}-${match[1]}`) : '';
+  const prefix = stem.split(/20\d{2}|[01]\d[-_ ]20\d{2}/)[0].replace(/[_-]+/g,' ').trim();
+  const prior = uploadsList.find(u => prefix && u.filename.toLowerCase().startsWith(prefix.toLowerCase()));
+  return {issuer:prior?.source || '', account:prefix || '', period};
+}
+
+function queueImport(files) {
+  if (currentUser?.role === 'read') return;
+  if (uploadInFlight) { showToast('Import in progress', 'Wait for the current import to finish before starting another.', 'warn'); return; }
+  if (document.getElementById('intake-dialog').open) return;
+  intakeFiles = files;
+  const container = document.getElementById('intake-files');
+  container.innerHTML = '';
+  files.forEach((file, index) => {
+    const guess = suggestImportDetails(file);
+    const row = document.createElement('div');
+    row.className = 'intake-row';
+    row.dataset.index = index;
+    row.innerHTML = `<strong class="wide filename"></strong>
+      <label>Issuer <input class="intake-issuer" maxlength="100" required placeholder="Bank or card issuer"></label>
+      <label>Account <input class="intake-account" maxlength="100" required placeholder="Account nickname"></label>
+      <label>Statement period <input class="intake-period" type="month" required></label>
+      <label class="wide">Display filename override <input class="intake-name" maxlength="180" placeholder="Leave blank for issuer, account and period"></label>`;
+    row.querySelector('.filename').textContent = file.name;
+    row.querySelector('.intake-issuer').value = guess.issuer;
+    row.querySelector('.intake-account').value = guess.account;
+    row.querySelector('.intake-period').value = guess.period;
+    container.appendChild(row);
+  });
+  document.getElementById('intake-error').textContent = '';
+  document.getElementById('intake-dialog').showModal();
+  container.querySelector('input')?.focus();
+}
+
+document.getElementById('intake-dialog').addEventListener('close', () => {
+  intakeFiles = [];
+  document.getElementById('file-input').value = '';
+});
+
+function confirmIntake() {
+  if (!document.getElementById('intake-dialog').open || uploadInFlight) return;
+  const planned = [];
+  const seen = new Set(uploadNames);
+  for (const row of document.querySelectorAll('#intake-files .intake-row')) {
+    const file = intakeFiles[Number(row.dataset.index)];
+    const issuer = row.querySelector('.intake-issuer').value.trim();
+    const account = row.querySelector('.intake-account').value.trim();
+    const period = row.querySelector('.intake-period').value;
+    const manual = row.querySelector('.intake-name').value.trim();
+    const extension = file.name.match(/\.(pdf|csv)$/i)?.[0].toLowerCase();
+    const base = (manual || `${issuer} ${account} ${period}`).replace(/[\\/?%*:|"<>]/g,'-').trim();
+    const filename = base.replace(/\.(pdf|csv)$/i, '') + extension;
+    if (!issuer || !account || !/^20\d{2}-(0[1-9]|1[0-2])$/.test(period) || !base) {
+      document.getElementById('intake-error').textContent = 'Confirm issuer, account and period for every file.';
+      return;
+    }
+    if (seen.has(filename)) {
+      document.getElementById('intake-error').textContent = `“${filename}” already exists in import history or this selection. Choose a unique display filename.`;
+      return;
+    }
+    seen.add(filename);
+    planned.push({file, filename});
+  }
+  document.getElementById('intake-dialog').close();
+  intakeFiles = [];
+  uploadFiles(planned.map(item => item.file), false, '', planned.map(item => item.filename));
+}
+
+async function uploadFiles(files, force = false, expectedHash = '', displayNames = []) {
+  if (uploadInFlight) return;
+  uploadInFlight = true;
   const prog = document.getElementById('upload-progress');
   const detail = document.getElementById('progress-detail');
   prog.classList.add('visible');
@@ -2194,12 +2478,27 @@ async function uploadFiles(files, force = false) {
   files.forEach(f => formData.append('files', f));
 
   try {
-    const data = await api('/api/upload' + (force ? '?force=true' : ''), { method:'POST', body:formData });
+    const params = new URLSearchParams();
+    if (force) params.set('force', 'true');
+    if (expectedHash) params.set('expected_file_hash', expectedHash);
+    const data = await api('/api/upload' + (params.toString() ? `?${params}` : ''), { method:'POST', body:formData });
     const jobs = data.jobs;
 
     // Poll all jobs until done
     const results = await pollUploadJobs(jobs, detail);
     prog.classList.remove('visible');
+
+    for (let i = 0; i < displayNames.length; i++) {
+      const result = results.find(r => r.job_id === jobs[i]?.job_id);
+      if (result?.status !== 'ok') continue;
+      try {
+        await api('/api/uploads/display-name', {method:'PATCH',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({job_id:jobs[i].job_id,new_name:displayNames[i]})});
+        result.filename = displayNames[i];
+      } catch(e) {
+        showToast('Import name needs attention', `Imported ${jobs[i].filename}, but could not name it ${displayNames[i]}. Review the import in history.`, 'error');
+      }
+    }
 
     let totalNew = 0, totalDupes = 0;
     results.forEach(r => {
@@ -2238,6 +2537,7 @@ async function uploadFiles(files, force = false) {
 
   // Reset file input
   document.getElementById('file-input').value = '';
+  uploadInFlight = false;
 }
 
 async function pollUploadJobs(jobs, detailEl) {
@@ -2252,14 +2552,14 @@ async function pollUploadJobs(jobs, detailEl) {
       try {
         const s = await api(`/api/upload/status/${job.job_id}`);
         if (s.status === 'done' || s.status === 'error') {
-          results.push(s.result || { filename: job.filename, status: 'error', message: 'Unknown error', new: 0, dupes: 0 });
+          results.push({...s.result || { filename: job.filename, status: 'error', message: 'Unknown error', new: 0, dupes: 0 }, job_id:job.job_id});
           done.push(job);
         } else {
           const label = s.status === 'processing' ? 'Categorizing' : 'Processing';
           detailEl.textContent = `${label} ${job.filename}…`;
         }
       } catch(e) {
-        results.push({ filename: job.filename, status: 'error', message: e.message, new: 0, dupes: 0 });
+        results.push({ filename: job.filename, status: 'error', message: e.message, new: 0, dupes: 0, job_id:job.job_id });
         done.push(job);
       }
     }
@@ -2369,7 +2669,7 @@ function updateBulkBar() {
   const n   = selectedIds.size;
   const bar = document.getElementById('bulk-bar');
   document.getElementById('bulk-count').textContent =
-    `${n} transaction${n !== 1 ? 's' : ''} selected`;
+    `${n} transaction${n !== 1 ? 's' : ''} selected on this page`;
   bar.classList.toggle('visible', n > 0);
 }
 
