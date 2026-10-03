@@ -1,0 +1,896 @@
+{
+  "app": "spending",
+  "version": 1,
+  "objects": [
+    {
+      "kind": "column",
+      "name": "cards.id",
+      "definition": "[\"integer\", true, \"nextval('cards_id_seq'::regclass)\"]"
+    },
+    {
+      "kind": "column",
+      "name": "cards.name",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "cards.user_id",
+      "definition": "[\"integer\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "categories.excluded_from_spending",
+      "definition": "[\"boolean\", true, \"false\"]"
+    },
+    {
+      "kind": "column",
+      "name": "categories.id",
+      "definition": "[\"integer\", true, \"nextval('categories_id_seq'::regclass)\"]"
+    },
+    {
+      "kind": "column",
+      "name": "categories.name",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "categories.user_id",
+      "definition": "[\"integer\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "categorization_settings.guide",
+      "definition": "[\"text\", true, \"''::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "categorization_settings.updated_at",
+      "definition": "[\"timestamp with time zone\", true, \"now()\"]"
+    },
+    {
+      "kind": "column",
+      "name": "categorization_settings.user_id",
+      "definition": "[\"integer\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "invited_users.email",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "invited_users.id",
+      "definition": "[\"integer\", true, \"nextval('invited_users_id_seq'::regclass)\"]"
+    },
+    {
+      "kind": "column",
+      "name": "invited_users.invited_at",
+      "definition": "[\"timestamp with time zone\", false, \"now()\"]"
+    },
+    {
+      "kind": "column",
+      "name": "invited_users.last_seen_at",
+      "definition": "[\"timestamp with time zone\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "invited_users.role",
+      "definition": "[\"text\", true, \"'read'::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "tags.excluded_from_spending",
+      "definition": "[\"boolean\", true, \"false\"]"
+    },
+    {
+      "kind": "column",
+      "name": "tags.group_tag_id",
+      "definition": "[\"integer\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "tags.id",
+      "definition": "[\"integer\", true, \"nextval('tags_id_seq'::regclass)\"]"
+    },
+    {
+      "kind": "column",
+      "name": "tags.name",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "tags.user_id",
+      "definition": "[\"integer\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.action",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.actor_user_id",
+      "definition": "[\"integer\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.after_amount",
+      "definition": "[\"numeric(12,2)\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.after_revision",
+      "definition": "[\"integer\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.before_amount",
+      "definition": "[\"numeric(12,2)\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.before_revision",
+      "definition": "[\"integer\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.created_at",
+      "definition": "[\"timestamp with time zone\", true, \"now()\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.id",
+      "definition": "[\"bigint\", true, \"nextval('transaction_amount_changes_id_seq'::regclass)\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.operation_id",
+      "definition": "[\"uuid\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.original_amount",
+      "definition": "[\"numeric(12,2)\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.transaction_id",
+      "definition": "[\"integer\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.undo_of",
+      "definition": "[\"bigint\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_amount_changes.user_id",
+      "definition": "[\"integer\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_tags.tag_id",
+      "definition": "[\"integer\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transaction_tags.transaction_id",
+      "definition": "[\"integer\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.amount",
+      "definition": "[\"numeric(12,2)\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.amount_revision",
+      "definition": "[\"integer\", true, \"0\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.categorization_confidence",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.categorization_example_ids",
+      "definition": "[\"integer[]\", true, \"'{}'::integer[]\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.categorization_reason",
+      "definition": "[\"text\", true, \"''::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.category",
+      "definition": "[\"text\", true, \"'Other'::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.correction_archived",
+      "definition": "[\"boolean\", true, \"false\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.correction_note",
+      "definition": "[\"text\", true, \"''::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.correction_revision",
+      "definition": "[\"integer\", true, \"0\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.correction_scope",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.created_at",
+      "definition": "[\"timestamp with time zone\", false, \"now()\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.date",
+      "definition": "[\"date\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.dedup_key",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.dedup_of",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.description",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.id",
+      "definition": "[\"integer\", true, \"nextval('transactions_id_seq'::regclass)\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.import_file",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.manually_corrected",
+      "definition": "[\"boolean\", false, \"false\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.needs_review",
+      "definition": "[\"boolean\", true, \"false\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.original_amount",
+      "definition": "[\"numeric(12,2)\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.primary_migration_status",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.primary_tag_id",
+      "definition": "[\"integer\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.source",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.status",
+      "definition": "[\"text\", true, \"'active'::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.suggested_tag_id",
+      "definition": "[\"integer\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.transaction_type",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.type_revision",
+      "definition": "[\"integer\", true, \"0\"]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.type_updated_at",
+      "definition": "[\"timestamp with time zone\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "transactions.user_id",
+      "definition": "[\"integer\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "upload_jobs.created_at",
+      "definition": "[\"timestamp without time zone\", false, \"now()\"]"
+    },
+    {
+      "kind": "column",
+      "name": "upload_jobs.file_hash",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "upload_jobs.filename",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "upload_jobs.id",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "upload_jobs.result_json",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "upload_jobs.status",
+      "definition": "[\"text\", false, \"'pending'::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "upload_jobs.updated_at",
+      "definition": "[\"timestamp with time zone\", false, \"now()\"]"
+    },
+    {
+      "kind": "column",
+      "name": "upload_jobs.user_id",
+      "definition": "[\"integer\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "uploaded_files.card_id",
+      "definition": "[\"integer\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "uploaded_files.card_last4",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "uploaded_files.file_hash",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "uploaded_files.filename",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "uploaded_files.id",
+      "definition": "[\"integer\", true, \"nextval('uploaded_files_id_seq'::regclass)\"]"
+    },
+    {
+      "kind": "column",
+      "name": "uploaded_files.source",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "uploaded_files.tx_dupes",
+      "definition": "[\"integer\", false, \"0\"]"
+    },
+    {
+      "kind": "column",
+      "name": "uploaded_files.tx_new",
+      "definition": "[\"integer\", false, \"0\"]"
+    },
+    {
+      "kind": "column",
+      "name": "uploaded_files.uploaded_at",
+      "definition": "[\"timestamp with time zone\", false, \"now()\"]"
+    },
+    {
+      "kind": "column",
+      "name": "uploaded_files.user_id",
+      "definition": "[\"integer\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "users.created_at",
+      "definition": "[\"timestamp with time zone\", false, \"now()\"]"
+    },
+    {
+      "kind": "column",
+      "name": "users.email",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "users.google_id",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "users.id",
+      "definition": "[\"integer\", true, \"nextval('users_id_seq'::regclass)\"]"
+    },
+    {
+      "kind": "column",
+      "name": "users.name",
+      "definition": "[\"text\", true, \"''::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "users.picture",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "constraint",
+      "name": "cards:FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "cards:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "cards:UNIQUE (user_id, name)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "categories:FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "categories:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "categories:UNIQUE (user_id, name)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "categorization_settings:FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "categorization_settings:PRIMARY KEY (user_id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "invited_users:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "invited_users:UNIQUE (email)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "tags:FOREIGN KEY (group_tag_id) REFERENCES tags(id) ON DELETE SET NULL",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "tags:FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "tags:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "tags:UNIQUE (user_id, name)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_amount_changes:CHECK ((action = ANY (ARRAY['reverse'::text, 'undo'::text])))",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_amount_changes:FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_amount_changes:FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_amount_changes:FOREIGN KEY (undo_of) REFERENCES transaction_amount_changes(id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_amount_changes:FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_amount_changes:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_amount_changes:UNIQUE (operation_id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_amount_changes:UNIQUE (undo_of)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_tags:FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_tags:FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transaction_tags:PRIMARY KEY (transaction_id, tag_id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transactions:CHECK ((transaction_type = ANY (ARRAY['expense'::text, 'income'::text, 'transfer'::text, 'refund'::text])))",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transactions:FOREIGN KEY (primary_tag_id) REFERENCES tags(id) ON DELETE SET NULL",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transactions:FOREIGN KEY (suggested_tag_id) REFERENCES tags(id) ON DELETE SET NULL",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transactions:FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "transactions:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "upload_jobs:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "uploaded_files:FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE SET NULL",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "uploaded_files:FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "uploaded_files:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "uploaded_files:UNIQUE (user_id, file_hash)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "users:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "users:UNIQUE (email)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "users:UNIQUE (google_id)",
+      "definition": "true"
+    },
+    {
+      "kind": "extension",
+      "name": "plpgsql",
+      "definition": "pg_catalog"
+    },
+    {
+      "kind": "function",
+      "name": "set_transaction_original_amount()",
+      "definition": "CREATE OR REPLACE FUNCTION public.set_transaction_original_amount()\n RETURNS trigger\n LANGUAGE plpgsql\nAS $function$\n            BEGIN\n                IF TG_OP = 'UPDATE' AND OLD.original_amount IS NOT NULL\n                   AND NEW.original_amount IS DISTINCT FROM OLD.original_amount THEN\n                    RAISE EXCEPTION 'original_amount is immutable';\n                END IF;\n                IF NEW.original_amount IS NULL THEN NEW.original_amount := NEW.amount; END IF;\n                RETURN NEW;\n            END;\n            $function$\n"
+    },
+    {
+      "kind": "index",
+      "name": "cards_pkey",
+      "definition": "CREATE UNIQUE INDEX cards_pkey ON public.cards USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "cards_user_id_name_key",
+      "definition": "CREATE UNIQUE INDEX cards_user_id_name_key ON public.cards USING btree (user_id, name)"
+    },
+    {
+      "kind": "index",
+      "name": "categories_pkey",
+      "definition": "CREATE UNIQUE INDEX categories_pkey ON public.categories USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "categories_user_id_name_key",
+      "definition": "CREATE UNIQUE INDEX categories_user_id_name_key ON public.categories USING btree (user_id, name)"
+    },
+    {
+      "kind": "index",
+      "name": "categorization_settings_pkey",
+      "definition": "CREATE UNIQUE INDEX categorization_settings_pkey ON public.categorization_settings USING btree (user_id)"
+    },
+    {
+      "kind": "index",
+      "name": "idx_tx_amount_changes",
+      "definition": "CREATE INDEX idx_tx_amount_changes ON public.transaction_amount_changes USING btree (transaction_id, id DESC)"
+    },
+    {
+      "kind": "index",
+      "name": "idx_tx_cat",
+      "definition": "CREATE INDEX idx_tx_cat ON public.transactions USING btree (category)"
+    },
+    {
+      "kind": "index",
+      "name": "idx_tx_corrections",
+      "definition": "CREATE INDEX idx_tx_corrections ON public.transactions USING btree (user_id, date DESC, id DESC) WHERE ((manually_corrected = true) AND (status = 'active'::text))"
+    },
+    {
+      "kind": "index",
+      "name": "idx_tx_date",
+      "definition": "CREATE INDEX idx_tx_date ON public.transactions USING btree (date DESC)"
+    },
+    {
+      "kind": "index",
+      "name": "idx_tx_dedup",
+      "definition": "CREATE INDEX idx_tx_dedup ON public.transactions USING btree (dedup_key)"
+    },
+    {
+      "kind": "index",
+      "name": "idx_tx_primary_tag",
+      "definition": "CREATE INDEX idx_tx_primary_tag ON public.transactions USING btree (primary_tag_id)"
+    },
+    {
+      "kind": "index",
+      "name": "idx_tx_review",
+      "definition": "CREATE INDEX idx_tx_review ON public.transactions USING btree (user_id) WHERE (needs_review AND (status = 'active'::text))"
+    },
+    {
+      "kind": "index",
+      "name": "idx_tx_source",
+      "definition": "CREATE INDEX idx_tx_source ON public.transactions USING btree (source)"
+    },
+    {
+      "kind": "index",
+      "name": "idx_tx_status",
+      "definition": "CREATE INDEX idx_tx_status ON public.transactions USING btree (status)"
+    },
+    {
+      "kind": "index",
+      "name": "idx_upload_jobs_user_recent",
+      "definition": "CREATE INDEX idx_upload_jobs_user_recent ON public.upload_jobs USING btree (user_id, created_at DESC)"
+    },
+    {
+      "kind": "index",
+      "name": "invited_users_email_key",
+      "definition": "CREATE UNIQUE INDEX invited_users_email_key ON public.invited_users USING btree (email)"
+    },
+    {
+      "kind": "index",
+      "name": "invited_users_pkey",
+      "definition": "CREATE UNIQUE INDEX invited_users_pkey ON public.invited_users USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "tags_pkey",
+      "definition": "CREATE UNIQUE INDEX tags_pkey ON public.tags USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "tags_user_id_name_key",
+      "definition": "CREATE UNIQUE INDEX tags_user_id_name_key ON public.tags USING btree (user_id, name)"
+    },
+    {
+      "kind": "index",
+      "name": "transaction_amount_changes_operation_id_key",
+      "definition": "CREATE UNIQUE INDEX transaction_amount_changes_operation_id_key ON public.transaction_amount_changes USING btree (operation_id)"
+    },
+    {
+      "kind": "index",
+      "name": "transaction_amount_changes_pkey",
+      "definition": "CREATE UNIQUE INDEX transaction_amount_changes_pkey ON public.transaction_amount_changes USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "transaction_amount_changes_undo_of_key",
+      "definition": "CREATE UNIQUE INDEX transaction_amount_changes_undo_of_key ON public.transaction_amount_changes USING btree (undo_of)"
+    },
+    {
+      "kind": "index",
+      "name": "transaction_tags_pkey",
+      "definition": "CREATE UNIQUE INDEX transaction_tags_pkey ON public.transaction_tags USING btree (transaction_id, tag_id)"
+    },
+    {
+      "kind": "index",
+      "name": "transactions_pkey",
+      "definition": "CREATE UNIQUE INDEX transactions_pkey ON public.transactions USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "upload_jobs_pkey",
+      "definition": "CREATE UNIQUE INDEX upload_jobs_pkey ON public.upload_jobs USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "uploaded_files_pkey",
+      "definition": "CREATE UNIQUE INDEX uploaded_files_pkey ON public.uploaded_files USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "uploaded_files_user_id_file_hash_key",
+      "definition": "CREATE UNIQUE INDEX uploaded_files_user_id_file_hash_key ON public.uploaded_files USING btree (user_id, file_hash)"
+    },
+    {
+      "kind": "index",
+      "name": "users_email_key",
+      "definition": "CREATE UNIQUE INDEX users_email_key ON public.users USING btree (email)"
+    },
+    {
+      "kind": "index",
+      "name": "users_google_id_key",
+      "definition": "CREATE UNIQUE INDEX users_google_id_key ON public.users USING btree (google_id)"
+    },
+    {
+      "kind": "index",
+      "name": "users_pkey",
+      "definition": "CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)"
+    },
+    {
+      "kind": "sequence",
+      "name": "cards_id_seq",
+      "definition": "[\"integer\", 1, 1, 2147483647, 1, false]"
+    },
+    {
+      "kind": "sequence",
+      "name": "categories_id_seq",
+      "definition": "[\"integer\", 1, 1, 2147483647, 1, false]"
+    },
+    {
+      "kind": "sequence",
+      "name": "invited_users_id_seq",
+      "definition": "[\"integer\", 1, 1, 2147483647, 1, false]"
+    },
+    {
+      "kind": "sequence",
+      "name": "tags_id_seq",
+      "definition": "[\"integer\", 1, 1, 2147483647, 1, false]"
+    },
+    {
+      "kind": "sequence",
+      "name": "transaction_amount_changes_id_seq",
+      "definition": "[\"bigint\", 1, 1, 9223372036854775807, 1, false]"
+    },
+    {
+      "kind": "sequence",
+      "name": "transactions_id_seq",
+      "definition": "[\"integer\", 1, 1, 2147483647, 1, false]"
+    },
+    {
+      "kind": "sequence",
+      "name": "uploaded_files_id_seq",
+      "definition": "[\"integer\", 1, 1, 2147483647, 1, false]"
+    },
+    {
+      "kind": "sequence",
+      "name": "users_id_seq",
+      "definition": "[\"integer\", 1, 1, 2147483647, 1, false]"
+    },
+    {
+      "kind": "table",
+      "name": "cards",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "categories",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "categorization_settings",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "invited_users",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "tags",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "transaction_amount_changes",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "transaction_tags",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "transactions",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "upload_jobs",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "uploaded_files",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "users",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "trigger",
+      "name": "transactions.trg_transaction_original_amount",
+      "definition": "O:CREATE TRIGGER trg_transaction_original_amount BEFORE INSERT OR UPDATE ON public.transactions FOR EACH ROW EXECUTE FUNCTION set_transaction_original_amount()"
+    }
+  ]
+}

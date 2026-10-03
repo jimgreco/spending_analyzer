@@ -257,3 +257,7 @@ Pushes to the `main` branch automatically deploy to the EC2 instance via GitHub 
 3. Files are **deduplicated** automatically — safe to re-upload
 4. **Edit category** to correct a primary tag and decide whether future imports should learn from it
 5. **Click a donut slice** to filter the table to that category
+
+## Database startup
+
+Run `python webapp/migrate.py` from the repository root with separately supplied `MIGRATION_DATABASE_URL` to initialize an empty database. Existing databases require reviewed `--adopt-existing`; startup does not replay historical cleanup or tag migrations. See [database runtime access](../docs/database-runtime-access.md).

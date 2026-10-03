@@ -1,0 +1,136 @@
+{
+  "status": "proposal; not applied; requires exact live catalog and owner approval",
+  "database": "spending",
+  "roles": {
+    "owner": "spending_owner",
+    "migration": "spending_migrator",
+    "runtime": "spending_runtime"
+  },
+  "role_flags": {
+    "owner": "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    "migration": "LOGIN only by secure owner handoff; NOINHERIT; SET ROLE owner; no elevated flags",
+    "runtime": "LOGIN only by secure owner handoff; no owner/migration membership; no elevated flags"
+  },
+  "schema": "public",
+  "schema_owner_proposal": "spending_owner",
+  "database_owner": "retain existing; do not reassign database or extension ownership",
+  "runtime_table_privileges": {
+    "cards": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "categories": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "categorization_settings": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "invited_users": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "tags": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "transaction_amount_changes": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "transaction_tags": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "transactions": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "upload_jobs": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "uploaded_files": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "users": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ]
+  },
+  "runtime_metadata_privileges": {
+    "app_schema_versions": [
+      "SELECT"
+    ]
+  },
+  "runtime_sequence_privileges": {
+    "cards_id_seq": [
+      "USAGE"
+    ],
+    "categories_id_seq": [
+      "USAGE"
+    ],
+    "invited_users_id_seq": [
+      "USAGE"
+    ],
+    "tags_id_seq": [
+      "USAGE"
+    ],
+    "transaction_amount_changes_id_seq": [
+      "USAGE"
+    ],
+    "transactions_id_seq": [
+      "USAGE"
+    ],
+    "uploaded_files_id_seq": [
+      "USAGE"
+    ],
+    "users_id_seq": [
+      "USAGE"
+    ]
+  },
+  "runtime_function_execute": [],
+  "owned_functions": [
+    "public.set_transaction_original_amount()"
+  ],
+  "extensions": [
+    "plpgsql (existing; no CREATE EXTENSION required)"
+  ],
+  "default_privileges": "No blanket table/sequence runtime defaults. Explicit grants per reviewed migration. Revoke default PUBLIC EXECUTE globally for the actual owner in this database; revoke existing app-function PUBLIC EXECUTE.",
+  "denied": [
+    "CREATE schema/table",
+    "ALTER/DROP app objects",
+    "TRUNCATE",
+    "sequence UPDATE/setval",
+    "migration ledger writes",
+    "owner role membership",
+    "CREATE ROLE/DATABASE",
+    "superuser catalog reads",
+    "cross-app table DML"
+  ],
+  "database_acl_proposal": "REVOKE ALL on selected database FROM PUBLIC; CONNECT to migration/runtime only plus any explicitly inventoried legitimate consumers; superuser admin retained. Do not apply before consumer review."
+}

@@ -279,7 +279,7 @@ Three dependency levels in `app.py`:
 - `SP ` (Square) — leading prefix
 - `*TST*` / `TST*` / `*TST` (Toast POS) — leading prefix
 
-DB migrations run on startup to retroactively clean existing records.
+Historical cleanup logic is retained in the explicit legacy initializer. Runtime startup and existing-schema adoption never run it.
 
 ### File Parsing Pipeline
 `parse_file_bytes(content, filename)` — GPT-only, no hand-coded parsers:
@@ -325,3 +325,11 @@ Card/issuer chips are color-coded dynamically — no hard-coded color map. `allS
 
 ### CSS Variables (dark theme)
 `--bg`, `--bg-soft`, `--surface`, `--border`, `--text`, `--muted`, `--accent` (#6366f1 indigo), `--accent2` (#22d3ee cyan), `--red`, `--green`
+
+## Database runtime and migration boundary
+
+- Normal startup only checks the reviewed schema contract; it never creates or repairs tables.
+- Run `python webapp/migrate.py` as a separate process with `MIGRATION_DATABASE_URL` supplied by the owner. It never falls back to runtime `DATABASE_URL`.
+- Existing databases require reviewed `--adopt-existing` (with `--` before that flag for npm). Adoption validates structure and adds only compatibility metadata; it does not replay historical data repairs. Fresh initialization requires an empty public schema.
+- See `docs/database-runtime-access.md` for the owner/runtime split, rollout ordering and rollback limits. Do not deploy this startup change before schema adoption is approved and completed.
+- Runtime must not receive migration credentials or membership in its object-owner role. Schema changes require an updated contract, an explicit migration, reviewed grants and a compatible rollback floor.

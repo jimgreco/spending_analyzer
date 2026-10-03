@@ -14,6 +14,7 @@ from collections import Counter
 from decimal import Decimal
 from datetime import datetime, timedelta
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import List, Optional, Literal
 from uuid import UUID
 from urllib.parse import urlencode
@@ -56,7 +57,7 @@ OPENAI_MODEL         = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TAG_MODEL     = os.getenv("OPENAI_TAG_MODEL", "").strip() or "gpt-6-astra"
 GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-SECRET_KEY           = os.getenv("SECRET_KEY", secrets.token_hex(32))
+SECRET_KEY           = (os.getenv("SECRET_KEY") or secrets.token_hex(32))
 _ENV_APP_URL         = os.getenv("APP_URL", "").strip().rstrip("/")
 _ENV_CALLBACK_URL    = os.getenv("GOOGLE_CALLBACK_URL", "").strip().rstrip("/")
 APP_URL              = _ENV_APP_URL or _ENV_CALLBACK_URL.removesuffix("/auth/google/callback") or "http://localhost:8000"
@@ -91,8 +92,14 @@ def _get_pool():
         _pool = psycopg2.pool.ThreadedConnectionPool(1, 10, DATABASE_URL)
     return _pool
 
+_migration_connection = ContextVar("migration_connection", default=None)
+
 @contextmanager
 def db():
+    migration_conn = _migration_connection.get()
+    if migration_conn is not None:
+        yield migration_conn
+        return
     conn = _get_pool().getconn()
     try:
         yield conn
@@ -271,22 +278,18 @@ def _migrate_primary_tags():
                     "WHERE primary_migration_status IS NULL")
 
         print("[migrate:primary-tags] Migration complete")
-    except Exception as e:
-        print(f"[migrate:primary-tags] {type(e).__name__}: {e}")
+    except Exception:
+        raise RuntimeError("Primary tag migration failed") from None
 
 
-def init_db():
+def _initialize_legacy_schema_and_data():
     # Base schema (safe for both fresh and existing DBs)
     with db() as conn:
         with conn.cursor() as cur:
-            try:
-                cur.execute(SCHEMA)
-            except Exception as e:
-                # If it already exists, ignore common "already exists" errors during SERIAL creation
-                print(f"[init_db] Note: {e}")
-                conn.rollback()
+            cur.execute(SCHEMA)
 
-    # Each migration in its own transaction — a failure in one doesn't block others.
+    # Called only for an empty database by init_db. Existing historical repair
+    # logic is retained here for separately reviewed maintenance, never startup/adoption.
     migrations = [
         # ── dedup / soft-delete migrations (from previous version) ───────────────
         ("drop dedup_key unique constraint", """
@@ -577,8 +580,8 @@ def init_db():
             with db() as conn:
                 with conn.cursor() as cur:
                     cur.execute(sql)
-        except Exception as e:
-            print(f"[migrate:{label}] {e}")
+        except Exception:
+            raise RuntimeError(f"Schema migration failed: {label}") from None
 
     # ── Primary tag data migration ──────────────────────────────────────────────
     _migrate_primary_tags()
@@ -592,8 +595,40 @@ def init_db():
                 with conn.cursor() as cur:
                     cur.execute("UPDATE transactions   SET user_id = %s WHERE user_id IS NULL", (uid,))
                     cur.execute("UPDATE uploaded_files SET user_id = %s WHERE user_id IS NULL", (uid,))
-        except Exception as e:
-            print(f"[migrate:assign-orphans] {e}")
+        except Exception:
+            raise RuntimeError("Local orphan assignment failed") from None
+
+def init_db(*, adopt_existing=False):
+    """Explicit schema command; existing data requires validated adoption.
+
+    All initializer work is one transaction. Runtime startup never calls this.
+    Historical repairs below remain excluded from existing-database adoption.
+    """
+    from schema_contract import assert_schema_compatible, CONTRACT
+    with db() as conn:
+        token = _migration_connection.set(conn)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL lock_timeout = '10s'")
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (CONTRACT['app'] + ':schema',))
+                cur.execute("SELECT count(*) FROM pg_tables WHERE schemaname='public'")
+                exists = cur.fetchone()[0] > 0
+                if exists:
+                    assert_schema_compatible(conn, require_version=not adopt_existing)
+                    if not adopt_existing:
+                        return
+                else:
+                    if adopt_existing:
+                        raise RuntimeError('Cannot adopt an empty database')
+                    _initialize_legacy_schema_and_data()
+                    assert_schema_compatible(conn, require_version=False)
+                cur.execute("""CREATE TABLE IF NOT EXISTS public.app_schema_versions (
+                    app TEXT NOT NULL, version INTEGER NOT NULL,
+                    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (app,version))""")
+                cur.execute("INSERT INTO public.app_schema_versions(app,version) VALUES(%s,%s) ON CONFLICT DO NOTHING",
+                            (CONTRACT['app'], CONTRACT['version']))
+        finally:
+            _migration_connection.reset(token)
 
 # ── Local dev user ────────────────────────────────────────────────────────────────
 _local_user_cache: Optional[dict] = None
@@ -1001,7 +1036,11 @@ GIT_VERSION = _get_git_version()
 
 @app.on_event("startup")
 def startup():
-    init_db()
+    if os.environ.get('MIGRATION_DATABASE_URL'):
+        raise RuntimeError('Remove MIGRATION_DATABASE_URL from the runtime environment; use the separate migration command.')
+    from schema_contract import assert_schema_compatible
+    with db() as conn:
+        assert_schema_compatible(conn)
 
 @app.get("/api/version")
 def get_version():
