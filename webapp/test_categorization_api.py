@@ -222,6 +222,12 @@ class CategorizationApiTests(unittest.TestCase):
         job=self.client.get('/api/upload/status/test-job').json()
         self.assertEqual(job['status'],'done',job)
         self.assertEqual((job['result']['new'],job['result']['dupes'],job['result']['needs_review']),(2,1,1))
+        self.assertEqual(job['result']['file_hash'], hashlib.md5(b'fake statement').hexdigest())
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT id FROM uploaded_files WHERE user_id=%s AND file_hash=%s',
+                            (self.uid, job['result']['file_hash']))
+                self.assertEqual(job['result']['new_upload_id'], cur.fetchone()[0])
         review_rows=self.client.get('/api/transactions?status=review').json()['transactions']
         self.assertEqual(len(review_rows),1)
         self.assertEqual(review_rows[0]['amount'],300)
@@ -240,7 +246,9 @@ class CategorizationApiTests(unittest.TestCase):
                 cur.execute("INSERT INTO upload_jobs(id,user_id,filename) VALUES('test-job-repeat',%s,'synthetic.csv')",(self.uid,))
         with patch.object(app,'parse_file_bytes',side_effect=AssertionError('must not parse duplicate')):
             app._process_upload_job('test-job-repeat',self.uid,'synthetic.csv',b'fake statement',False)
-        self.assertEqual(self.client.get('/api/upload/status/test-job-repeat').json()['result']['status'],'already_imported')
+        repeated_upload=self.client.get('/api/upload/status/test-job-repeat').json()['result']
+        self.assertEqual(repeated_upload['status'],'already_imported')
+        self.assertNotIn('new_upload_id', repeated_upload)
 
         # A forced reimport repairs one missing refund without touching category
         # corrections or manufacturing duplicate copies of existing rows.
@@ -258,6 +266,8 @@ class CategorizationApiTests(unittest.TestCase):
         forced=self.client.get('/api/upload/status/test-job-force').json()
         self.assertEqual(forced['status'],'done',forced)
         self.assertEqual((forced['result']['new'],forced['result']['skipped']),(1,3))
+        self.assertIsNone(forced['result']['new_upload_id'])
+        self.assertEqual(forced['result']['file_hash'], job['result']['file_hash'])
         after=self.client.get('/api/transactions?search=EXAMPLE%20GROCERY').json()['transactions']
         self.assertEqual(next(r for r in after if r['id']==original_id)['primary_tag'],'Home')
         self.assertEqual(self.client.get('/api/transactions?status=deduped').json()['total'],1)
@@ -269,6 +279,7 @@ class CategorizationApiTests(unittest.TestCase):
             app._process_upload_job('test-job-force-again',self.uid,'synthetic.csv',b'fake statement',True)
         repeated=self.client.get('/api/upload/status/test-job-force-again').json()['result']
         self.assertEqual((repeated['new'],repeated['dupes'],repeated['skipped']),(0,0,4))
+        self.assertIsNone(repeated['new_upload_id'])
         self.assertEqual(self.client.get('/api/transactions?status=deduped').json()['total'],1)
 
     def test_jobs_are_user_scoped_and_stale_work_is_recoverable(self):
@@ -301,9 +312,10 @@ class CategorizationApiTests(unittest.TestCase):
             for worker in workers: worker.start()
             for worker in workers: worker.join()
         self.assertEqual(errors,[])
-        results=[self.client.get(f'/api/upload/status/{job_id}').json()['result']['status']
+        results=[self.client.get(f'/api/upload/status/{job_id}').json()['result']
                  for job_id in ('race-one','race-two')]
-        self.assertCountEqual(results,['ok','already_imported'])
+        self.assertCountEqual([result['status'] for result in results],['ok','already_imported'])
+        self.assertEqual(sum(bool(result.get('new_upload_id')) for result in results),1)
         with app.db() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id=%s AND import_file='race.csv'",(self.uid,))

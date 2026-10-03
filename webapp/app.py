@@ -1844,14 +1844,17 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                             card_last4=COALESCE(NULLIF(card_last4,''),%s)
                         WHERE user_id=%s AND file_hash=%s""",
                         (new_count, dupe_count, account_last4, user_id, file_hash))
+                    new_upload_id = None
                 else:
                     cur.execute("""INSERT INTO uploaded_files
                         (user_id, filename, file_hash, source, tx_new, tx_dupes, card_last4)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                        VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
                         (user_id, filename, file_hash, source, new_count, dupe_count, account_last4))
+                    new_upload_id = cur.fetchone()[0]
 
                 _finish_upload_job(cur, job_id, user_id, 'done',
-                    {'filename': filename, 'status': 'ok', 'source': source,
+                    {'filename': filename, 'file_hash': file_hash,
+                     'new_upload_id': new_upload_id, 'status': 'ok', 'source': source,
                      'new': new_count, 'dupes': dupe_count, 'skipped': skipped,
                      'possible_overlap': possible_overlap,
                      'needs_review': needs_review, 'gpt_tagged': gpt_tagged})
