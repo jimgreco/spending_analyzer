@@ -81,6 +81,29 @@ not recategorize existing transactions.
 The migrations add `categorization_settings` plus correction scope/note, archive,
 and review metadata on `transactions`. They are idempotent and do not rewrite
 existing labels.
+
+## Import reliability
+
+- Apple Card and Coinbase One Card PDFs with recognized statement summaries are
+  checked against their dated payment and transaction lines before saving. The
+  check compares date, signed amount, repeated-row count, and printed section
+  totals. Apple's undated Daily Cash Adjustment is included in its printed total
+  check but is not imported as a dated transaction.
+- If extraction omits dated rows, one focused extraction of those original lines
+  runs, followed by the full check again. A truncated model response, failed
+  chunk, invalid row, or unresolved mismatch saves no transactions. Other file
+  formats still use the general extraction path without this statement-total
+  check; verify their signs and totals before relying on an import.
+- `GET /api/upload/jobs` lists the latest owner-scoped jobs and their stages;
+  `?filename=` filters by the original upload name.
+  The dashboard shows these after refresh. A heartbeat marks work interrupted
+  after two minutes without an update. The uploaded bytes are not stored, so
+  retry by selecting the same file. Errors and interrupted jobs stay visible.
+- `Reimport` reparses an existing file and adds only missing rows. Rows already
+  attributed to that file keep their categories and other edits. Concurrent
+  uploads of the same file serialize their final database write. A normal retry
+  of an already imported file reports `already_imported`. The Reimport button
+  verifies that the selected bytes match its upload record.
 `GET/PUT /api/categorization-guide` manage guidance; the primary-tag and bulk-tag
 APIs accept `correction_scope` (`transaction` or `similar`) and `correction_note`.
 `GET /api/categorization-corrections` lists active transaction corrections by
@@ -101,6 +124,8 @@ python3 -m unittest discover -s webapp -p 'test_tag_model.py' -v
 The optional API/import integration suite needs a **disposable local PostgreSQL
 DB** whose name ends in `_test`. It clears test tables; never use a real dataset.
 It mocks the parser and OpenAI transport and never reads statement files.
+The synthetic statement unit tests also exercise the Apple refund, Coinbase
+payment, repeat-charge, total mismatch, and failed-recovery paths.
 
 ```bash
 SPENDING_TEST_DATABASE_URL='postgresql://user@localhost/spending_test' \

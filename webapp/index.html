@@ -608,9 +608,10 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
       <span class="pick-link">or click to browse</span>
     </div>
   </div>
-  <input type="file" id="reimport-file-input" accept=".pdf,.csv" multiple style="display:none">
+  <input type="file" id="reimport-file-input" accept=".pdf,.csv" style="display:none">
 
   <!-- Upload history -->
+  <div id="upload-jobs" aria-live="polite"></div>
   <div id="upload-history"></div>
 
   <!-- Summary cards -->
@@ -905,7 +906,7 @@ async function checkAuth() {
       return r.json();
     });
     showUserHeader(user);
-    await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
+    await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
     if (user.is_owner) checkMigrationBanner();
     applyPageFromHash();
   } catch(e) {
@@ -1060,8 +1061,36 @@ async function loadUploadHistory(append = false) {
   } catch(e) { console.error('loadUploadHistory', e); }
 }
 
+let uploadJobRefreshTimer = null;
+let uploadJobWasActive = false;
+async function loadUploadJobs() {
+  try {
+    const data = await api('/api/upload/jobs?limit=15');
+    const jobs = data.jobs || [];
+    const active = new Set(['pending','processing','parsing','categorizing','saving']);
+    const recent = jobs;
+    const el = document.getElementById('upload-jobs');
+    el.innerHTML = recent.length ? `<div style="margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:8px">
+      <strong>Recent import jobs</strong><div style="font-size:.83rem;color:var(--muted)">Jobs stay visible after a refresh. For an interrupted or failed job, select the same file again.</div>
+      ${recent.map(j => `<div style="margin-top:8px;overflow-wrap:anywhere">${escHtml(j.filename)} — ${escHtml(j.status)}${j.result?.message ? ': ' + escHtml(j.result.message) : j.result?.status === 'ok' ? `: ${j.result.new} new, ${j.result.dupes} dupes, ${j.result.skipped || 0} already in this file` : ''}</div>`).join('')}
+      </div>` : '';
+    clearTimeout(uploadJobRefreshTimer);
+    const activeNow = jobs.some(j => active.has(j.status));
+    if (uploadJobWasActive && !activeNow) {
+      await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
+    }
+    uploadJobWasActive = activeNow;
+    if (activeNow) {
+      uploadJobRefreshTimer = setTimeout(loadUploadJobs, 5000);
+    }
+  } catch(e) {
+    console.error('loadUploadJobs', e);
+    if (uploadJobWasActive) uploadJobRefreshTimer = setTimeout(loadUploadJobs, 5000);
+  }
+}
+
 async function refreshAll() {
-  await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
+  await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
 }
 
 // ── Render: cards ──────────────────────────────────────────────────────────────
@@ -1514,7 +1543,7 @@ function renderUploadHistory(uploads, apiData) {
           <td style="color:var(--muted)">${u.uploaded_at}</td>
           <td style="white-space:nowrap;display:flex;gap:4px">
             <button class="btn" style="font-size:.72rem;padding:3px 8px"
-                    onclick="reimportFile('${escHtml(u.filename)}')">🔄 Reimport</button>
+                    onclick="reimportFile('${escHtml(u.file_hash)}')">🔄 Reimport</button>
             <button class="btn" style="font-size:.72rem;padding:3px 8px;color:var(--red)"
                     onclick="deleteImport('${escHtml(u.filename)}', ${u.tx_new + u.tx_dupes})">🗑 Delete</button>
           </td>
@@ -1637,15 +1666,14 @@ async function saveImportRename(oldName, edit) {
   }
 }
 
-function reimportFile(filename) {
+function reimportFile(fileHash) {
   const input = document.getElementById('reimport-file-input');
-  const handler = async () => {
-    input.removeEventListener('change', handler);
+  input.onchange = async () => {
+    input.onchange = null;
     const files = Array.from(input.files).filter(f => f.name.match(/\.(pdf|csv)$/i));
     input.value = '';
-    if (files.length) await uploadFiles(files, true);
+    if (files.length) await uploadFiles(files, true, fileHash);
   };
-  input.addEventListener('change', handler);
   input.click();
 }
 
@@ -2184,7 +2212,7 @@ function handleFileInput(files) {
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────────
-async function uploadFiles(files, force = false) {
+async function uploadFiles(files, force = false, expectedHash = '') {
   const prog = document.getElementById('upload-progress');
   const detail = document.getElementById('progress-detail');
   prog.classList.add('visible');
@@ -2194,10 +2222,14 @@ async function uploadFiles(files, force = false) {
   files.forEach(f => formData.append('files', f));
 
   try {
-    const data = await api('/api/upload' + (force ? '?force=true' : ''), { method:'POST', body:formData });
+    const params = new URLSearchParams();
+    if (force) params.set('force', 'true');
+    if (expectedHash) params.set('expected_file_hash', expectedHash);
+    const data = await api('/api/upload' + (params.toString() ? `?${params}` : ''), { method:'POST', body:formData });
     const jobs = data.jobs;
 
     // Poll all jobs until done
+    await loadUploadJobs();
     const results = await pollUploadJobs(jobs, detail);
     prog.classList.remove('visible');
 
@@ -2209,6 +2241,10 @@ async function uploadFiles(files, force = false) {
         showToast(`Error: ${r.filename}`, r.message, 'error');
       } else if (r.status === 'already_imported') {
         showToast(`Already imported`, r.filename, 'warn');
+      } else if (r.status === 'ok' && r.skipped && !r.new && !r.dupes) {
+        showToast('No missing transactions', `${r.filename}: ${r.skipped} rows were already imported.`, 'warn');
+      } else if (r.status === 'pending') {
+        showToast('Import still running', `${r.filename}: check Recent import jobs for the result.`, 'warn');
       }
     });
 
@@ -2243,28 +2279,30 @@ async function uploadFiles(files, force = false) {
 async function pollUploadJobs(jobs, detailEl) {
   const results = [];
   const pending = jobs.map(j => ({ ...j }));
+  const deadline = Date.now() + 90000;
 
-  while (pending.length > 0) {
+  while (pending.length > 0 && Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 2000));
 
     const done = [];
     for (const job of pending) {
       try {
         const s = await api(`/api/upload/status/${job.job_id}`);
-        if (s.status === 'done' || s.status === 'error') {
+        if (s.status === 'done' || s.status === 'error' || s.status === 'interrupted') {
           results.push(s.result || { filename: job.filename, status: 'error', message: 'Unknown error', new: 0, dupes: 0 });
           done.push(job);
         } else {
-          const label = s.status === 'processing' ? 'Categorizing' : 'Processing';
+          const label = s.status === 'categorizing' ? 'Categorizing' :
+            s.status === 'saving' ? 'Saving' : 'Processing';
           detailEl.textContent = `${label} ${job.filename}…`;
         }
       } catch(e) {
-        results.push({ filename: job.filename, status: 'error', message: e.message, new: 0, dupes: 0 });
-        done.push(job);
+        detailEl.textContent = `Connection lost while checking ${job.filename}; retrying…`;
       }
     }
     done.forEach(j => pending.splice(pending.indexOf(j), 1));
   }
+  pending.forEach(j => results.push({ filename:j.filename, status:'pending', new:0, dupes:0 }));
   return results;
 }
 

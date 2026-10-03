@@ -9,7 +9,7 @@ Auth:
   - Local dev:   Set LOCAL_DEV=true in .env to bypass OAuth and auto-login as a
                  local test user.  No Google credentials needed.
 """
-import os, re, io, json, hashlib, secrets, uuid, threading, subprocess
+import os, re, io, json, hashlib, secrets, uuid, threading, subprocess, math
 from collections import Counter
 from datetime import datetime, timedelta
 from contextlib import contextmanager
@@ -30,6 +30,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from categorization import SYSTEM_PROMPT, prepare_context, request_payload, validate_results, review
+from import_checks import reconcile_card_statement, StatementMismatch
 from dotenv import load_dotenv
 
 # ── Load .env (one level up from this file) ───────────────────────────────────────
@@ -434,6 +435,13 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """),
+        ("add upload job observation fields", """
+            ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS file_hash TEXT;
+            ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+            UPDATE upload_jobs SET updated_at=created_at WHERE updated_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_upload_jobs_user_recent
+                ON upload_jobs(user_id, created_at DESC)
+        """),
 
         ("delete activity-4 uploads and transactions 2026-03-11", """
             DELETE FROM transactions
@@ -767,20 +775,25 @@ def parse_with_gpt(text: str, filename: str) -> tuple:
             max_tokens=32000,
         )
         choice = resp.choices[0]
-        if choice.finish_reason == "length":
-            print(f"[GPT parse] WARNING: '{filename}' hit max_tokens — response truncated")
+        if choice.finish_reason != "stop":
+            return [], None, f"Statement extraction ended early ({choice.finish_reason}); no rows saved"
         data = json.loads(choice.message.content)
         raw_rows = data.get("transactions", [])
+        if not isinstance(raw_rows, list):
+            return [], None, "Statement extraction returned an invalid transaction list"
         rows = []
         for r in raw_rows:
             try:
-                rows.append({
+                row = {
                     "date":        str(r["date"]).strip(),
                     "description": str(r["description"]).strip(),
                     "amount":      float(r["amount"]),
-                })
+                }
+                if not row['description'] or not math.isfinite(row['amount']) or row['amount'] == 0:
+                    raise ValueError('empty description or invalid amount')
+                rows.append(row)
             except (KeyError, ValueError, TypeError):
-                continue
+                return [], None, "Statement extraction contained an invalid row; no rows saved"
         print(f"[GPT parse] '{filename}': {len(rows)} transactions, finish={choice.finish_reason}")
         return rows, None, ""
     except Exception as e:
@@ -832,9 +845,9 @@ def parse_file_bytes(content: bytes, filename: str) -> tuple:
         rows, gpt_error = [], ""
         for i, chunk_text in enumerate(chunks):
             cr, _, ce = parse_with_gpt(chunk_text, f"{filename}[{i+1}/{len(chunks)}]")
+            if ce:
+                return [], None, f"Chunk {i+1}/{len(chunks)} failed: {ce}"
             rows.extend(cr)
-            if ce and not rows:
-                gpt_error = ce
         print(f"[parse] '{filename}': {len(chunks)} chunks → {len(rows)} rows")
     else:
         rows, _, gpt_error = parse_with_gpt(text, filename)
@@ -844,14 +857,47 @@ def parse_file_bytes(content: bytes, filename: str) -> tuple:
 
     source = detect_source(text) or "Unknown"
 
-    seq_counts: Counter = Counter()
     for r in rows:
         r["date"] = parse_date(r["date"])
+        try:
+            datetime.strptime(r['date'], '%Y-%m-%d')
+        except ValueError:
+            return [], None, f"Statement extraction returned an invalid date: {r['date']}"
+
+    try:
+        reconcile_card_statement(pages, source, rows)
+    except StatementMismatch as mismatch:
+        # One focused pass gives the model a chance to recover a skipped return
+        # without asking it to reinterpret the full statement. Recheck everything.
+        if mismatch.extra or not mismatch.missing_lines:
+            return [], None, str(mismatch)
+        hint = ('Extract ONLY these omitted dated statement lines. Preserve their '
+                'printed dates, descriptions, and credit/refund signs.\n' +
+                '\n'.join(mismatch.missing_lines))
+        recovered, _, repair_error = parse_with_gpt(hint, f'{filename}[reconcile]')
+        if repair_error:
+            return [], None, f'{mismatch} Recovery failed: {repair_error}'
+        for r in recovered:
+            r['date'] = parse_date(r['date'])
+        rows.extend(recovered)
+        try:
+            reconcile_card_statement(pages, source, rows)
+        except ValueError as exc:
+            return [], None, str(exc)
+    except ValueError as exc:
+        return [], None, str(exc)
+
+    seq_counts: Counter = Counter()
+    seen_keys = set()
+    for r in rows:
         r.setdefault("source", source)
         base = (r["date"], r["source"], r["amount"], r["description"])
         seq_counts[base] += 1
         r["dedup_key"] = make_dedup_key(
             r["date"], r["source"], r["amount"], r["description"], seq_counts[base])
+        if r['dedup_key'] in seen_keys:
+            return [], None, 'Statement contains ambiguous duplicate row identities; no rows saved'
+        seen_keys.add(r['dedup_key'])
 
     return rows, source, ""
 
@@ -1423,17 +1469,67 @@ def purge_deduped_transactions(user: dict = Depends(require_edit)):
     return {"ok": True, "purged": purged}
 
 # ── Upload ────────────────────────────────────────────────────────────────────────
+UPLOAD_STALE_SECONDS = 120
+
+
+def _set_upload_job(job_id, user_id, status, result=None):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE upload_jobs SET status=%s, result_json=%s, updated_at=NOW()
+                WHERE id=%s AND user_id=%s AND status IN
+                ('processing','parsing','categorizing','saving')""",
+                (status, json.dumps(result) if result is not None else None, job_id, user_id))
+            return cur.rowcount == 1
+
+
+def _mark_stale_upload_jobs(cur, user_id):
+    # The file bytes live only in a worker process. A restart requires re-upload.
+    cur.execute("""UPDATE upload_jobs SET status='interrupted', updated_at=NOW(),
+        result_json=json_build_object('status','error','filename',filename,
+            'message','Import was interrupted. Re-upload this file to retry safely.',
+            'new',0,'dupes',0)::text
+        WHERE user_id=%s AND status IN ('pending','processing','parsing','categorizing','saving')
+          AND updated_at < NOW() - INTERVAL '1 second' * %s""",
+        (user_id, UPLOAD_STALE_SECONDS))
+
+
+def _finish_upload_job(cur, job_id, user_id, status, result):
+    cur.execute("""UPDATE upload_jobs SET status=%s, result_json=%s, updated_at=NOW()
+        WHERE id=%s AND user_id=%s AND status IN
+        ('processing','parsing','categorizing','saving')""",
+        (status, json.dumps(result), job_id, user_id))
+    if cur.rowcount != 1:
+        raise RuntimeError('Upload was interrupted before saving; no rows saved')
+
+
 def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes, force: bool):
     """Runs in a background thread. Processes one file and updates upload_jobs on completion."""
     def set_status(status, result=None):
-        with db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE upload_jobs SET status=%s, result_json=%s WHERE id=%s",
-                    (status, json.dumps(result) if result is not None else None, job_id))
+        return _set_upload_job(job_id, user_id, status, result)
+
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE upload_jobs SET status='processing', updated_at=NOW()
+                WHERE id=%s AND user_id=%s AND status='pending' RETURNING id""", (job_id,user_id))
+            claimed = cur.fetchone() is not None
+    if not claimed:
+        return
+
+    heartbeat_stop = threading.Event()
+    def heartbeat():
+        while not heartbeat_stop.wait(15):
+            try:
+                with db() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""UPDATE upload_jobs SET updated_at=NOW()
+                            WHERE id=%s AND user_id=%s AND status IN
+                            ('processing','parsing','categorizing','saving')""", (job_id,user_id))
+            except Exception as exc:
+                print(f'[upload_job:{job_id}] heartbeat: {type(exc).__name__}: {exc}')
+    heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+    heartbeat_thread.start()
 
     try:
-        set_status("processing")
         file_hash = hashlib.md5(content).hexdigest()
 
         # 1. Quick DB checks — release connection before slow work
@@ -1447,15 +1543,17 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                                             "message": "File was already imported", "new": 0, "dupes": 0})
                         return
 
+        set_status('parsing')
         rows, source, error = parse_file_bytes(content, filename)
         if error:
-            set_status("done", {"filename": filename, "status": "error",
+            set_status("error", {"filename": filename, "status": "error",
                                 "message": error, "new": 0, "dupes": 0})
             return
 
         for r in rows:
             r["description"] = clean_description(r["description"])
 
+        set_status('categorizing')
         # 2. Snapshot owner-scoped guidance and human corrections; release DB for AI.
         guide, history = load_categorization_context(user_id)
         with db() as conn:
@@ -1463,25 +1561,52 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                 cur.execute("SELECT name FROM tags WHERE user_id=%s ORDER BY name", (user_id,))
                 tag_list = [r[0] for r in cur.fetchall()]
         decisions = assign_tags_with_gpt(rows, tag_list, guide, history)
+        if len(decisions) != len(rows):
+            raise ValueError('Categorization returned the wrong row count')
         gpt_tagged = needs_review = 0
+        set_status('saving')
 
         # 4. Insert transactions, then tags
         dedup_keys = [r["dedup_key"] for r in rows]
         with db() as conn:
             with conn.cursor() as cur:
+                # Serialize one owner's final writes across workers, including
+                # overlapping statements. Keep AI calls outside this short lock.
+                lock_key = int.from_bytes(
+                    hashlib.sha256(f'upload-owner:{user_id}'.encode()).digest()[:8],
+                    'big', signed=True)
+                cur.execute('SELECT pg_advisory_xact_lock(%s)', (lock_key,))
                 cur.execute("SELECT filename FROM uploaded_files WHERE user_id=%s AND file_hash=%s",
                             (user_id, file_hash))
                 row = cur.fetchone()
+                if row and not force:
+                    _finish_upload_job(cur, job_id, user_id, 'done',
+                        {'filename':filename,'status':'already_imported',
+                         'message':'File was already imported','new':0,'dupes':0})
+                    return
                 import_name = row[0] if row else filename
 
+                imported_keys = set()
+                if row:
+                    cur.execute("""SELECT COUNT(*) FROM uploaded_files
+                        WHERE user_id=%s AND filename=%s""", (user_id, import_name))
+                    if cur.fetchone()[0] > 1:
+                        raise ValueError('Cannot safely reimport: multiple uploads share this filename')
+                    cur.execute("""SELECT dedup_key FROM transactions WHERE user_id=%s
+                        AND import_file=%s AND dedup_key=ANY(%s)""",
+                        (user_id, import_name, dedup_keys))
+                    imported_keys = {r[0] for r in cur.fetchall()}
                 cur.execute("SELECT dedup_key FROM transactions WHERE user_id=%s AND dedup_key=ANY(%s) AND status='active'",
                             (user_id, dedup_keys))
                 existing_keys = {r[0] for r in cur.fetchall()}
 
-                new_count = dupe_count = 0
+                new_count = dupe_count = skipped = 0
                 insert_rows = []
                 decision_by_key = {}
                 for r, decision in zip(rows, decisions):
+                    if r['dedup_key'] in imported_keys:
+                        skipped += 1
+                        continue
                     is_dupe   = r["dedup_key"] in existing_keys
                     tx_status = "deduped" if is_dupe else "active"
                     insert_rows.append((user_id, r["date"], r["description"],
@@ -1493,13 +1618,14 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                     else:
                         dupe_count += 1
 
-                returned = psycopg2.extras.execute_values(cur, """
-                    INSERT INTO transactions
-                        (user_id, date, description, amount, source,
-                         dedup_key, status, dedup_of, import_file)
-                    VALUES %s
-                    RETURNING id, dedup_key
-                """, insert_rows, fetch=True)
+                returned = []
+                if insert_rows:
+                    returned = psycopg2.extras.execute_values(cur, """
+                        INSERT INTO transactions
+                            (user_id, date, description, amount, source,
+                             dedup_key, status, dedup_of, import_file)
+                        VALUES %s RETURNING id, dedup_key
+                    """, insert_rows, fetch=True)
 
                 # Resolve only categories that still exist; do not resurrect deleted tags.
                 cur.execute("SELECT name, id FROM tags WHERE user_id=%s", (user_id,))
@@ -1522,27 +1648,53 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                           tag_ids.get(decision["suggested_tag"]), decision["reason"],
                           decision["confidence"], decision["example_ids"], tx_id, user_id))
 
-                cur.execute("""
-                    INSERT INTO uploaded_files (user_id, filename, file_hash, source, tx_new, tx_dupes)
-                    VALUES (%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (user_id, file_hash) DO NOTHING
-                """, (user_id, filename, file_hash, source, new_count, dupe_count))
+                if row:
+                    cur.execute("""UPDATE uploaded_files
+                        SET tx_new=COALESCE(tx_new,0)+%s, tx_dupes=COALESCE(tx_dupes,0)+%s
+                        WHERE user_id=%s AND file_hash=%s""",
+                        (new_count, dupe_count, user_id, file_hash))
+                else:
+                    cur.execute("""INSERT INTO uploaded_files
+                        (user_id, filename, file_hash, source, tx_new, tx_dupes)
+                        VALUES (%s,%s,%s,%s,%s,%s)""",
+                        (user_id, filename, file_hash, source, new_count, dupe_count))
 
-        set_status("done", {"filename": filename, "status": "ok", "source": source,
-                            "new": new_count, "dupes": dupe_count,
-                            "needs_review": needs_review,
-                            "gpt_tagged": gpt_tagged})
+                _finish_upload_job(cur, job_id, user_id, 'done',
+                    {'filename': filename, 'status': 'ok', 'source': source,
+                     'new': new_count, 'dupes': dupe_count, 'skipped': skipped,
+                     'needs_review': needs_review, 'gpt_tagged': gpt_tagged})
     except Exception as e:
         print(f"[upload_job:{job_id}] {type(e).__name__}: {e}")
-        set_status("error", {"filename": filename, "status": "error",
-                             "message": str(e), "new": 0, "dupes": 0})
+        try:
+            set_status("error", {"filename": filename, "status": "error",
+                                 "message": str(e), "new": 0, "dupes": 0})
+        except Exception as update_error:
+            print(f'[upload_job:{job_id}] cannot save error: {update_error}')
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1)
 
 
 @app.post("/api/upload")
 async def upload_files(files: List[UploadFile] = File(...),
                        force: bool = False,
+                       expected_file_hash: Optional[str] = None,
                        user: dict = Depends(require_edit)):
     user_id = user["id"]
+    if expected_file_hash is not None:
+        if not force or len(files) != 1 or not re.fullmatch(r'[0-9a-f]{32}', expected_file_hash):
+            raise HTTPException(400, 'Choose one existing file to reimport')
+        selected = files[0]
+        content = await selected.read()
+        await selected.seek(0)
+        if hashlib.md5(content).hexdigest() != expected_file_hash:
+            raise HTTPException(400, 'Selected file does not match this upload record')
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT 1 FROM uploaded_files WHERE user_id=%s AND file_hash=%s',
+                            (user_id, expected_file_hash))
+                if not cur.fetchone():
+                    raise HTTPException(404, 'Upload record not found')
     jobs = []
     for f in files:
         content = await f.read()
@@ -1550,8 +1702,9 @@ async def upload_files(files: List[UploadFile] = File(...),
         with db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO upload_jobs (id, user_id, filename, status) VALUES (%s,%s,%s,'pending')",
-                    (job_id, user_id, f.filename))
+                    """INSERT INTO upload_jobs (id, user_id, filename, file_hash, status)
+                    VALUES (%s,%s,%s,%s,'pending')""",
+                    (job_id, user_id, f.filename, hashlib.md5(content).hexdigest()))
         threading.Thread(target=_process_upload_job,
                          args=(job_id, user_id, f.filename, content, force),
                          daemon=True).start()
@@ -1559,10 +1712,29 @@ async def upload_files(files: List[UploadFile] = File(...),
     return {"jobs": jobs}
 
 
+@app.get('/api/upload/jobs')
+def list_upload_jobs(user: dict = Depends(get_current_user),
+                     limit: int = Query(25, ge=1, le=100),
+                     filename: Optional[str] = None):
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            _mark_stale_upload_jobs(cur, user['id'])
+            cur.execute("""SELECT id,filename,status,result_json,created_at,updated_at
+                FROM upload_jobs WHERE user_id=%s AND (%s='' OR filename=%s)
+                ORDER BY created_at DESC LIMIT %s""",
+                (user['id'],filename or '',filename or '',limit))
+            return {'jobs':[{'job_id':r['id'],'filename':r['filename'],
+                'status':r['status'],
+                'result':json.loads(r['result_json']) if r['result_json'] else None,
+                'created_at':r['created_at'].isoformat(),
+                'updated_at':r['updated_at'].isoformat()} for r in cur.fetchall()]}
+
+
 @app.get("/api/upload/status/{job_id}")
 def get_upload_job_status(job_id: str, user: dict = Depends(get_current_user)):
     with db() as conn:
         with conn.cursor() as cur:
+            _mark_stale_upload_jobs(cur, user['id'])
             cur.execute(
                 "SELECT status, result_json FROM upload_jobs WHERE id=%s AND user_id=%s",
                 (job_id, user["id"]))

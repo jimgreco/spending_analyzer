@@ -3,6 +3,7 @@ Set SPENDING_TEST_DATABASE_URL to a local database whose name ends in _test.
 Never point this suite at a database containing real data: it clears test tables.
 """
 import os
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -186,10 +187,84 @@ class CategorizationApiTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/transactions?status=deduped').json()['total'],1)
         stats=self.client.get('/api/stats')
         self.assertEqual(stats.status_code,200,stats.text)
+        wrong=self.client.post('/api/upload?force=true&expected_file_hash='+('0'*32),
+            files={'files':('synthetic.csv',b'not the same file','text/csv')})
+        self.assertEqual(wrong.status_code,400)
+        self.assertEqual(len(self.client.get('/api/upload/jobs').json()['jobs']),1)
         # Duplicate upload short-circuits before parsing or an AI call.
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO upload_jobs(id,user_id,filename) VALUES('test-job-repeat',%s,'synthetic.csv')",(self.uid,))
         with patch.object(app,'parse_file_bytes',side_effect=AssertionError('must not parse duplicate')):
-            app._process_upload_job('test-job',self.uid,'synthetic.csv',b'fake statement',False)
-        self.assertEqual(self.client.get('/api/upload/status/test-job').json()['result']['status'],'already_imported')
+            app._process_upload_job('test-job-repeat',self.uid,'synthetic.csv',b'fake statement',False)
+        self.assertEqual(self.client.get('/api/upload/status/test-job-repeat').json()['result']['status'],'already_imported')
+
+        # A forced reimport repairs one missing refund without touching category
+        # corrections or manufacturing duplicate copies of existing rows.
+        original=self.client.get('/api/transactions?search=EXAMPLE%20GROCERY').json()['transactions']
+        original_id=next(r['id'] for r in original if r['amount']==30)
+        self.client.put(f'/api/transactions/{original_id}/primary-tag',json={
+            'primary_tag':'Home','correction_scope':'transaction'})
+        refund=dict(transaction(description='REFUND',amount=-104.04),dedup_key='refund')
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO upload_jobs(id,user_id,filename) VALUES('test-job-force',%s,'synthetic.csv')",(self.uid,))
+        with patch.object(app,'parse_file_bytes',return_value=(rows+[refund],'Example card',None)), \
+             patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Choose a category.')]*4):
+            app._process_upload_job('test-job-force',self.uid,'synthetic.csv',b'fake statement',True)
+        forced=self.client.get('/api/upload/status/test-job-force').json()
+        self.assertEqual(forced['status'],'done',forced)
+        self.assertEqual((forced['result']['new'],forced['result']['skipped']),(1,3))
+        after=self.client.get('/api/transactions?search=EXAMPLE%20GROCERY').json()['transactions']
+        self.assertEqual(next(r for r in after if r['id']==original_id)['primary_tag'],'Home')
+        self.assertEqual(self.client.get('/api/transactions?status=deduped').json()['total'],1)
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO upload_jobs(id,user_id,filename) VALUES('test-job-force-again',%s,'synthetic.csv')",(self.uid,))
+        with patch.object(app,'parse_file_bytes',return_value=(rows+[refund],'Example card',None)), \
+             patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Choose a category.')]*4):
+            app._process_upload_job('test-job-force-again',self.uid,'synthetic.csv',b'fake statement',True)
+        repeated=self.client.get('/api/upload/status/test-job-force-again').json()['result']
+        self.assertEqual((repeated['new'],repeated['dupes'],repeated['skipped']),(0,0,4))
+        self.assertEqual(self.client.get('/api/transactions?status=deduped').json()['total'],1)
+
+    def test_jobs_are_user_scoped_and_stale_work_is_recoverable(self):
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""INSERT INTO upload_jobs(id,user_id,filename,status,updated_at)
+                    VALUES('stale-job',%s,'synthetic.csv','categorizing',NOW()-INTERVAL '5 minutes')""",(self.uid,))
+        jobs=self.client.get('/api/upload/jobs').json()['jobs']
+        self.assertEqual(jobs[0]['status'],'interrupted')
+        self.assertIn('Re-upload',jobs[0]['result']['message'])
+        self.assertEqual(self.client.get('/api/upload/jobs?filename=synthetic.csv').json()['jobs'][0]['job_id'],'stale-job')
+        self.assertEqual(self.client.get('/api/upload/jobs?filename=other.csv').json()['jobs'],[])
+        self.user['id']=self.other
+        self.assertEqual(self.client.get('/api/upload/status/stale-job').status_code,404)
+        self.assertEqual(self.client.get('/api/upload/jobs').json()['jobs'],[])
+
+    def test_concurrent_uploads_of_same_file_insert_once(self):
+        rows=[dict(transaction(),dedup_key='single')]
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""INSERT INTO upload_jobs(id,user_id,filename)
+                    VALUES('race-one',%s,'race.csv'),('race-two',%s,'race.csv')""",(self.uid,self.uid))
+        errors=[]
+        def run(job_id):
+            try: app._process_upload_job(job_id,self.uid,'race.csv',b'race bytes',False)
+            except Exception as exc: errors.append(exc)
+        with patch.object(app,'parse_file_bytes',return_value=(rows,'Example card',None)), \
+             patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Choose a category.')]):
+            workers=[threading.Thread(target=run,args=(job_id,)) for job_id in ('race-one','race-two')]
+            for worker in workers: worker.start()
+            for worker in workers: worker.join()
+        self.assertEqual(errors,[])
+        results=[self.client.get(f'/api/upload/status/{job_id}').json()['result']['status']
+                 for job_id in ('race-one','race-two')]
+        self.assertCountEqual(results,['ok','already_imported'])
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id=%s AND import_file='race.csv'",(self.uid,))
+                self.assertEqual(cur.fetchone()[0],1)
 
 
 if __name__=='__main__':unittest.main()
