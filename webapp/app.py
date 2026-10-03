@@ -11,9 +11,11 @@ Auth:
 """
 import os, re, io, json, hashlib, secrets, uuid, threading, subprocess, math
 from collections import Counter
+from decimal import Decimal
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from typing import List, Optional, Literal
+from uuid import UUID
 from urllib.parse import urlencode
 
 import httpx
@@ -119,6 +121,8 @@ CREATE TABLE IF NOT EXISTS transactions (
     description        TEXT          NOT NULL,
     category           TEXT          NOT NULL DEFAULT 'Other',
     amount             NUMERIC(12,2) NOT NULL,
+    original_amount    NUMERIC(12,2),
+    amount_revision    INTEGER       NOT NULL DEFAULT 0,
     source             TEXT          NOT NULL,
     dedup_key          TEXT          NOT NULL,
     status             TEXT          NOT NULL DEFAULT 'active',
@@ -529,6 +533,42 @@ def init_db():
         """),
         ("add correction revision", """
             ALTER TABLE transactions ADD COLUMN IF NOT EXISTS correction_revision INTEGER NOT NULL DEFAULT 0;
+        """),
+        ("add amount provenance and reversal history", """
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS original_amount NUMERIC(12,2);
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS amount_revision INTEGER NOT NULL DEFAULT 0;
+            UPDATE transactions SET original_amount=amount WHERE original_amount IS NULL;
+            CREATE OR REPLACE FUNCTION set_transaction_original_amount() RETURNS trigger AS $$
+            BEGIN
+                IF TG_OP = 'UPDATE' AND OLD.original_amount IS NOT NULL
+                   AND NEW.original_amount IS DISTINCT FROM OLD.original_amount THEN
+                    RAISE EXCEPTION 'original_amount is immutable';
+                END IF;
+                IF NEW.original_amount IS NULL THEN NEW.original_amount := NEW.amount; END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            DROP TRIGGER IF EXISTS trg_transaction_original_amount ON transactions;
+            CREATE TRIGGER trg_transaction_original_amount BEFORE INSERT OR UPDATE ON transactions
+                FOR EACH ROW EXECUTE FUNCTION set_transaction_original_amount();
+            ALTER TABLE transactions ALTER COLUMN original_amount SET NOT NULL;
+            CREATE TABLE IF NOT EXISTS transaction_amount_changes (
+                id BIGSERIAL PRIMARY KEY,
+                transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                actor_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                operation_id UUID NOT NULL UNIQUE,
+                action TEXT NOT NULL CHECK (action IN ('reverse', 'undo')),
+                undo_of BIGINT UNIQUE REFERENCES transaction_amount_changes(id),
+                original_amount NUMERIC(12,2) NOT NULL,
+                before_amount NUMERIC(12,2) NOT NULL,
+                after_amount NUMERIC(12,2) NOT NULL,
+                before_revision INTEGER NOT NULL,
+                after_revision INTEGER NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_tx_amount_changes
+                ON transaction_amount_changes(transaction_id, id DESC);
         """),
     ]
 
@@ -1327,7 +1367,8 @@ def get_transactions(
             total = cur.fetchone()["n"]
             cur.execute(f"""
                 SELECT t.id, t.date::text, t.description,
-                       t.amount::float, t.source, t.import_file,
+                       t.amount::float, t.original_amount::float, t.amount_revision,
+                       t.source, t.import_file,
                        t.status, t.dedup_of, t.correction_scope, t.correction_note,
                        t.transaction_type, t.type_revision, t.type_updated_at,
                        t.needs_review, st.name AS suggested_tag,
@@ -1364,6 +1405,159 @@ def get_transactions(
 
     return {"transactions": rows, "total": total, "page": page,
             "per_page": per_page, "pages": max(1, (total + per_page - 1) // per_page)}
+
+
+# ── Signed amount correction ───────────────────────────────────────────────────
+class AmountChangeRequest(BaseModel):
+    operation_id: UUID
+    expected_revision: int = Field(ge=0)
+    expected_amount: Decimal
+
+
+class AmountUndoRequest(AmountChangeRequest):
+    change_id: int = Field(gt=0)
+
+
+def _checked_amount(value: Decimal) -> Decimal:
+    """Require an exact cent value for compare-and-swap, never a rounded input."""
+    if (not value.is_finite() or abs(value) > Decimal('9999999999.99') or
+        value != value.quantize(Decimal('0.01'))):
+        raise HTTPException(422, 'expected_amount must be a finite cent value')
+    return value
+
+
+def _amount_event(change: dict, kind: Optional[str], replayed: bool = False) -> dict:
+    return {
+        'id': change['id'], 'transaction_id': change['transaction_id'],
+        'action': change['action'], 'undo_of': change['undo_of'],
+        'actor_user_id': change['actor_user_id'],
+        'actor_email': change.get('actor_email'),
+        'original_amount': str(change['original_amount']),
+        'before_amount': str(change['before_amount']),
+        'after_amount': str(change['after_amount']),
+        'before_revision': change['before_revision'],
+        'after_revision': change['after_revision'],
+        'created_at': change['created_at'].isoformat(),
+        'type_sign_issue': sign_issue(kind, change['after_amount']),
+        'replayed': replayed,
+    }
+
+
+@app.get('/api/transactions/{tx_id}/amount')
+def get_transaction_amount(tx_id: int, user: dict = Depends(get_current_user)):
+    """Read-only preview and recent audit trail, scoped to the shared dataset."""
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute('''SELECT id, amount, original_amount, amount_revision, status,
+                                  transaction_type,
+                                  date::text, description, source
+                           FROM transactions WHERE id=%s AND user_id=%s''',
+                        (tx_id, user['id']))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, 'Transaction not found')
+            cur.execute('''SELECT c.id, c.transaction_id, c.action, c.undo_of,
+                                  c.actor_user_id, u.email AS actor_email,
+                                  c.original_amount, c.before_amount, c.after_amount,
+                                  c.before_revision, c.after_revision, c.created_at
+                           FROM transaction_amount_changes c
+                           LEFT JOIN users u ON u.id=c.actor_user_id
+                           WHERE c.transaction_id=%s AND c.user_id=%s
+                           ORDER BY c.id DESC LIMIT 50''', (tx_id, user['id']))
+            history = [_amount_event(r, row['transaction_type']) for r in cur.fetchall()]
+    amount = row['amount']
+    return {
+        'id': tx_id, 'date': row['date'], 'description': row['description'],
+        'source': row['source'], 'status': row['status'],
+        'amount': str(amount),
+        'original_amount': str(row['original_amount'] if row['original_amount'] is not None else amount),
+        'amount_revision': row['amount_revision'],
+        'transaction_type': row['transaction_type'],
+        'type_sign_issue': sign_issue(row['transaction_type'], amount),
+        'reverse_preview': str(-amount) if row['status'] == 'active' and amount != 0 else None,
+        'can_undo': bool(row['status'] == 'active' and history and
+                         history[0]['action'] == 'reverse' and
+                         history[0]['after_revision'] == row['amount_revision'] and
+                         Decimal(history[0]['after_amount']) == amount),
+        'history': history,
+    }
+
+
+def _change_transaction_amount(tx_id: int, body: AmountChangeRequest,
+                               user: dict, action: str, change_id: Optional[int] = None):
+    expected_amount = _checked_amount(body.expected_amount)
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            operation_lock = int.from_bytes(
+                hashlib.sha256(body.operation_id.bytes).digest()[:8], 'big', signed=True)
+            cur.execute('SELECT pg_advisory_xact_lock(%s)', (operation_lock,))
+            # Row lock serializes independent clicks and response retries on this transaction.
+            cur.execute('''SELECT id, amount, original_amount, amount_revision, status,
+                                  transaction_type FROM transactions
+                           WHERE id=%s AND user_id=%s FOR UPDATE''', (tx_id, user['id']))
+            tx = cur.fetchone()
+            if not tx:
+                raise HTTPException(404, 'Transaction not found')
+            cur.execute('''SELECT * FROM transaction_amount_changes WHERE operation_id=%s''',
+                        (str(body.operation_id),))
+            prior = cur.fetchone()
+            if prior:
+                if (prior['transaction_id'] != tx_id or
+                    prior['actor_user_id'] != user.get('auth_id', user['id']) or
+                    prior['action'] != action or prior['before_revision'] != body.expected_revision or
+                    prior['before_amount'] != expected_amount or prior['undo_of'] != change_id):
+                    raise HTTPException(409, 'Operation ID was used for a different request')
+                return _amount_event(prior, tx['transaction_type'], replayed=True)
+            if tx['status'] != 'active':
+                raise HTTPException(409, 'Only active transactions can have their sign corrected')
+            if tx['amount_revision'] != body.expected_revision or tx['amount'] != expected_amount:
+                raise HTTPException(409, 'Amount changed; reopen the preview before saving')
+            if tx['amount'] == 0:
+                raise HTTPException(422, 'Zero has no sign to reverse')
+
+            if action == 'undo':
+                cur.execute('''SELECT id, transaction_id, user_id, action, after_amount,
+                                      after_revision FROM transaction_amount_changes
+                               WHERE id=%s''', (change_id,))
+                target = cur.fetchone()
+                if (not target or target['transaction_id'] != tx_id or
+                    target['user_id'] != user['id'] or target['action'] != 'reverse'):
+                    raise HTTPException(404, 'Reversal not found')
+                # Undo must remove exactly the last reversal; it cannot erase later edits.
+                if target['after_revision'] != tx['amount_revision'] or target['after_amount'] != tx['amount']:
+                    raise HTTPException(409, 'A later amount change prevents this undo')
+                next_amount = -tx['amount']
+            else:
+                next_amount = -tx['amount']
+
+            original = tx['original_amount'] if tx['original_amount'] is not None else tx['amount']
+            cur.execute('''UPDATE transactions
+                           SET amount=%s, original_amount=COALESCE(original_amount, amount),
+                               amount_revision=amount_revision+1
+                           WHERE id=%s AND user_id=%s RETURNING amount_revision''',
+                        (next_amount, tx_id, user['id']))
+            revision = cur.fetchone()['amount_revision']
+            cur.execute('''INSERT INTO transaction_amount_changes
+                           (transaction_id, user_id, actor_user_id, operation_id, action,
+                            undo_of, original_amount, before_amount, after_amount,
+                            before_revision, after_revision)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *''',
+                        (tx_id, user['id'], user.get('auth_id', user['id']), str(body.operation_id),
+                         action, change_id, original, tx['amount'], next_amount,
+                         tx['amount_revision'], revision))
+            return _amount_event(cur.fetchone(), tx['transaction_type'])
+
+
+@app.post('/api/transactions/{tx_id}/amount/reverse')
+def reverse_transaction_amount(tx_id: int, body: AmountChangeRequest,
+                               user: dict = Depends(require_edit)):
+    return _change_transaction_amount(tx_id, body, user, 'reverse')
+
+
+@app.post('/api/transactions/{tx_id}/amount/undo')
+def undo_transaction_amount(tx_id: int, body: AmountUndoRequest,
+                            user: dict = Depends(require_edit)):
+    return _change_transaction_amount(tx_id, body, user, 'undo', body.change_id)
 
 @app.get("/api/stats")
 def get_stats(

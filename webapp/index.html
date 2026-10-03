@@ -119,6 +119,13 @@ tbody tr{border-bottom:1px solid var(--border);transition:background .1s}
 tbody tr:hover{background:rgba(255,255,255,.02)}
 td{padding:9px 12px}
 td.amount{font-variant-numeric:tabular-nums;text-align:right;font-weight:600}
+.amount-action{display:block;margin:3px 0 0 auto;padding:1px 5px;background:none;
+  border:1px solid var(--border);border-radius:5px;color:var(--muted);font-size:.7rem;cursor:pointer}
+.amount-action:hover,.amount-action:focus-visible{border-color:var(--accent);color:var(--accent)}
+.amount-corrected{display:block;color:var(--amber);font-size:.67rem;font-weight:400}
+.amount-preview{font-size:1.15rem;font-weight:700;margin:12px 0}
+.amount-history{max-height:145px;overflow:auto;padding-left:20px;color:var(--muted);font-size:.78rem}
+.amount-history li{margin:4px 0}
 .source-tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.7rem;font-weight:600}
 .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:.75rem;
   font-weight:500;cursor:pointer;transition:opacity .15s;border:2px solid transparent}
@@ -902,6 +909,23 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
   <div class="dialog-actions"><button class="btn" onclick="document.getElementById('archive-correction-dialog').close()">Cancel</button><button class="btn" id="confirm-archive-btn" onclick="confirmArchiveCorrection()">Archive correction</button></div>
 </dialog>
 
+<dialog id="amount-dialog" class="category-dialog" aria-labelledby="amount-dialog-title">
+  <h2 id="amount-dialog-title">Review transaction sign</h2>
+  <p id="amount-transaction"></p>
+  <p id="amount-preview" class="amount-preview"></p>
+  <p id="amount-original" class="help"></p>
+  <p id="amount-warning" class="help"></p>
+  <p class="help">Only the effective amount changes. The imported amount, import identity, category, and financial flow type stay as recorded.</p>
+  <p id="amount-error" role="alert" aria-live="assertive" class="help"></p>
+  <h3 style="font-size:.85rem">Recent sign changes</h3>
+  <ol id="amount-history" class="amount-history"></ol>
+  <div class="dialog-actions">
+    <button class="btn" onclick="document.getElementById('amount-dialog').close()">Close</button>
+    <button class="btn" id="amount-undo-btn" onclick="saveSignChange('undo')" hidden>Undo last reversal</button>
+    <button class="btn" id="amount-reverse-btn" onclick="saveSignChange('reverse')">Confirm reverse sign</button>
+  </div>
+</dialog>
+
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
 let currentPage  = 1;
@@ -1203,7 +1227,7 @@ async function refreshAll() {
 
 // ── Render: cards ──────────────────────────────────────────────────────────────
 function renderCards(s) {
-  const fmt = v => '$' + (+v || 0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const fmt = v => Number(v || 0).toLocaleString('en-US',{style:'currency',currency:'USD'});
   document.getElementById('card-total').textContent = fmt(s.total);
   document.getElementById('card-count').textContent = (s.count || 0).toLocaleString();
   document.getElementById('card-avg').textContent   = s.count ? fmt(s.total / s.count) : '—';
@@ -1459,7 +1483,11 @@ function renderTable(txs) {
                onchange="toggleRow(this)">
       </td>
       <td style="white-space:nowrap">${t.date}</td>
-      <td class="amount">$${(+t.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td>
+      <td class="amount">
+        ${Number(t.amount).toLocaleString('en-US',{style:'currency',currency:'USD'})}
+        ${Number(t.original_amount) !== Number(t.amount) ? '<span class="amount-corrected">Sign corrected</span>' : ''}
+        <button class="amount-action" onclick="openSignDialog(${t.id})" aria-label="Review sign and history for ${escHtml(t.description)}">Sign…</button>
+      </td>
       <td class="description-cell">${escHtml(t.description)}</td>
       <td>${tagsCell(t)}</td>
       <td style="font-size:.8rem;white-space:nowrap">${t.source ? sourceTag(t.source) : '<span style="color:var(--border)">—</span>'}</td>
@@ -1474,6 +1502,98 @@ function renderTable(txs) {
   const someChecked = [...allCbs].some(c => c.checked);
   selectAllCb.checked = allChecked;
   selectAllCb.indeterminate = someChecked && !allChecked;
+}
+
+// ── Per-transaction sign correction ──────────────────────────────────────────
+let amountPreviewState = null;
+let pendingAmountOperation = null;
+const displayAmount = value => Number(value).toLocaleString('en-US', {style:'currency',currency:'USD'});
+
+function amountTypeWarning(kind, value) {
+  const amount = Number(value);
+  if ((kind === 'expense' && amount < 0) ||
+      ((kind === 'income' || kind === 'refund') && amount > 0)) {
+    return `The proposed sign conflicts with the reviewed ${kind} type. Review the type separately if needed.`;
+  }
+  return kind ? `The reviewed ${kind} type will stay unchanged.` : 'This transaction has no reviewed financial flow type.';
+}
+
+function renderSignPreview() {
+  const tx = amountPreviewState;
+  const editable = currentUser?.role !== 'read';
+  document.getElementById('amount-transaction').textContent =
+    `${tx.date} · ${tx.description} · ${tx.source || 'Unknown account'}`;
+  document.getElementById('amount-preview').textContent = tx.reverse_preview === null
+    ? `${displayAmount(tx.amount)} · No sign change available`
+    : `${displayAmount(tx.amount)} → ${displayAmount(tx.reverse_preview)}`;
+  document.getElementById('amount-original').textContent =
+    `Imported amount: ${displayAmount(tx.original_amount)} · Current effective amount: ${displayAmount(tx.amount)}`;
+  document.getElementById('amount-warning').textContent = tx.reverse_preview === null
+    ? (tx.status !== 'active' ? 'Restore this transaction before changing its sign.' : 'Zero has no sign to reverse.')
+    : amountTypeWarning(tx.transaction_type, tx.reverse_preview);
+  const reverse = document.getElementById('amount-reverse-btn');
+  const undo = document.getElementById('amount-undo-btn');
+  reverse.hidden = !editable || tx.reverse_preview === null;
+  undo.hidden = !editable || !tx.can_undo;
+  reverse.disabled = undo.disabled = false;
+  document.getElementById('amount-history').innerHTML = tx.history.length
+    ? tx.history.map(item => `<li>${item.action === 'undo' ? 'Undo' : 'Reverse'}:
+        ${escHtml(displayAmount(item.before_amount))} → ${escHtml(displayAmount(item.after_amount))}
+        · ${escHtml(new Date(item.created_at).toLocaleString())}
+        ${item.actor_email ? `· ${escHtml(item.actor_email)}` : ''}</li>`).join('')
+    : '<li>No sign changes recorded.</li>';
+}
+
+async function openSignDialog(txId) {
+  amountPreviewState = null;
+  pendingAmountOperation = null;
+  document.getElementById('amount-error').textContent = '';
+  try {
+    amountPreviewState = await api(`/api/transactions/${txId}/amount`);
+    renderSignPreview();
+    document.getElementById('amount-dialog').showModal();
+  } catch (e) {
+    showToast('Could not load sign preview', e.message, 'error');
+  }
+}
+
+async function saveSignChange(action) {
+  const tx = amountPreviewState;
+  if (!tx || currentUser?.role === 'read') return;
+  const target = action === 'undo' && tx.can_undo ? tx.history[0] : null;
+  if (action === 'undo' && !target) return;
+  if (action === 'reverse' && tx.reverse_preview === null) return;
+  const url = `/api/transactions/${tx.id}/amount/${action}`;
+  const body = pendingAmountOperation?.action === action
+    ? pendingAmountOperation.body
+    : {operation_id:crypto.randomUUID(), expected_revision:tx.amount_revision,
+       expected_amount:tx.amount, ...(target ? {change_id:target.id} : {})};
+  pendingAmountOperation = {action, body};
+  const reverse = document.getElementById('amount-reverse-btn');
+  const undo = document.getElementById('amount-undo-btn');
+  reverse.disabled = undo.disabled = true;
+  document.getElementById('amount-error').textContent = '';
+  try {
+    await api(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    pendingAmountOperation = null;
+    amountPreviewState = await api(`/api/transactions/${tx.id}/amount`);
+    renderSignPreview();
+    await Promise.all([loadStats(), loadTransactions()]);
+    showToast(action === 'undo' ? 'Sign reversal undone' : 'Sign reversed',
+      'The imported amount and financial flow type were preserved.', 'success');
+  } catch (e) {
+    reverse.disabled = undo.disabled = false;
+    if (e.status === 409) {
+      pendingAmountOperation = null;
+      try { amountPreviewState = await api(`/api/transactions/${tx.id}/amount`); renderSignPreview(); }
+      catch (_) { /* Keep the existing preview visible. */ }
+      document.getElementById('amount-error').textContent =
+        'The transaction changed. Review the refreshed amounts before trying again.';
+    } else {
+      document.getElementById('amount-error').textContent =
+        'Could not confirm the result. Retry this button safely, or close and reopen to check the current amount.';
+    }
+  }
 }
 
 function renderPagination(page, pages, total) {
