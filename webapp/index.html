@@ -329,7 +329,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 /* ── User header ────────────────────────────────────────────────────────── */
 #user-header{
   display:none;background:var(--surface);border-bottom:1px solid var(--border);
-  padding:8px 24px;align-items:center;justify-content:flex-end;position:relative}
+  padding:8px 24px;align-items:center;justify-content:flex-end;gap:8px;position:relative}
 #user-header.visible{display:flex}
 #user-menu-trigger{
   display:flex;align-items:center;gap:8px;cursor:pointer;
@@ -500,6 +500,42 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 .category-dialog .help{color:var(--muted);font-size:.85rem}
 .category-review{display:block;margin-top:6px;max-width:300px;white-space:normal;color:#f59e0b;font-size:.78rem}
 .category-edit{font-size:.75rem;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);padding:3px 7px;cursor:pointer}
+/* Transaction category rules page */
+.rules-page[hidden]{display:none}
+.rules-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
+.rules-heading h2{font-size:1.4rem;margin:4px 0 8px}
+.rules-heading p,.rules-explainer{color:var(--muted);font-size:.9rem;line-height:1.5}
+.rules-toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:20px 0 16px}
+.rules-toolbar input{background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 12px;font-size:.9rem;flex:1;min-width:220px}
+.rules-toolbar input:focus{outline:none;border-color:var(--accent)}
+.rules-tabs{display:flex;gap:8px;flex-wrap:wrap}
+.rules-tabs .active{background:rgba(99,102,241,.18);border-color:var(--accent);color:var(--text)}
+.rules-count{font-size:.75rem;color:var(--muted);margin-left:4px}
+.rules-explainer{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin:12px 0 18px}
+.rules-list{display:grid;gap:10px}
+.rule-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+.rule-top,.rule-details,.rule-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.rule-top{justify-content:space-between;align-items:flex-start}
+.rule-description{font-weight:650;overflow-wrap:anywhere}
+.rule-details{color:var(--muted);font-size:.8rem;margin:8px 0}
+.rule-badge{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.72rem;background:rgba(99,102,241,.16);color:#a5b4fc}
+.rule-badge.legacy{background:rgba(245,158,11,.13);color:var(--amber)}
+.rule-badge.one-time{background:rgba(34,211,238,.12);color:var(--accent2)}
+.rule-badge.archived{background:rgba(139,143,168,.14);color:var(--muted)}
+.rule-category{font-size:.86rem;margin:10px 0}
+.rule-note{color:var(--muted);font-size:.82rem;line-height:1.4;margin-bottom:10px;white-space:pre-wrap;overflow-wrap:anywhere}
+.rule-actions{justify-content:flex-end}
+.rule-actions .danger{color:var(--red)}
+.rules-pager{display:flex;justify-content:center;align-items:center;gap:12px;margin:18px 0;color:var(--muted);font-size:.85rem}
+.rules-empty{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:center;color:var(--muted)}
+@media(max-width:640px){
+  #user-header{flex-wrap:wrap}
+  #user-header .header-actions{flex-wrap:wrap}
+  .rules-heading{display:block}
+  .rules-heading .btn{margin-top:12px}
+  .rules-toolbar input{width:100%}
+  .rule-actions{justify-content:flex-start}
+}
 </style>
 </head>
 <body>
@@ -524,7 +560,8 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 
 <!-- User header -->
 <div id="user-header">
-  <div style="display:flex;gap:8px;margin-right:auto">
+  <div class="header-actions" style="display:flex;gap:8px;margin-right:auto">
+    <button class="btn" id="rules-nav-btn" onclick="openRulesPage()">Category rules</button>
     <button class="btn" onclick="openGuideDialog()">Categorization guide</button>
     <button class="btn" onclick="openTagModal()">⚙ <span class="btn-label">Tags</span></button>
   </div>
@@ -554,7 +591,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 
 <input type="file" id="file-input" multiple accept=".pdf,.csv" onchange="handleFileInput(this.files)" style="display:none">
 
-<div class="main">
+<div class="main" id="dashboard-page">
 
   <!-- Migration review banner -->
   <div id="migration-banner" style="display:none;background:rgba(99,102,241,.15);border:1px solid var(--accent);border-radius:8px;padding:10px 16px;margin:0 0 12px;align-items:center;gap:10px;font-size:.85rem">
@@ -685,6 +722,28 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 
 </div><!-- /main -->
 
+<section id="rules-page" class="main rules-page" hidden aria-labelledby="rules-title">
+  <div class="rules-heading">
+    <div>
+      <h2 id="rules-title">Transaction category rules</h2>
+      <p>Review your reusable category examples and one-time corrections. These are based on actual transactions; they are not exact merchant matchers.</p>
+    </div>
+    <button class="btn" onclick="closeRulesPage()">← Back to spending</button>
+  </div>
+  <button class="btn" onclick="openGuideDialog()">Edit categorization guide</button>
+  <div class="rules-toolbar">
+    <input id="rules-search" type="search" maxlength="200" placeholder="Search description, account, category, or note…" aria-label="Search category rules" oninput="searchCorrections()">
+    <div class="rules-tabs" role="group" aria-label="Correction type">
+      <button class="btn active" data-kind="reusable" onclick="selectCorrectionKind('reusable')">Reusable <span class="rules-count" id="rules-count-reusable"></span></button>
+      <button class="btn" data-kind="one-time" onclick="selectCorrectionKind('one-time')">One-time <span class="rules-count" id="rules-count-one-time"></span></button>
+      <button class="btn" data-kind="archived" onclick="selectCorrectionKind('archived')">Archived <span class="rules-count" id="rules-count-archived"></span></button>
+    </div>
+  </div>
+  <p id="rules-explainer" class="rules-explainer"></p>
+  <div id="rules-list" class="rules-list" aria-live="polite"></div>
+  <div id="rules-pager" class="rules-pager"></div>
+</section>
+
 <!-- Bulk action bar -->
 <div id="bulk-bar">
   <div class="bulk-row">
@@ -774,9 +833,17 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
     <label><input type="radio" name="correction-scope" value="similar"> Use for similar transactions</label>
   </fieldset>
   <p class="help">“Use for similar transactions” makes this an example for future imports. The amount, account and your note help determine when it applies.</p>
+  <p class="help">Saving changes this source transaction's category now. Reusable examples and the guide affect future imports only; other existing transactions are not recategorized.</p>
   <label for="correction-note">Why this category? <span class="help">(optional)</span></label>
   <textarea id="correction-note" maxlength="1000" rows="3" placeholder="Explain the purpose or an exception the AI should remember."></textarea>
   <div class="dialog-actions"><button class="btn" onclick="document.getElementById('correction-dialog').close()">Cancel</button><button class="btn" id="save-correction-btn" onclick="saveCorrection()">Save correction</button></div>
+</dialog>
+
+<dialog id="archive-correction-dialog" class="category-dialog" aria-labelledby="archive-correction-title">
+  <h2 id="archive-correction-title">Archive correction?</h2>
+  <p id="archive-correction-message"></p>
+  <p class="help">The transaction and its current category stay intact. You can restore this correction from the Archived tab.</p>
+  <div class="dialog-actions"><button class="btn" onclick="document.getElementById('archive-correction-dialog').close()">Cancel</button><button class="btn" id="confirm-archive-btn" onclick="confirmArchiveCorrection()">Archive correction</button></div>
 </dialog>
 
 <script>
@@ -840,6 +907,7 @@ async function checkAuth() {
     showUserHeader(user);
     await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
     if (user.is_owner) checkMigrationBanner();
+    applyPageFromHash();
   } catch(e) {
     document.getElementById('login-overlay').classList.add('visible');
   }
@@ -1740,12 +1808,153 @@ async function saveGuide() {
   finally { btn.disabled = false; }
 }
 
+let correctionKind = 'reusable';
+let correctionOffset = 0;
+let managedCorrections = [];
+let correctionRequest = 0;
+let pendingArchiveId = null;
+const searchCorrections = debounce(() => { correctionOffset = 0; loadCorrections(); }, 250);
+
+window.addEventListener('hashchange', () => { if (currentUser) applyPageFromHash(); });
+
+function openRulesPage() {
+  location.hash = 'category-rules';
+  applyPageFromHash();
+}
+
+function closeRulesPage() {
+  history.pushState(null, '', location.pathname + location.search);
+  applyPageFromHash();
+}
+
+function applyPageFromHash() {
+  const showingRules = location.hash === '#category-rules';
+  document.getElementById('dashboard-page').hidden = showingRules;
+  document.getElementById('rules-page').hidden = !showingRules;
+  document.getElementById('rules-nav-btn').classList.toggle('active', showingRules);
+  if (showingRules) {
+    clearSelection();
+    loadCorrections();
+  }
+}
+
+function selectCorrectionKind(kind) {
+  correctionKind = kind;
+  correctionOffset = 0;
+  document.querySelectorAll('.rules-tabs [data-kind]').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.kind === kind));
+  loadCorrections();
+}
+
+async function loadCorrections() {
+  const request = ++correctionRequest;
+  const list = document.getElementById('rules-list');
+  list.innerHTML = '<div class="rules-empty">Loading corrections…</div>';
+  try {
+    const params = new URLSearchParams({kind:correctionKind,
+      search:document.getElementById('rules-search').value, limit:50, offset:correctionOffset});
+    const data = await api('/api/categorization-corrections?' + params);
+    if (request !== correctionRequest) return;
+    if (correctionOffset && correctionOffset >= data.total) {
+      correctionOffset = Math.max(0, Math.floor((data.total - 1) / 50) * 50);
+      return loadCorrections();
+    }
+    managedCorrections = data.corrections;
+    document.getElementById('rules-count-reusable').textContent = data.counts.reusable;
+    document.getElementById('rules-count-one-time').textContent = data.counts.one_time;
+    document.getElementById('rules-count-archived').textContent = data.counts.archived;
+    const descriptions = {
+      reusable:'These examples may help categorize future imports. Matching considers description, amount, charge or refund sign, account, and your note. Legacy examples have unknown original scope and can be edited or archived. Changes never rewrite other existing transactions.',
+      'one-time':'These corrections apply only to their source transactions and are never used as examples for future imports. Editing a correction can change its source transaction category or turn it into a reusable example.',
+      archived:'Archived corrections remain on their source transactions, but they are hidden from active lists and never used for future imports. Restore an entry to make its original scope active again.'
+    };
+    document.getElementById('rules-explainer').textContent = descriptions[correctionKind];
+    renderCorrections(data);
+  } catch (e) {
+    if (request === correctionRequest) {
+      list.innerHTML = `<div class="rules-empty">Could not load corrections: ${escHtml(e.message)}</div>`;
+      document.getElementById('rules-pager').innerHTML = '';
+    }
+  }
+}
+
+function renderCorrections(data) {
+  const list = document.getElementById('rules-list');
+  if (!data.corrections.length) {
+    list.innerHTML = '<div class="rules-empty">No corrections in this view.</div>';
+  } else {
+    list.innerHTML = data.corrections.map(row => {
+      const scope = row.correction_scope === 'similar' ? 'Reusable example'
+        : row.correction_scope === 'transaction' ? 'One-time correction' : 'Legacy example · scope unknown';
+      const badgeClass = row.correction_archived ? 'archived' : row.correction_scope === 'transaction' ? 'one-time' : !row.correction_scope ? 'legacy' : '';
+      const amount = Number(row.amount).toLocaleString('en-US', {style:'currency',currency:'USD'});
+      const secondary = row.secondary_tags?.length ? `<span>Other tags: ${row.secondary_tags.map(escHtml).join(', ')}</span>` : '';
+      const actions = currentUser?.role === 'read' ? '' : row.correction_archived
+        ? `<button class="btn" onclick="restoreManagedCorrection(${row.id})">Restore</button>`
+        : `<button class="btn" onclick="editManagedCorrection(${row.id})">Edit</button><button class="btn danger" onclick="archiveManagedCorrection(${row.id})">Archive</button>`;
+      return `<article class="rule-card">
+        <div class="rule-top"><div class="rule-description">${escHtml(row.description)}</div>
+          <span class="rule-badge ${badgeClass}">${row.correction_archived ? 'Archived · ' : ''}${scope}</span></div>
+        <div class="rule-details"><span>${escHtml(row.date)}</span><span>${escHtml(amount)}</span><span>${escHtml(row.source)}</span></div>
+        <div class="rule-category">Primary category: <strong>${row.primary_tag ? escHtml(row.primary_tag) : 'None'}</strong></div>
+        ${secondary ? `<div class="rule-details">${secondary}</div>` : ''}
+        ${row.correction_note ? `<div class="rule-note">${escHtml(row.correction_note)}</div>` : ''}
+        <div class="rule-actions">${actions}</div>
+      </article>`;
+    }).join('');
+  }
+  const end = Math.min(correctionOffset + data.corrections.length, data.total);
+  document.getElementById('rules-pager').innerHTML = `<button class="btn" onclick="changeCorrectionPage(-1)" ${correctionOffset === 0 ? 'disabled' : ''}>Previous</button>
+    <span>${data.total ? `${correctionOffset + 1}–${end} of ` : ''}${data.total} corrections</span>
+    <button class="btn" onclick="changeCorrectionPage(1)" ${end >= data.total ? 'disabled' : ''}>Next</button>`;
+}
+
+function changeCorrectionPage(direction) {
+  correctionOffset = Math.max(0, correctionOffset + direction * 50);
+  loadCorrections();
+  document.getElementById('rules-title').scrollIntoView();
+}
+
+function editManagedCorrection(id) { openCorrection(id, {managed:true}); }
+
+function archiveManagedCorrection(id) {
+  const row = managedCorrections.find(r => r.id === id);
+  if (!row) return;
+  pendingArchiveId = id;
+  document.getElementById('archive-correction-message').textContent = row.correction_scope === 'transaction'
+    ? `Archive the one-time correction for “${row.description}”? It will leave this transaction's category as it is.`
+    : `Archive the reusable example for “${row.description}”? It will no longer guide future imports.`;
+  document.getElementById('archive-correction-dialog').showModal();
+}
+
+async function confirmArchiveCorrection() {
+  if (pendingArchiveId === null) return;
+  const btn = document.getElementById('confirm-archive-btn');
+  btn.disabled = true;
+  try {
+    await api(`/api/categorization-corrections/${pendingArchiveId}`, {method:'DELETE'});
+    document.getElementById('archive-correction-dialog').close();
+    pendingArchiveId = null;
+    showToast('Correction archived', 'The transaction category is unchanged. Restore it from the Archived tab.', 'success');
+    await loadCorrections();
+  } catch (e) { showToast('Could not archive correction', e.message, 'error'); }
+  finally { btn.disabled = false; }
+}
+
+async function restoreManagedCorrection(id) {
+  try {
+    await api(`/api/categorization-corrections/${id}/restore`, {method:'POST'});
+    showToast('Correction restored', 'Its original scope is active again.', 'success');
+    await loadCorrections();
+  } catch (e) { showToast('Could not restore correction', e.message, 'error'); }
+}
+
 let correctionTarget = null;
 function openCorrection(txId, options = {}) {
-  const tx = currentTxs.find(t => t.id === txId);
+  const tx = options.managed ? managedCorrections.find(t => t.id === txId) : currentTxs.find(t => t.id === txId);
   const ids = options.ids || [txId];
   if (!options.ids && !tx) return;
-  correctionTarget = {ids, bulk:!!options.ids};
+  correctionTarget = {ids, bulk:!!options.ids, managed:!!options.managed};
   document.getElementById('correction-title').textContent = tx?.needs_review ? 'Review category' : 'Edit category';
   document.getElementById('correction-transaction').textContent = options.ids
     ? `${ids.length} selected transactions` : `${tx.date} · ${tx.description} · $${Number(tx.amount).toFixed(2)} · ${tx.source}`;
@@ -1753,7 +1962,7 @@ function openCorrection(txId, options = {}) {
   document.getElementById('correction-tag').value = options.tag !== undefined ? options.tag : tx?.suggested_tag || tx?.primary_tag || '';
   document.getElementById('correction-tag-options').innerHTML = tags.map(t => `<option value="${escHtml(t.name)}"></option>`).join('');
   document.getElementById('correction-note').value = options.ids ? '' : tx.correction_note || '';
-  const scope = !options.ids && tx.correction_scope === 'similar' ? 'similar' : 'transaction';
+  const scope = !options.ids && (tx.correction_scope === 'similar' || options.managed && tx.correction_scope === null) ? 'similar' : 'transaction';
   document.querySelectorAll('[name=correction-scope]').forEach(r => r.checked = r.value === scope);
   document.getElementById('correction-one-label').textContent = options.ids ? 'Only the selected transactions' : 'Just this transaction';
   document.getElementById('correction-empty-help').hidden = !!options.ids;
@@ -1770,7 +1979,7 @@ async function saveCorrection() {
   const btn = document.getElementById('save-correction-btn');
   btn.disabled = true;
   try {
-    const {ids, bulk} = correctionTarget;
+    const {ids, bulk, managed} = correctionTarget;
     await api(bulk ? '/api/transactions/bulk-tag' : `/api/transactions/${ids[0]}/primary-tag`, {
       method:bulk ? 'POST' : 'PUT', headers:{'Content-Type':'application/json'},
       body:JSON.stringify(bulk ? {...data, ids, tag, action:'set-primary'} : {...data, primary_tag:tag || null})});
@@ -1780,6 +1989,7 @@ async function saveCorrection() {
     clearSelection();
     showToast('Category saved', data.correction_scope === 'similar' ? 'Saved as an example for future imports.' : 'Saved as a one-time correction.', 'success');
     await Promise.all([loadTags(), loadStats(), loadTransactions()]);
+    if (managed) await loadCorrections();
   } catch(e) { showToast('Could not save category', e.message, 'error'); }
   finally { btn.disabled = false; }
 }

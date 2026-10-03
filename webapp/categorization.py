@@ -39,7 +39,8 @@ def prepare_context(rows, history):
     """Keep row identity; one-time and automatic labels never become examples."""
     eligible = []
     for ex in history:
-        if not ex.get("manually_corrected") or ex.get("correction_scope") == "transaction":
+        if (not ex.get("manually_corrected") or ex.get("correction_archived")
+                or ex.get("correction_scope") == "transaction"):
             continue
         eligible.append((ex, normalize(ex["description"])))
     result = []

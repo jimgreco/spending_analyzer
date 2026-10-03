@@ -502,6 +502,11 @@ def init_db():
             ALTER TABLE transactions ADD COLUMN IF NOT EXISTS categorization_example_ids INTEGER[] NOT NULL DEFAULT '{}';
             CREATE INDEX IF NOT EXISTS idx_tx_review ON transactions(user_id) WHERE needs_review AND status='active';
         """),
+        ("add correction archive", """
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS correction_archived BOOLEAN NOT NULL DEFAULT FALSE;
+            CREATE INDEX IF NOT EXISTS idx_tx_corrections ON transactions(user_id, date DESC, id DESC)
+                WHERE manually_corrected=TRUE AND status='active';
+        """),
     ]
 
     for label, sql in migrations:
@@ -677,10 +682,12 @@ def load_categorization_context(user_id):
             cur.execute("""
                 SELECT t.id, t.date::text, t.description, t.amount::float, t.source,
                        t.manually_corrected, t.correction_scope, t.correction_note,
+                       t.correction_archived,
                        pt.name AS primary_tag
                 FROM transactions t
                 LEFT JOIN tags pt ON pt.id=t.primary_tag_id AND pt.user_id=t.user_id
                 WHERE t.user_id=%s AND t.status='active' AND t.manually_corrected=TRUE
+                  AND t.correction_archived=FALSE
                   AND (t.correction_scope IS NULL OR t.correction_scope='similar')
                 ORDER BY t.date DESC, t.id DESC LIMIT 5000
             """, (user_id,))
@@ -1087,6 +1094,92 @@ def save_categorization_guide(body: CategorizationGuideUpdate, user: dict = Depe
                 ON CONFLICT(user_id) DO UPDATE SET guide=EXCLUDED.guide, updated_at=NOW()
             """, (user["id"], body.guide.strip()))
     return {"guide": body.guide.strip()}
+
+
+# A reusable correction is an example drawn from a source transaction, not a
+# separate merchant matcher. Legacy manual corrections have unknown scope but
+# remain eligible examples until the user archives or edits them.
+@app.get("/api/categorization-corrections")
+def list_categorization_corrections(
+    kind: Literal["reusable", "one-time", "archived"] = "reusable",
+    search: str = Query("", max_length=200),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    uid = user["id"]
+    scopes = {
+        "reusable": "t.correction_archived=FALSE AND (t.correction_scope='similar' OR t.correction_scope IS NULL)",
+        "one-time": "t.correction_archived=FALSE AND t.correction_scope='transaction'",
+        "archived": "t.correction_archived=TRUE",
+    }
+    conditions = ["t.user_id=%s", "t.status='active'", "t.manually_corrected=TRUE"]
+    params = [uid]
+    term = search.strip()
+    if term:
+        conditions.append("(t.description ILIKE %s OR t.source ILIKE %s OR "
+                          "t.correction_note ILIKE %s OR pt.name ILIKE %s)")
+        params.extend([f"%{term}%"] * 4)
+    base = " AND ".join(conditions)
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT
+                    COUNT(*) FILTER (WHERE {scopes['reusable']}) AS reusable,
+                    COUNT(*) FILTER (WHERE {scopes['one-time']}) AS one_time,
+                    COUNT(*) FILTER (WHERE {scopes['archived']}) AS archived
+                FROM transactions t
+                LEFT JOIN tags pt ON pt.id=t.primary_tag_id AND pt.user_id=t.user_id
+                WHERE {base}
+            """, params)
+            counts = dict(cur.fetchone())
+            cur.execute(f"""
+                SELECT t.id, t.date::text, t.description, t.amount::float, t.source,
+                       t.correction_scope, t.correction_note, t.correction_archived,
+                       pt.name AS primary_tag,
+                       COALESCE(ARRAY(
+                           SELECT tg.name FROM transaction_tags tt
+                           JOIN tags tg ON tg.id=tt.tag_id AND tg.user_id=t.user_id
+                           WHERE tt.transaction_id=t.id ORDER BY tg.name
+                       ), '{{}}') AS secondary_tags
+                FROM transactions t
+                LEFT JOIN tags pt ON pt.id=t.primary_tag_id AND pt.user_id=t.user_id
+                WHERE {base} AND {scopes[kind]}
+                ORDER BY t.date DESC, t.id DESC LIMIT %s OFFSET %s
+            """, params + [limit, offset])
+            rows = [dict(row) for row in cur.fetchall()]
+    return {"corrections": rows, "counts": counts,
+            "total": counts[kind.replace("-", "_")], "limit": limit, "offset": offset}
+
+
+@app.delete("/api/categorization-corrections/{tx_id}")
+def archive_categorization_correction(tx_id: int, user: dict = Depends(require_edit)):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE transactions SET correction_archived=TRUE
+                WHERE id=%s AND user_id=%s AND status='active'
+                  AND manually_corrected=TRUE AND correction_archived=FALSE
+                RETURNING id
+            """, (tx_id, user["id"]))
+            if not cur.fetchone():
+                raise HTTPException(404, "Correction not found")
+    return {"ok": True, "id": tx_id}
+
+
+@app.post("/api/categorization-corrections/{tx_id}/restore")
+def restore_categorization_correction(tx_id: int, user: dict = Depends(require_edit)):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE transactions SET correction_archived=FALSE
+                WHERE id=%s AND user_id=%s AND status='active'
+                  AND manually_corrected=TRUE AND correction_archived=TRUE
+                RETURNING id
+            """, (tx_id, user["id"]))
+            if not cur.fetchone():
+                raise HTTPException(404, "Archived correction not found")
+    return {"ok": True, "id": tx_id}
 
 # ── Transactions ──────────────────────────────────────────────────────────────────
 @app.get("/api/transactions")
@@ -1672,7 +1765,7 @@ def clear_transaction_tags(tx_id: int, user: dict = Depends(require_edit)):
                 raise HTTPException(404, "Transaction not found")
             cur.execute(
                 """UPDATE transactions SET primary_tag_id=NULL, manually_corrected=TRUE,
-                    correction_scope='transaction', correction_note='', needs_review=FALSE,
+                    correction_scope='transaction', correction_note='', correction_archived=FALSE, needs_review=FALSE,
                     suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
                     categorization_example_ids='{}' WHERE id=%s""",
                 (tx_id,))
@@ -1705,7 +1798,7 @@ def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(req
                         (tx_id, old_primary_id))
                 cur.execute(
                     """UPDATE transactions SET primary_tag_id=NULL, manually_corrected=TRUE,
-                        correction_scope=%s, correction_note=%s, needs_review=FALSE,
+                        correction_scope=%s, correction_note=%s, correction_archived=FALSE, needs_review=FALSE,
                         suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
                         categorization_example_ids='{}' WHERE id=%s""",
                     (body.correction_scope, body.correction_note.strip(), tx_id))
@@ -1736,7 +1829,7 @@ def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(req
             # Set new primary
             cur.execute(
                 """UPDATE transactions SET primary_tag_id=%s, manually_corrected=TRUE,
-                    correction_scope=%s, correction_note=%s, needs_review=FALSE,
+                    correction_scope=%s, correction_note=%s, correction_archived=FALSE, needs_review=FALSE,
                     suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
                     categorization_example_ids='{}' WHERE id=%s""",
                 (new_tag_id, body.correction_scope, body.correction_note.strip(), tx_id))
@@ -1783,7 +1876,7 @@ def bulk_tag_transactions(body: BulkTagUpdate, user: dict = Depends(require_edit
                             cur.execute("INSERT INTO transaction_tags VALUES(%s,%s) ON CONFLICT DO NOTHING", (tx_id, old_primary))
                         cur.execute("""
                             UPDATE transactions SET primary_tag_id=%s, manually_corrected=TRUE,
-                                correction_scope=%s, correction_note=%s, needs_review=FALSE,
+                                correction_scope=%s, correction_note=%s, correction_archived=FALSE, needs_review=FALSE,
                                 suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
                                 categorization_example_ids='{}' WHERE id=%s AND user_id=%s
                         """, (tag_id, body.correction_scope, body.correction_note.strip(), tx_id, uid))

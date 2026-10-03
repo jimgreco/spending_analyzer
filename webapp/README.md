@@ -50,6 +50,15 @@ not recategorize existing transactions.
   new correction) or **Use for similar transactions**. Reusable corrections are
   examples, not unconditional merchant rules. Bulk primary edits offer the same
   scope choice. Clearing all tags is a one-time correction.
+- **Category rules** in the header opens a searchable management page for reusable
+  examples, legacy manual examples with unknown original scope, one-time
+  corrections, and archived corrections. Editing uses the same category, scope,
+  and note controls as a transaction correction. An edit changes its source
+  transaction and can change which examples are used on future imports; it does
+  not recategorize other existing transactions. Archiving stops a reusable or
+  legacy example from influencing future imports and hides any correction from
+  the active lists, while keeping the source transaction and category intact.
+  Archived corrections can be restored. Read-only invitees can view the page.
 - Only active, manually corrected primary categories are eligible examples.
   Earlier manual corrections have unknown scope and remain available as legacy
   evidence. One-time corrections and automatic labels are never training examples;
@@ -69,10 +78,16 @@ not recategorize existing transactions.
   rows visible in review. Imports still succeed if only categorization fails.
   A deployment needs an API key with access to the selected model.
 
-The migration adds `categorization_settings` plus correction scope/note and review
-metadata on `transactions`. It is idempotent and does not rewrite existing labels.
+The migrations add `categorization_settings` plus correction scope/note, archive,
+and review metadata on `transactions`. They are idempotent and do not rewrite
+existing labels.
 `GET/PUT /api/categorization-guide` manage guidance; the primary-tag and bulk-tag
 APIs accept `correction_scope` (`transaction` or `similar`) and `correction_note`.
+`GET /api/categorization-corrections` lists active transaction corrections by
+`kind` (`reusable`, `one-time`, or `archived`) with search and pagination.
+`DELETE /api/categorization-corrections/{id}` archives one correction and
+`POST /api/categorization-corrections/{id}/restore` restores it; both require edit
+access and enforce dataset ownership.
 `GET /api/transactions?status=review` returns active pending rows.
 
 ## Verification

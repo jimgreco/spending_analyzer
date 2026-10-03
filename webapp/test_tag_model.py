@@ -72,7 +72,8 @@ class TagModelTests(unittest.TestCase):
     def test_automatic_and_one_time_examples_never_train(self):
         auto=example(2);auto['manually_corrected']=False
         once=example(3);once['correction_scope']='transaction'
-        context=prepare_context([transaction()],[example(),auto,once])[0]
+        archived=example(4);archived['correction_archived']=True
+        context=prepare_context([transaction()],[example(),auto,once,archived])[0]
         self.assertEqual([ex['id'] for ex in context['examples']],[1])
 
     def test_conflict_cannot_be_outvoted_by_repeats(self):

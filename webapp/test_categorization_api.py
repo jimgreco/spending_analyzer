@@ -117,6 +117,52 @@ class CategorizationApiTests(unittest.TestCase):
         self.assertEqual(app.load_categorization_context(self.uid)[1],[])
         self.assertEqual(self.client.get('/api/transactions?status=review').json()['total'],0)
 
+    def test_correction_manager_scopes_search_archive_restore_and_edit(self):
+        reusable=self.insert(manual=True,scope='similar',tag=self.home,key='reusable')
+        legacy=self.insert(manual=True,tag=self.grocery,key='legacy')
+        one_time=self.insert(manual=True,scope='transaction',tag=self.grocery,key='one-time')
+        self.insert(manual=False,tag=self.home,key='automatic')
+        self.insert(manual=True,scope='similar',status='deleted',key='deleted')
+        self.insert(owner=self.other,manual=True,scope='similar',key='foreign')
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE transactions SET description='SPECIAL SAMPLE', correction_note='only tools' WHERE id=%s",(reusable,))
+        result=self.client.get('/api/categorization-corrections').json()
+        self.assertEqual(result['counts'],{'reusable':2,'one_time':1,'archived':0})
+        self.assertEqual({r['id'] for r in result['corrections']},{reusable,legacy})
+        self.assertEqual(self.client.get('/api/categorization-corrections?kind=one-time').json()['corrections'][0]['id'],one_time)
+        self.assertEqual(self.client.get('/api/categorization-corrections?search=tools').json()['corrections'][0]['id'],reusable)
+        self.assertEqual(self.client.get('/api/categorization-corrections?kind=invalid').status_code,422)
+        self.assertEqual(self.client.delete(f'/api/categorization-corrections/{reusable}').status_code,200)
+        self.assertEqual({r['id'] for r in app.load_categorization_context(self.uid)[1]},{legacy})
+        self.assertEqual(self.client.get('/api/categorization-corrections?kind=archived').json()['corrections'][0]['id'],reusable)
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT primary_tag_id, status FROM transactions WHERE id=%s',(reusable,))
+                self.assertEqual(cur.fetchone(),(self.home,'active'))
+        self.assertEqual(self.client.post(f'/api/categorization-corrections/{reusable}/restore').status_code,200)
+        self.assertEqual({r['id'] for r in app.load_categorization_context(self.uid)[1]},{reusable,legacy})
+        self.assertEqual(self.client.put(f'/api/transactions/{legacy}/primary-tag',json={
+            'primary_tag':'Home','correction_scope':'transaction','correction_note':'specific item'}).status_code,200)
+        self.assertEqual(self.client.get('/api/categorization-corrections?kind=one-time').json()['total'],2)
+        self.assertEqual({r['id'] for r in app.load_categorization_context(self.uid)[1]},{reusable})
+
+    def test_correction_manager_authorization_and_one_time_archive(self):
+        own=self.insert(manual=True,scope='transaction',tag=self.home)
+        foreign=self.insert(owner=self.other,manual=True,scope='similar',tag=self.home)
+        self.assertEqual(self.client.delete(f'/api/categorization-corrections/{foreign}').status_code,404)
+        self.assertEqual(self.client.post(f'/api/categorization-corrections/{foreign}/restore').status_code,404)
+        self.user['role']='read'
+        self.assertEqual(self.client.delete(f'/api/categorization-corrections/{own}').status_code,403)
+        self.assertEqual(self.client.post(f'/api/categorization-corrections/{own}/restore').status_code,403)
+        self.assertEqual(self.client.get('/api/categorization-corrections?kind=one-time').json()['total'],1)
+        self.user['role']='owner'
+        self.assertEqual(self.client.delete(f'/api/categorization-corrections/{own}').status_code,200)
+        self.assertEqual(self.client.get('/api/categorization-corrections?kind=one-time').json()['total'],0)
+        self.assertEqual(self.client.get('/api/categorization-corrections?kind=archived').json()['total'],1)
+        self.assertEqual(self.client.post(f'/api/categorization-corrections/{own}/restore').status_code,200)
+        self.assertEqual(self.client.get('/api/categorization-corrections?kind=one-time').json()['total'],1)
+
     def test_import_preserves_row_identity_review_and_dedup(self):
         self.insert(key='existing',tag=self.home,manual=True,scope='transaction')
         rows=[dict(transaction(amount=30),dedup_key='new-30'),dict(transaction(amount=300),dedup_key='new-300'),
