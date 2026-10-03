@@ -88,7 +88,10 @@ APIs accept `correction_scope` (`transaction` or `similar`) and `correction_note
 `kind` (`reusable`, `one-time`, or `archived`) with search and pagination.
 `DELETE /api/categorization-corrections/{id}` archives one correction and
 `POST /api/categorization-corrections/{id}/restore` restores it; both require edit
-access and enforce dataset ownership.
+access and enforce dataset ownership. List rows include `correction_revision`.
+The rules manager sends that value as `expected_revision` on archive/restore,
+or `expected_correction_revision` on primary-category edit. A stale manager
+action returns HTTP 409 and the page refreshes the list before another edit.
 `GET /api/transactions?status=review` returns active pending rows.
 
 ## Import reliability

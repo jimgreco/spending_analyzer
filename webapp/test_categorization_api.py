@@ -165,6 +165,48 @@ class CategorizationApiTests(unittest.TestCase):
         self.assertEqual(self.client.post(f'/api/categorization-corrections/{own}/restore').status_code,200)
         self.assertEqual(self.client.get('/api/categorization-corrections?kind=one-time').json()['total'],1)
 
+    def test_correction_manager_rejects_stale_edit_archive_and_restore(self):
+        tx=self.insert(manual=True,scope='similar',tag=self.grocery)
+        row=self.client.get('/api/categorization-corrections').json()['corrections'][0]
+        self.assertEqual(row['correction_revision'],0)
+        self.user['role']='edit'
+        self.assertEqual(self.client.put(f'/api/transactions/{tx}/primary-tag',json={
+            'primary_tag':'Home','correction_scope':'similar',
+            'expected_correction_revision':0}).status_code,200)
+        self.assertEqual(self.client.delete(f'/api/categorization-corrections/{tx}?expected_revision=0').status_code,409)
+        self.assertEqual(self.client.put(f'/api/transactions/{tx}/primary-tag',json={
+            'primary_tag':'Groceries','expected_correction_revision':0}).status_code,409)
+        latest=self.client.get('/api/categorization-corrections').json()['corrections'][0]
+        self.assertEqual((latest['primary_tag'],latest['correction_revision']),('Home',1))
+        self.assertIn('Groceries',latest['secondary_tags'])
+        self.assertEqual(self.client.delete(f'/api/categorization-corrections/{tx}?expected_revision=1').status_code,200)
+        self.assertEqual(self.client.delete(f'/api/categorization-corrections/{tx}?expected_revision=1').status_code,409)
+        self.assertEqual(self.client.put(f'/api/transactions/{tx}/primary-tag',json={
+            'primary_tag':'Groceries','expected_correction_revision':1}).status_code,409)
+        archived=self.client.get('/api/categorization-corrections?kind=archived').json()['corrections'][0]
+        self.assertEqual((archived['primary_tag'],archived['correction_revision']),('Home',2))
+        self.assertEqual(self.client.post(f'/api/categorization-corrections/{tx}/restore?expected_revision=1').status_code,409)
+        self.assertEqual(self.client.post(f'/api/categorization-corrections/{tx}/restore?expected_revision=2').status_code,200)
+        self.assertEqual(self.client.post(f'/api/categorization-corrections/{tx}/restore?expected_revision=2').status_code,409)
+        self.assertEqual(self.client.delete(f'/api/transactions/{tx}').status_code,200)
+        self.assertEqual(self.client.post(f'/api/transactions/{tx}/restore').status_code,200)
+        self.assertEqual(self.client.put(f'/api/transactions/{tx}/primary-tag',json={
+            'primary_tag':'Groceries','expected_correction_revision':3}).status_code,409)
+        self.assertEqual(self.client.delete(f'/api/categorization-corrections/{tx}?expected_revision=-1').status_code,422)
+
+    def test_correction_manager_literal_search_and_pagination(self):
+        ids=[self.insert(manual=True,scope='similar',tag=self.grocery,key=f'page-{i}') for i in range(53)]
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE transactions SET description='BUDGET_100%%' WHERE id=%s",(ids[0],))
+        self.assertEqual(self.client.get('/api/categorization-corrections?search=%25').json()['total'],1)
+        self.assertEqual(self.client.get('/api/categorization-corrections?search=_').json()['total'],1)
+        page=self.client.get('/api/categorization-corrections?limit=50&offset=50').json()
+        self.assertEqual((page['total'],len(page['corrections'])),(53,3))
+        self.assertEqual([row['id'] for row in page['corrections']],list(reversed(ids[:3])))
+        self.assertEqual(self.client.get('/api/categorization-corrections?offset=-1').status_code,422)
+        self.assertEqual(self.client.get('/api/categorization-corrections?limit=101').status_code,422)
+
     def test_import_preserves_row_identity_review_and_dedup(self):
         self.insert(key='existing',tag=self.home,manual=True,scope='transaction')
         rows=[dict(transaction(amount=30),dedup_key='new-30'),dict(transaction(amount=300),dedup_key='new-300'),
