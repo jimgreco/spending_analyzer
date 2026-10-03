@@ -175,6 +175,52 @@ revisions; record each resulting revision. An inverse pass may restore only rows
 whose revisions still match the recorded result, leaving later manual edits for
 review. No backfill, snapshot table, or inverse pass is executed by this slice.
 
+## Correct a transaction sign
+
+An editor can open **Sign…** on one active transaction, inspect its exact
+before → after amount, and confirm **Reverse sign**. The dialog shows the imported
+amount, reviewed type warning, recent history, and **Undo last reversal** when the
+latest amount change is that reversal. Viewers can inspect history but cannot
+change it. A deleted or deduped transaction cannot be changed until restored;
+zero has no sign to reverse. Archiving a category correction has no effect on the
+sign action. A sign change never changes category, reviewed type, or exclusion.
+
+`transactions.amount` remains the effective signed amount used by existing stats,
+analytics, filters, and type warnings. `original_amount` stores the signed amount
+received at import (backfilled once from existing amounts), and
+`amount_revision` increments only for sign corrections. A database trigger fills
+and then protects `original_amount` for every insert, including older import
+code. The original `dedup_key` is never recomputed by a correction. Normal and
+forced reimports use the parsed raw amount and stable import identity, so a
+previously corrected row is skipped without losing its correction or creating a
+second raw row.
+
+API contract:
+
+- `GET /api/transactions/{id}/amount` returns exact decimal strings for
+  `amount`, `original_amount`, and `reverse_preview`, plus `amount_revision`,
+  `transaction_type`, `type_sign_issue`, `can_undo`, and the 50 most recent audit
+  changes. A foreign or missing ID returns 404.
+- `POST /api/transactions/{id}/amount/reverse` accepts
+  `{ "operation_id": "<UUID>", "expected_revision": 0, "expected_amount": "25.00" }`.
+  It returns the audit change ID and original, before, and after amounts and
+  revisions. A successful retry with the same operation ID returns that change
+  with `replayed: true`; a new request from a stale preview returns 409.
+- `POST /api/transactions/{id}/amount/undo` accepts the same fields plus
+  `change_id` from the reversal. It succeeds only if that exact reversal is the
+  latest amount change and the expected amount and revision still match. Its
+  retry behavior is the same. Both writes require owner or editor access and
+  reject zero or inactive rows. A later category or type edit remains intact.
+
+`transaction_amount_changes` records the owner, actor, operation UUID, action,
+target reversal for undo, immutable source amount, effective before/after
+amounts, revisions, and timestamp. The migration is additive and idempotent;
+it does not reverse any historical transaction. To roll back the app code, keep
+the added columns and audit table: older code continues to read the effective
+`amount`, and its import dedup key stays unchanged. A schema down migration
+would remove audit history and is intentionally not automatic. Explicit import
+deletion still removes its transactions and their related audit rows.
+
 ## Verification
 
 From the repository root, run the synthetic unit checks (no database or live API):
