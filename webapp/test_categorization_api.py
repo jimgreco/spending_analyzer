@@ -196,7 +196,7 @@ class CategorizationApiTests(unittest.TestCase):
         ids=[self.insert(manual=True,scope='similar',tag=self.grocery,key=f'page-{i}') for i in range(53)]
         with app.db() as conn:
             with conn.cursor() as cur:
-                cur.execute("UPDATE transactions SET description='BUDGET_100%' WHERE id=%s",(ids[0],))
+                cur.execute("UPDATE transactions SET description='BUDGET_100%%' WHERE id=%s",(ids[0],))
         self.assertEqual(self.client.get('/api/categorization-corrections?search=%25').json()['total'],1)
         self.assertEqual(self.client.get('/api/categorization-corrections?search=_').json()['total'],1)
         page=self.client.get('/api/categorization-corrections?limit=50&offset=50').json()

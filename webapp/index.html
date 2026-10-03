@@ -1463,7 +1463,7 @@ function renderUploadHistory(uploads, apiData) {
         <thead><tr>
           <th>File</th><th>Issuer</th><th>Card #</th><th>New</th><th>Dupes</th><th>Imported</th><th></th>
         </tr></thead>
-        <tbody>${uploads.map(u => `<tr id="urow-${escHtml(u.file_hash)}">
+        <tbody>${uploads.map(u => `<tr id="urow-${escHtml(u.file_hash)}" data-filename="${escHtml(u.filename)}" data-file-hash="${escHtml(u.file_hash)}" data-tx-count="${Number(u.tx_new) + Number(u.tx_dupes)}">
           <td class="import-name-cell">
             <span class="import-name-text" style="cursor:pointer" title="Click to rename"
                   onclick="startImportRename(this)">${escHtml(u.filename)}</span>
@@ -1471,10 +1471,10 @@ function renderUploadHistory(uploads, apiData) {
               <input class="import-name-input" value="${escHtml(u.filename)}"
                      style="background:var(--bg);border:1px solid var(--border);color:var(--text);
                             border-radius:4px;padding:2px 6px;font-size:.8rem;width:220px"
-                     onkeydown="if(event.key==='Enter')saveImportRename('${escHtml(u.filename)}',this.closest('.import-name-edit'));
+                     onkeydown="if(event.key==='Enter')saveImportRename(this.closest('tr').dataset.filename,this.closest('.import-name-edit'));
                                 if(event.key==='Escape')cancelImportRename(this.closest('.import-name-edit'))">
               <button class="btn" style="font-size:.72rem;padding:3px 8px"
-                      onclick="saveImportRename('${escHtml(u.filename)}', this.closest('.import-name-edit'))">✓</button>
+                      onclick="saveImportRename(this.closest('tr').dataset.filename, this.closest('.import-name-edit'))">✓</button>
               <button class="btn" style="font-size:.72rem;padding:3px 8px"
                       onclick="cancelImportRename(this.closest('.import-name-edit'))">✕</button>
             </span>
@@ -1488,10 +1488,10 @@ function renderUploadHistory(uploads, apiData) {
               <input class="import-source-input" value="${escHtml(u.source||'')}"
                      style="background:var(--bg);border:1px solid var(--border);color:var(--text);
                             border-radius:4px;padding:2px 6px;font-size:.8rem;width:130px"
-                     onkeydown="if(event.key==='Enter')saveUploadSource('${escHtml(u.filename)}',this.closest('.import-source-edit'));
+                     onkeydown="if(event.key==='Enter')saveUploadSource(this.closest('tr').dataset.filename,this.closest('.import-source-edit'));
                                 if(event.key==='Escape')cancelSourceCellEdit(this.closest('.import-source-edit'))">
               <button class="btn" style="font-size:.72rem;padding:3px 8px"
-                      onclick="saveUploadSource('${escHtml(u.filename)}', this.closest('.import-source-edit'))">✓</button>
+                      onclick="saveUploadSource(this.closest('tr').dataset.filename, this.closest('.import-source-edit'))">✓</button>
               <button class="btn" style="font-size:.72rem;padding:3px 8px"
                       onclick="cancelSourceCellEdit(this.closest('.import-source-edit'))">✕</button>
             </span>
@@ -1506,7 +1506,7 @@ function renderUploadHistory(uploads, apiData) {
                      style="background:var(--bg);border:1px solid var(--border);color:var(--text);
                             border-radius:4px;padding:2px 6px;font-size:.8rem;width:56px">
               <button class="btn" style="font-size:.72rem;padding:3px 8px"
-                      onclick="saveCardLast4('${escHtml(u.filename)}', this)">✓</button>
+                      onclick="saveCardLast4(this.closest('tr').dataset.filename, this)">✓</button>
               <button class="btn" style="font-size:.72rem;padding:3px 8px"
                       onclick="cancelCardEdit(this)">✕</button>
             </span>
@@ -1518,9 +1518,9 @@ function renderUploadHistory(uploads, apiData) {
           <td style="color:var(--muted)">${u.uploaded_at}</td>
           <td style="white-space:nowrap;display:flex;gap:4px">
             <button class="btn" style="font-size:.72rem;padding:3px 8px"
-                    onclick="reimportFile('${escHtml(u.filename)}')">🔄 Reimport</button>
+                    onclick="reimportFile(this.closest('tr').dataset.fileHash)">🔄 Reimport</button>
             <button class="btn" style="font-size:.72rem;padding:3px 8px;color:var(--red)"
-                    onclick="deleteImport('${escHtml(u.filename)}', ${u.tx_new + u.tx_dupes})">🗑 Delete</button>
+                    onclick="deleteImport(this.closest('tr').dataset.filename, Number(this.closest('tr').dataset.txCount))">🗑 Delete</button>
           </td>
         </tr>`).join('')}</tbody>
       </table>
@@ -1738,7 +1738,7 @@ function tagsCell(t) {
   // Secondary tags
   const secondaryTags = t.tags || [];
   secondaryTags.forEach(tag => {
-    html += `<span class="tag-chip">${escHtml(tag)}<button class="tag-chip-del" onclick="removeTagFromTx(${t.id},'${escHtml(tag)}',event)" title="Remove tag">×</button></span>`;
+    html += `<span class="tag-chip">${escHtml(tag)}<button class="tag-chip-del" data-tag="${escHtml(tag)}" onclick="removeTagFromTx(${t.id},this.dataset.tag,event)" title="Remove tag">×</button></span>`;
   });
   // Add secondary tag button
   html += `<button class="tag-add-btn" onclick="startTagAdd(${t.id},this,event)" title="Add secondary tag">+</button>`;
@@ -2526,7 +2526,7 @@ async function renderTagList() {
         <span class="cat-row-name" data-original="${escHtml(tag.name)}">${escHtml(tag.name)} <span style="color:var(--muted);font-weight:400">(${tag.tx_count})</span></span>
         <div class="cat-row-group">
           <label>group:</label>
-          <select onchange="setTagGroup('${escHtml(tag.name)}', this.value)">
+          <select onchange="setTagGroup(this.closest('[data-name]').dataset.name, this.value)">
             <option value="">—</option>
             ${opts}
           </select>
@@ -2534,12 +2534,12 @@ async function renderTagList() {
         <div class="cat-row-actions">
           <button class="cat-btn excl-btn${tag.excluded_from_spending ? ' excl-on' : ''}"
                   title="${tag.excluded_from_spending ? 'Excluded from spending — click to include' : 'Click to exclude from spending totals'}"
-                  onclick="toggleTagExclusion('${escHtml(tag.name)}', ${!tag.excluded_from_spending})">
+                  onclick="toggleTagExclusion(this.closest('[data-name]').dataset.name, ${!tag.excluded_from_spending})">
             ${tag.excluded_from_spending ? '⊘ excl' : '⊘'}
           </button>
           <button class="cat-btn" title="Rename" onclick="startTagRename(this)">✏</button>
           <button class="cat-btn save" title="Save rename" onclick="saveTagRename(this)" style="display:none">✓ Save</button>
-          <button class="cat-btn del" title="Delete" onclick="deleteTagFromModal('${escHtml(tag.name)}')">✕</button>
+          <button class="cat-btn del" title="Delete" onclick="deleteTagFromModal(this.closest('[data-name]').dataset.name)">✕</button>
         </div>
       </div>
     </div>`;
@@ -2698,14 +2698,14 @@ async function renderInviteList() {
           ? `<span class="invite-status active">signed up</span>`
           : `<span class="invite-status">never logged in</span>`;
       return `
-        <div class="invite-row">
+        <div class="invite-row" data-email="${escHtml(inv.email)}">
           <span class="invite-email" title="${escHtml(inv.email)}">${escHtml(inv.email)}</span>
           ${statusLabel}
-          <select class="invite-role-sel" onchange="changeInviteRole('${escHtml(inv.email)}', this.value)">
+          <select class="invite-role-sel" onchange="changeInviteRole(this.closest('[data-email]').dataset.email, this.value)">
             <option value="read" ${inv.role==='read'?'selected':''}>Read only</option>
             <option value="edit" ${inv.role==='edit'?'selected':''}>Can edit</option>
           </select>
-          <button class="invite-revoke" onclick="revokeInvite('${escHtml(inv.email)}')" title="Revoke access">✕</button>
+          <button class="invite-revoke" onclick="revokeInvite(this.closest('[data-email]').dataset.email)" title="Revoke access">✕</button>
         </div>`;
     }).join('');
   } catch(e) {
