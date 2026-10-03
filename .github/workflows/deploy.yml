@@ -1,28 +1,17 @@
-name: Deploy to EC2
+name: Retired automatic deployment
 
+# Keep the old workflow ID harmless, including if somebody re-enables it.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  deploy:
+  retired:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Transfer files to EC2
+      - name: Refuse implicit activation
         run: |
-          echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
-          chmod 600 key.pem
-          # Sync the webapp folder to the server's spending directory
-          rsync -avz -e "ssh -i key.pem -o StrictHostKeyChecking=no" \
-            --exclude '.git' \
-            --exclude 'venv' \
-            --exclude '__pycache__' \
-            webapp/ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/spending/webapp/
-
-      - name: Rebuild and Restart Spending
-        run: |
-          ssh -i key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
-            "cd ~/deploy && docker system prune -f && docker builder prune -f && docker-compose build spending && docker-compose up -d spending && docker system prune -f"
+          echo '::error::This deployment path is retired. Run validation in ci.yml and use the separately approved image-pinned cutover procedure.'
+          exit 1
