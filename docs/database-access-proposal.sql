@@ -6,6 +6,9 @@
 -- Rights inherited in other databases remain a separate reviewed gate.
 \set ON_ERROR_STOP on
 BEGIN;
+-- Bound lock waits while the existing admin runtime stays connected; any error rolls back this entire setup.
+SET LOCAL lock_timeout = '2s';
+SET LOCAL statement_timeout = '30s';
 DO $$ BEGIN IF current_database() <> 'spending' THEN RAISE EXCEPTION 'Wrong database'; END IF; END $$;
 DO $$ BEGIN IF to_regclass('public.app_schema_versions') IS NULL THEN RAISE EXCEPTION 'Adopt schema first'; END IF; END $$;
 CREATE ROLE spending_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
