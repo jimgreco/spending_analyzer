@@ -30,6 +30,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from categorization import SYSTEM_PROMPT, prepare_context, request_payload, validate_results, review
+from transaction_types import preview_candidate, sign_issue, summarize_ledger
 from dotenv import load_dotenv
 
 # ── Load .env (one level up from this file) ───────────────────────────────────────
@@ -506,6 +507,17 @@ def init_db():
             ALTER TABLE transactions ADD COLUMN IF NOT EXISTS correction_archived BOOLEAN NOT NULL DEFAULT FALSE;
             CREATE INDEX IF NOT EXISTS idx_tx_corrections ON transactions(user_id, date DESC, id DESC)
                 WHERE manually_corrected=TRUE AND status='active';
+        """),
+        ("add explicit transaction type", """
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transaction_type TEXT;
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS type_revision INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS type_updated_at TIMESTAMPTZ;
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='transactions_type_allowed') THEN
+                    ALTER TABLE transactions ADD CONSTRAINT transactions_type_allowed
+                        CHECK (transaction_type IN ('expense','income','transfer','refund'));
+                END IF;
+            END $$;
         """),
     ]
 
@@ -1190,6 +1202,7 @@ def get_transactions(
     import_file: str = "", card_last4: str = "",
     sort_by: str = "date", sort_dir: str = "desc",
     status: str = "active",
+    transaction_type: Optional[Literal["expense", "income", "transfer", "refund", "unreviewed"]] = None,
     user: dict = Depends(get_current_user)
 ):
     uid = user["id"]
@@ -1199,6 +1212,11 @@ def get_transactions(
     elif status in ("active", "deleted", "deduped"):
         where.append("t.status = %s"); params.append(status)
     if source:      where.append("t.source = %s");          params.append(source)
+    if transaction_type:
+        if transaction_type == "unreviewed":
+            where.append("t.transaction_type IS NULL")
+        else:
+            where.append("t.transaction_type = %s"); params.append(transaction_type)
     if tag:
         where, params = _apply_tag_filter(where, params, tag, tag_match, uid)
     if date_from:   where.append("t.date >= %s");           params.append(date_from)
@@ -1223,6 +1241,7 @@ def get_transactions(
                 SELECT t.id, t.date::text, t.description,
                        t.amount::float, t.source, t.import_file,
                        t.status, t.dedup_of, t.correction_scope, t.correction_note,
+                       t.transaction_type, t.type_revision, t.type_updated_at,
                        t.needs_review, st.name AS suggested_tag,
                        t.categorization_reason, t.categorization_confidence,
                        t.categorization_example_ids,
@@ -1252,6 +1271,8 @@ def get_transactions(
                 LIMIT %s OFFSET %s
             """, params + [per_page, offset])
             rows = [dict(r) for r in cur.fetchall()]
+            for row in rows:
+                row["type_sign_issue"] = sign_issue(row["transaction_type"], row["amount"])
 
     return {"transactions": rows, "total": total, "page": page,
             "per_page": per_page, "pages": max(1, (total + per_page - 1) // per_page)}
@@ -1341,6 +1362,120 @@ def get_stats(
     return {**summary, "by_month": by_month,
             "by_source": by_source, "by_tag": by_tag, "untagged": untagged,
             "tag_hierarchy": tag_hierarchy}
+
+
+def _financial_ledger_rows(uid, source="", tag=(), tag_match="any", search="",
+                           date_from="", date_to="", import_file="", card_last4="",
+                           transaction_type=None):
+    """Use the same active and primary-tag-ancestor exclusion semantics as /api/stats."""
+    where, params = ["t.status='active'", "t.user_id=%s"], [uid]
+    if source: where.append("t.source=%s"); params.append(source)
+    if tag: _apply_tag_filter(where, params, tag, tag_match, uid)
+    if date_from: where.append("t.date >= %s"); params.append(date_from)
+    if date_to: where.append("t.date <= %s"); params.append(date_to)
+    if search: where.append("t.description ILIKE %s"); params.append(f"%{search}%")
+    if import_file: where.append("t.import_file=%s"); params.append(import_file)
+    if card_last4:
+        where.append("t.import_file IN (SELECT filename FROM uploaded_files WHERE user_id=%s AND card_last4=%s)")
+        params.extend([uid, card_last4])
+    if transaction_type == "unreviewed":
+        where.append("t.transaction_type IS NULL")
+    elif transaction_type:
+        where.append("t.transaction_type=%s"); params.append(transaction_type)
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT t.id, t.date::text AS date, t.description, t.amount,
+                       t.source, t.import_file, t.transaction_type, t.needs_review,
+                       pt.name AS primary_tag,
+                       EXISTS (
+                           WITH RECURSIVE chain AS (
+                               SELECT t.primary_tag_id AS cid WHERE t.primary_tag_id IS NOT NULL
+                               UNION ALL
+                               SELECT tg.group_tag_id FROM tags tg JOIN chain c ON tg.id=c.cid
+                               WHERE tg.group_tag_id IS NOT NULL
+                           )
+                           SELECT 1 FROM chain JOIN tags excluded_tag ON excluded_tag.id=chain.cid
+                           WHERE excluded_tag.user_id=t.user_id AND excluded_tag.excluded_from_spending=TRUE
+                       ) AS excluded
+                FROM transactions t
+                LEFT JOIN tags pt ON pt.id=t.primary_tag_id AND pt.user_id=t.user_id
+                WHERE {' AND '.join(where)}
+                ORDER BY t.date DESC, t.id DESC
+            """, params)
+            return [dict(row) for row in cur.fetchall()]
+
+
+@app.get("/api/analytics")
+def get_analytics(
+    source: str = "", tag: List[str] = Query([]), tag_match: str = "any",
+    search: str = "", date_from: str = "", date_to: str = "", import_file: str = "",
+    card_last4: str = "",
+    transaction_type: Optional[Literal["expense", "income", "transfer", "refund", "unreviewed"]] = None,
+    user: dict = Depends(get_current_user),
+):
+    rows = _financial_ledger_rows(user["id"], source, tag, tag_match, search,
+                                  date_from, date_to, import_file, card_last4, transaction_type)
+    return summarize_ledger(rows)
+
+
+@app.get("/api/transaction-type-preview")
+def get_transaction_type_preview(
+    limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """Historical mapping proposal only. No endpoint applies this proposal."""
+    from collections import Counter
+    rows = _financial_ledger_rows(user["id"])
+    untyped = [row for row in rows if row["transaction_type"] is None]
+    suggestions, ambiguous = Counter(), Counter()
+    for row in untyped:
+        candidate, reason = preview_candidate(row)
+        (suggestions if candidate else ambiguous)[candidate or reason] += 1
+    sample = []
+    for row in untyped[offset:offset + limit]:
+        candidate, reason = preview_candidate(row)
+        sample.append({"id": row["id"], "date": row["date"],
+                       "description": row["description"], "amount": float(row["amount"]),
+                       "primary_tag": row["primary_tag"], "excluded": row["excluded"],
+                       "suggested_type": candidate, "reason": reason})
+    return {"dry_run": True, "requires_review": True, "applied": 0,
+            "active_count": len(rows), "already_typed_count": len(rows) - len(untyped),
+            "untyped_count": len(untyped), "candidate_counts": dict(suggestions),
+            "ambiguous_reasons": dict(ambiguous), "sample": sample,
+            "limit": limit, "offset": offset}
+
+
+class TransactionTypeUpdate(BaseModel):
+    transaction_type: Optional[Literal["expense", "income", "transfer", "refund"]]
+    expected_revision: int = Field(ge=0)
+
+
+@app.put("/api/transactions/{tx_id}/type")
+def update_transaction_type(tx_id: int, body: TransactionTypeUpdate,
+                            user: dict = Depends(require_edit)):
+    """Only a person can commit a type; revision prevents stale review edits."""
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT transaction_type, type_revision, amount FROM transactions
+                           WHERE id=%s AND user_id=%s FOR UPDATE""", (tx_id, user["id"]))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "Transaction not found")
+            old_type, revision, amount = row
+            if revision != body.expected_revision:
+                raise HTTPException(409, "Transaction type was changed; reload before saving")
+            cur.execute("""UPDATE transactions
+                           SET transaction_type=%s, type_revision=type_revision+1,
+                               type_updated_at=NOW()
+                           WHERE id=%s AND user_id=%s
+                           RETURNING type_revision, type_updated_at""",
+                        (body.transaction_type, tx_id, user["id"]))
+            new_revision, updated_at = cur.fetchone()
+    return {"ok": True, "id": tx_id, "previous_type": old_type,
+            "transaction_type": body.transaction_type, "type_revision": new_revision,
+            "type_updated_at": updated_at,
+            "type_sign_issue": sign_issue(body.transaction_type, amount)}
 
 # ── Source update ─────────────────────────────────────────────────────────────────
 class SourceUpdate(BaseModel):

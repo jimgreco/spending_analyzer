@@ -90,6 +90,57 @@ APIs accept `correction_scope` (`transaction` or `similar`) and `correction_note
 access and enforce dataset ownership.
 `GET /api/transactions?status=review` returns active pending rows.
 
+## Transaction types and financial-flow analytics
+
+`transaction_type` is separate from the primary/secondary category tags. It is
+nullable and accepts `expense`, `income`, `transfer`, or `refund`. Fees remain
+expenses whose category describes the fee. Existing rows and new imports stay
+untyped until a person reviews them. The additive migration also adds
+`type_revision` (initially 0) and `type_updated_at` (initially null); it does not
+classify historical rows, change amounts, or modify `/api/stats`. The current
+dashboard total therefore stays on its existing basis until a future reviewed
+product change.
+
+- `GET /api/transactions` adds `transaction_type`, `type_revision`,
+  `type_updated_at`, and `type_sign_issue` on each row. Its optional
+  `transaction_type` filter accepts the four types or `unreviewed` (null).
+- `PUT /api/transactions/{id}/type` requires edit access and
+  `{ "transaction_type": "refund", "expected_revision": 0 }`. Send null to clear
+  a type. It returns the previous and new types, new revision, timestamp, and
+  any sign warning. A stale revision returns 409; a missing/foreign transaction
+  returns 404. No amount, category, exclusion, or review flag is changed.
+- `GET /api/analytics` accepts the same source/tag/search/date/import/card filters
+  as `/api/stats`, plus the optional type filter. `legacy_total` is the unchanged
+  signed total for active rows with no excluded primary category or ancestor.
+  The reviewed subset reports `gross_charges` (positive expenses), `refunds`
+  (absolute value of negative refunds), and `net_spend = gross_charges - refunds`.
+  It also reports income credits, signed transfer total, untyped signed total,
+  sign-conflict signed total, exclusions, and category/type/sign review counts.
+  `basis: reviewed_types_only` and `untyped_count` make incomplete coverage
+  explicit. For the same filters, `legacy_total = net_spend - income_credits +
+  transfer_net + untyped_signed_total + ambiguous_sign_signed_total`.
+- `GET /api/transaction-type-preview?limit=50&offset=0` is a read-only historical
+  mapping preview, capped at 100 sample rows per request. It reports all active
+  untyped rows, candidate counts, ambiguous reasons, and sample suggestions.
+  Negative credits, reimbursement tags, zero amounts, and excluded categories
+  without a direct transfer hint remain ambiguous. Every suggestion needs human
+  review; there is no bulk apply or historical repair endpoint.
+
+Stored amounts keep the existing sign convention: charges positive, credits
+negative. A reviewed expense with a negative amount, refund/income with a positive
+amount, or any zero amount has a `type_sign_issue`. The explicit type remains
+saved, but that row is omitted from reviewed financial-flow totals and counted
+for review. Transfers may have either sign. Excluded primary categories and
+ancestors follow `/api/stats` semantics; secondary tags alone do not exclude.
+
+**Future backfill/rollback design:** Before any separately approved mapping,
+persist a scoped snapshot of transaction ID, owner ID, status, signed amount,
+old type, and type revision. Show the preview and reconcile old `/api/stats` totals
+against the new typed subset. Apply only reviewed IDs with compare-and-swap
+revisions; record each resulting revision. An inverse pass may restore only rows
+whose revisions still match the recorded result, leaving later manual edits for
+review. No backfill, snapshot table, or inverse pass is executed by this slice.
+
 ## Verification
 
 From the repository root, run the synthetic unit checks (no database or live API):
