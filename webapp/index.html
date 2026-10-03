@@ -64,8 +64,9 @@ a{color:var(--accent2);text-decoration:none}
 .card .sub{font-size:.8rem;color:var(--muted);margin-top:4px}
 
 /* ── Charts ─────────────────────────────────────────────────────────────── */
-.charts{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:24px}
-.chart-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
+.charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-bottom:24px}
+.chart-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;min-width:0}
+.chart-box canvas{max-width:100%}
 .chart-box h3{font-size:.85rem;color:var(--muted);text-transform:uppercase;
   letter-spacing:.05em;margin-bottom:16px}
 
@@ -431,7 +432,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   .card .value{font-size:1.4rem}
 
   /* Charts: 1 column */
-  .charts{grid-template-columns:1fr;margin-bottom:16px}
+  .charts{grid-template-columns:minmax(0,1fr);margin-bottom:16px}
 
   /* Filter bar */
   .filter-bar{padding:10px 12px;gap:8px}
@@ -494,6 +495,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 .category-dialog p{line-height:1.5}
 .category-dialog label{display:block;margin:14px 0 6px}
 .category-dialog textarea,.category-dialog input[type=text]{display:block;width:100%;box-sizing:border-box;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:10px;font:inherit}
+.category-dialog select{display:block;width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:10px;font:inherit}
 .category-dialog textarea{resize:vertical;min-height:90px}
 .category-dialog .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .category-dialog fieldset{border:1px solid var(--border);border-radius:6px;margin:16px 0;padding:0 14px 12px}
@@ -516,6 +518,19 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
 .review-queue .review-meta{color:var(--muted);font-size:.85rem}
 .review-queue .review-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .review-queue .review-reason{color:var(--muted);line-height:1.4}
+.flow-panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin:0 0 22px}
+.flow-panel h2{font-size:1.05rem;margin:0 0 6px}
+.flow-panel p{color:var(--muted);font-size:.84rem;line-height:1.45;margin:0 0 12px}
+.flow-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin-bottom:12px}
+.flow-metric{border:1px solid var(--border);border-radius:8px;padding:10px;min-width:0}
+.flow-metric strong{display:block;font-size:1.04rem;overflow-wrap:anywhere}
+.flow-metric span{display:block;color:var(--muted);font-size:.76rem;margin-top:3px}
+.type-chip{font-size:.72rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);padding:3px 7px;cursor:pointer;margin-top:6px}
+.type-chip.unreviewed{color:var(--amber)}
+.type-chip.warning{border-color:var(--amber)}
+.type-preview-row{border-top:1px solid var(--border);padding:10px 0;overflow-wrap:anywhere}
+.type-preview-row small{display:block;color:var(--muted);margin-top:4px}
+.type-preview-actions{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:12px}
 .intake-row{border:1px solid var(--border);border-radius:8px;padding:12px;margin:10px 0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .intake-row label{margin:0}
 .intake-row .wide{grid-column:1/-1}
@@ -670,6 +685,14 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
     </div>
   </div>
 
+  <section class="flow-panel" aria-labelledby="flow-title">
+    <h2 id="flow-title">Reviewed transaction types</h2>
+    <p>Types describe money flow separately from transaction categories. Net spend includes reviewed charges and refunds only. Untyped and conflicting rows need review; the Total Spent card keeps its existing calculation. The type filter below applies to the transaction list only.</p>
+    <div id="flow-metrics" class="flow-grid" aria-live="polite">Loading reviewed totals…</div>
+    <p id="flow-coverage"></p>
+    <button class="btn" onclick="openTypePreview()">Preview unreviewed types</button>
+  </section>
+
   <!-- Charts -->
   <div class="charts">
     <div class="chart-box">
@@ -697,6 +720,14 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
     </select>
     <select id="filter-import" onchange="applyFilters()">
       <option value="">All Imports</option>
+    </select>
+    <select id="filter-type" onchange="applyFilters()" aria-label="Filter by transaction type">
+      <option value="">All types</option>
+      <option value="unreviewed">Unreviewed type</option>
+      <option value="expense">Expense</option>
+      <option value="refund">Refund</option>
+      <option value="income">Income</option>
+      <option value="transfer">Transfer</option>
     </select>
     <button class="btn" onclick="clearFilter()">Clear</button>
     <!-- Date range row -->
@@ -887,6 +918,35 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
   <div class="dialog-actions"><button class="btn" onclick="document.getElementById('correction-dialog').close()">Cancel</button><button class="btn" id="save-correction-btn" onclick="saveCorrection()">Save correction</button></div>
 </dialog>
 
+<dialog id="type-dialog" class="category-dialog" aria-labelledby="type-dialog-title">
+  <h2 id="type-dialog-title">Review transaction type</h2>
+  <p id="type-transaction"></p>
+  <p class="help">Type describes the money flow. Category describes its purpose. This changes only this transaction and does not recategorize other rows or future imports.</p>
+  <label for="type-choice">Transaction type</label>
+  <select id="type-choice" onchange="showTypeSignWarning()">
+    <option value="">Unreviewed</option>
+    <option value="expense">Expense · charge or fee</option>
+    <option value="refund">Refund · returned charge</option>
+    <option value="income">Income · earnings or other credit</option>
+    <option value="transfer">Transfer · money moved between accounts</option>
+  </select>
+  <p id="type-sign-warning" class="help" role="status"></p>
+  <div class="dialog-actions"><button class="btn" onclick="document.getElementById('type-dialog').close()">Cancel</button><button class="btn" id="save-type-btn" onclick="saveTransactionType()">Save type</button></div>
+</dialog>
+
+<dialog id="type-preview-dialog" class="category-dialog" aria-labelledby="type-preview-title">
+  <h2 id="type-preview-title">Unreviewed type preview</h2>
+  <p class="help">Suggestions are read only. Credits, transfers, reimbursements, and excluded rows may be ambiguous. Choose a type on each transaction after reviewing it; this preview never changes data.</p>
+  <p id="type-preview-summary" role="status"></p>
+  <div id="type-preview-list"></div>
+  <div class="type-preview-actions">
+    <button class="btn" id="type-preview-prev" onclick="loadTypePreview(typePreviewOffset-50)">← Previous</button>
+    <button class="btn" id="type-preview-next" onclick="loadTypePreview(typePreviewOffset+50)">Next →</button>
+    <button class="btn" onclick="showUntypedTransactions()">Show unreviewed in list</button>
+    <button class="btn" onclick="document.getElementById('type-preview-dialog').close()">Close</button>
+  </div>
+</dialog>
+
 <dialog id="intake-dialog" class="category-dialog" aria-labelledby="intake-title">
   <h2 id="intake-title">Confirm import details</h2>
   <p class="help">Give each new file an account and period name. Suggestions from earlier filenames are editable. This names the import only; the parser determines transaction account identity and deduplication. Check the import result before changing account mappings.</p>
@@ -925,12 +985,15 @@ let allSources = [];   // sorted alphabetically; populated in renderUploadHistor
 let uploadsList = [];  // accumulated paginated uploads for the history table
 let uploadsTotal = 0;  // total upload count from server
 let uploadNames = new Set();
-let txRequest = 0, statsRequest = 0, uploadsRequest = 0;
+let txRequest = 0, statsRequest = 0, analyticsRequest = 0, uploadsRequest = 0;
 let reviewFocusId = null;
 let reviewIndex = 0;
 let reviewTotal = 0;
 let intakeFiles = [];
 let uploadInFlight = false;
+let typeTarget = null;
+let typePreviewOffset = 0;
+let typeSaving = false;
 
 const CAT_PALETTE = [
   '#6366f1','#22d3ee','#10b981','#f59e0b','#ef4444','#8b5cf6',
@@ -968,7 +1031,7 @@ async function checkAuth() {
       return r.json();
     });
     showUserHeader(user);
-    await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
+    await Promise.all([loadTags(), loadStats(), loadAnalytics(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
     if (user.is_owner) checkMigrationBanner();
     applyPageFromHash();
   } catch(e) {
@@ -1054,9 +1117,11 @@ function buildFilterParams(extra = {}) {
     search:      document.getElementById('search').value,
     card_last4:  document.getElementById('filter-card').value,
     import_file: document.getElementById('filter-import').value,
+    transaction_type: document.getElementById('filter-type').value,
     status:      viewStatus,
     ...extra
   });
+  if (!p.get('transaction_type')) p.delete('transaction_type');
   tagFilters.forEach(t => p.append('tag', t));
   if (tagFilters.size > 1) p.set('tag_match', tagMatchMode);
   return p.toString();
@@ -1122,6 +1187,31 @@ async function loadStats() {
     renderCards(stats);
     renderCharts(stats);
   } catch(e) { if (request === statsRequest) showLoadError('Could not load spending totals.'); }
+}
+
+async function loadAnalytics() {
+  const request = ++analyticsRequest;
+  try {
+    const data = await api('/api/analytics?' + buildFilterParams({transaction_type:''}));
+    if (request !== analyticsRequest) return;
+    const money = value => Number(value || 0).toLocaleString('en-US',
+      {style:'currency',currency:'USD'});
+    const metrics = [
+      ['Gross charges', money(data.gross_charges)],
+      ['Refunds', money(data.refunds)],
+      ['Net spend · reviewed', money(data.net_spend)],
+      ['Income credits', money(data.income_credits)],
+      ['Transfers · signed', money(data.transfer_net)],
+      ['Legacy total', money(data.legacy_total)]
+    ];
+    document.getElementById('flow-metrics').innerHTML = metrics.map(([label, value]) =>
+      `<div class="flow-metric"><strong>${value}</strong><span>${label}</span></div>`).join('');
+    const typed = data.included_count - data.untyped_count;
+    document.getElementById('flow-coverage').textContent =
+      `${typed} of ${data.included_count} included active transactions have a type. ` +
+      `${data.untyped_count} untyped, ${data.ambiguous_sign_count} with a type/sign conflict, ` +
+      `${data.excluded_count} excluded from totals. Net spend covers reviewed, sign-consistent expenses and refunds only.`;
+  } catch(e) { if (request === analyticsRequest) showLoadError('Could not load reviewed transaction totals.'); }
 }
 
 async function loadTransactions() {
@@ -1198,7 +1288,7 @@ async function loadUploadJobs() {
 
 async function refreshAll() {
   clearLoadError();
-  await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
+  await Promise.all([loadTags(), loadStats(), loadAnalytics(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
 }
 
 // ── Render: cards ──────────────────────────────────────────────────────────────
@@ -1215,6 +1305,103 @@ function renderCards(s) {
     document.getElementById('card-top-tag').textContent = '—';
     document.getElementById('card-top-tag-amt').textContent = '';
   }
+}
+
+function typeCell(tx) {
+  const label = tx.transaction_type ? tx.transaction_type[0].toUpperCase() + tx.transaction_type.slice(1) : 'Unreviewed type';
+  const warning = tx.type_sign_issue ? ' · sign needs review' : '';
+  if (currentUser?.role === 'read') return `<span class="type-chip ${tx.type_sign_issue ? 'warning' : ''}">${label}${warning}</span>`;
+  return `<button class="type-chip ${tx.transaction_type ? '' : 'unreviewed'} ${tx.type_sign_issue ? 'warning' : ''}"
+    onclick="openTypeDialog(${Number(tx.id)})" aria-label="Review type for ${escHtml(tx.description)}">${label}${warning}</button>`;
+}
+
+function typeSignMessage(type, amount) {
+  if (!type) return '';
+  if (amount === 0) return 'Zero amount: verify the statement before treating this as a reviewed flow.';
+  if (type === 'expense' && amount < 0) return 'This is a credit, but expense normally means a charge. The type will be saved and flagged for review.';
+  if ((type === 'refund' || type === 'income') && amount > 0) return 'This is a charge, but refund and income normally mean credits. The type will be saved and flagged for review.';
+  return '';
+}
+
+function openTypeDialog(txId) {
+  if (currentUser?.role === 'read' || typeSaving) return;
+  const tx = currentTxs.find(row => row.id === txId);
+  if (!tx) return;
+  typeTarget = {id:tx.id, revision:tx.type_revision, amount:Number(tx.amount)};
+  document.getElementById('type-transaction').textContent =
+    `${tx.date} · ${tx.description} · ${Number(tx.amount).toLocaleString('en-US',{style:'currency',currency:'USD'})} · ${tx.source}`;
+  document.getElementById('type-choice').value = tx.transaction_type || '';
+  showTypeSignWarning();
+  document.getElementById('type-dialog').showModal();
+}
+
+function showTypeSignWarning() {
+  document.getElementById('type-sign-warning').textContent = typeTarget
+    ? typeSignMessage(document.getElementById('type-choice').value, typeTarget.amount) : '';
+}
+
+async function saveTransactionType() {
+  if (!typeTarget || typeSaving || currentUser?.role === 'read') return;
+  const kind = document.getElementById('type-choice').value || null;
+  const target = typeTarget;
+  const button = document.getElementById('save-type-btn');
+  typeSaving = true;
+  button.disabled = true;
+  try {
+    const result = await api(`/api/transactions/${target.id}/type`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({transaction_type:kind,expected_revision:target.revision})
+    });
+    document.getElementById('type-dialog').close();
+    typeTarget = null;
+    showToast('Transaction type saved', result.type_sign_issue
+      ? 'The amount sign conflicts with this type and remains flagged for review.'
+      : 'Only this transaction was updated.', result.type_sign_issue ? 'warn' : 'success');
+    await Promise.all([loadTransactions(), loadAnalytics()]);
+  } catch(e) {
+    if (e.status === 409) {
+      document.getElementById('type-dialog').close();
+      typeTarget = null;
+      showToast('Type changed elsewhere', 'The transaction list has refreshed. Review the latest type before saving.', 'warn');
+      await Promise.all([loadTransactions(), loadAnalytics()]);
+    } else showToast('Could not save transaction type', e.message, 'error');
+  } finally { typeSaving = false; button.disabled = false; }
+}
+
+function openTypePreview() {
+  typePreviewOffset = 0;
+  document.getElementById('type-preview-dialog').showModal();
+  loadTypePreview(0);
+}
+
+async function loadTypePreview(offset) {
+  typePreviewOffset = Math.max(0, offset);
+  const summary = document.getElementById('type-preview-summary');
+  const list = document.getElementById('type-preview-list');
+  summary.textContent = 'Loading preview…';
+  try {
+    const data = await api(`/api/transaction-type-preview?limit=50&offset=${typePreviewOffset}`);
+    summary.textContent = `${data.untyped_count} active transactions have no type. ` +
+      `Showing ${data.sample.length ? typePreviewOffset+1 : 0}–${typePreviewOffset+data.sample.length}. ` +
+      `This preview changes no data.`;
+    list.innerHTML = data.sample.length ? data.sample.map(row =>
+      `<div class="type-preview-row"><strong>${escHtml(row.date)} · ${escHtml(row.description)}</strong>
+       <small>${Number(row.amount).toLocaleString('en-US',{style:'currency',currency:'USD'})} · Category: ${escHtml(row.primary_tag || 'None')} ·
+       ${row.suggested_type ? `Possible ${escHtml(row.suggested_type)}` : 'Ambiguous'} · ${escHtml(row.reason.replaceAll('_',' '))}</small></div>`).join('')
+      : '<p class="help">No unreviewed transactions on this page.</p>';
+    document.getElementById('type-preview-prev').disabled = typePreviewOffset === 0;
+    document.getElementById('type-preview-next').disabled = typePreviewOffset + data.sample.length >= data.untyped_count;
+  } catch(e) {
+    summary.textContent = 'Could not load the preview. Try again.';
+    list.textContent = '';
+  }
+}
+
+function showUntypedTransactions() {
+  document.getElementById('type-preview-dialog').close();
+  document.getElementById('filter-type').value = 'unreviewed';
+  navigateTo('analyze');
+  applyFilters();
 }
 
 // ── Tag chip helper ─────────────────────────────────────────────────────────────
@@ -1460,7 +1647,7 @@ function renderTable(txs) {
       </td>
       <td style="white-space:nowrap">${t.date}</td>
       <td class="amount">$${(+t.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td>
-      <td class="description-cell">${escHtml(t.description)}</td>
+      <td class="description-cell">${escHtml(t.description)}<div>${typeCell(t)}</div></td>
       <td>${tagsCell(t)}</td>
       <td style="font-size:.8rem;white-space:nowrap">${t.source ? sourceTag(t.source) : '<span style="color:var(--border)">—</span>'}</td>
       <td class="import-file" title="${escHtml(t.import_file||'')}">${escHtml(fname)}</td>
@@ -2359,6 +2546,7 @@ function applyFilters() {
   reviewIndex = 0;
   clearSelection();
   loadStats();
+  loadAnalytics();
   loadTransactions();
 }
 
@@ -2366,6 +2554,7 @@ const debouncedApplyFilters = debounce(applyFilters, 300);
 function scheduleSearch() {
   ++txRequest;
   ++statsRequest;
+  ++analyticsRequest;
   reviewFocusId = null;
   reviewIndex = 0;
   clearSelection();
@@ -2400,6 +2589,7 @@ function clearFilter() {
   document.getElementById('search').value = '';
   document.getElementById('filter-card').value = '';
   document.getElementById('filter-import').value = '';
+  document.getElementById('filter-type').value = '';
   updateFilterBadges();
   highlightPreset(null);
   applyFilters();

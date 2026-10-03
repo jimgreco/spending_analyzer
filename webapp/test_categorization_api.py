@@ -4,6 +4,7 @@ Never point this suite at a database containing real data: it clears test tables
 """
 import os
 import hashlib
+import json
 import threading
 import unittest
 from unittest.mock import patch
@@ -295,6 +296,55 @@ class CategorizationApiTests(unittest.TestCase):
         self.user['id']=self.other
         self.assertEqual(self.client.get('/api/upload/status/stale-job').status_code,404)
         self.assertEqual(self.client.get('/api/upload/jobs').json()['jobs'],[])
+
+    def test_new_import_display_name_changes_only_exact_owner_file_reference(self):
+        own_tx=self.insert(manual=True,scope='transaction',tag=self.home,key='display-own')
+        other_tx=self.insert(owner=self.other,manual=True,scope='transaction',tag=self.home,key='display-other')
+        file_hash='a'*32
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE transactions SET import_file='original.csv' WHERE id=ANY(%s)",
+                            ([own_tx,other_tx],))
+                cur.execute("""INSERT INTO uploaded_files(user_id,filename,file_hash,source,tx_new)
+                    VALUES(%s,'original.csv',%s,'Example card',1) RETURNING id""",
+                    (self.uid,file_hash))
+                upload_id=cur.fetchone()[0]
+                cur.execute("""INSERT INTO uploaded_files(user_id,filename,file_hash,source)
+                    VALUES(%s,'reserved.csv',%s,'Example card')""",
+                    (self.uid,'b'*32))
+                result={'status':'ok','filename':'original.csv','file_hash':file_hash,
+                        'new_upload_id':upload_id}
+                cur.execute("""INSERT INTO upload_jobs(id,user_id,filename,file_hash,status,result_json)
+                    VALUES('new-display',%s,'original.csv',%s,'done',%s)""",
+                    (self.uid,file_hash,json.dumps(result)))
+                cur.execute("""INSERT INTO upload_jobs(id,user_id,filename,file_hash,status,result_json)
+                    VALUES('forced-display',%s,'original.csv',%s,'done',%s)""",
+                    (self.uid,file_hash,json.dumps({**result,'new_upload_id':None})))
+        def rename(job_id,name):
+            return self.client.patch('/api/uploads/display-name',
+                json={'job_id':job_id,'new_name':name})
+        self.assertEqual(rename('new-display','reserved.csv').status_code,409)
+        self.assertEqual(rename('forced-display','Statement 2026-09.csv').status_code,409)
+        self.user['role']='read'
+        self.assertEqual(rename('new-display','Statement 2026-09.csv').status_code,403)
+        self.user['role']='edit'
+        self.user['id']=self.other
+        self.assertEqual(rename('new-display','Statement 2026-09.csv').status_code,404)
+        self.user['id']=self.uid
+        response=rename('new-display','Statement 2026-09.csv')
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['updated'],1)
+        self.assertEqual(rename('new-display','Statement 2026-09.csv').json()['updated'],0)
+        self.assertEqual(rename('new-display','Different.csv').status_code,409)
+        with app.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT filename,source,file_hash FROM uploaded_files WHERE id=%s",(upload_id,))
+                self.assertEqual(cur.fetchone(),('Statement 2026-09.csv','Example card',file_hash))
+                cur.execute("""SELECT import_file,manually_corrected,primary_tag_id,transaction_type
+                    FROM transactions WHERE id=%s""",(own_tx,))
+                self.assertEqual(cur.fetchone(),('Statement 2026-09.csv',True,self.home,None))
+                cur.execute("SELECT import_file FROM transactions WHERE id=%s",(other_tx,))
+                self.assertEqual(cur.fetchone()[0],'original.csv')
 
     def test_concurrent_uploads_of_same_file_insert_once(self):
         rows=[dict(transaction(),dedup_key='single')]

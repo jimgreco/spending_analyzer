@@ -2406,16 +2406,16 @@ def name_new_upload(body: UploadDisplayName, user: dict = Depends(require_edit))
             result = json.loads(job[1]) if job[1] else {}
             if job[0] != 'done' or result.get('status') != 'ok' or not result.get('file_hash') or not result.get('new_upload_id'):
                 raise HTTPException(409, "Only a completed new import can be named")
-            if result.get('display_name'):
-                if result['display_name'] == new:
-                    return {"ok": True, "old_name": result['filename'], "new_name": new, "updated": 0}
-                raise HTTPException(409, "This import was already named")
             cur.execute("SELECT filename FROM uploaded_files WHERE id=%s AND user_id=%s AND file_hash=%s FOR UPDATE",
                         (result['new_upload_id'], user["id"], result['file_hash']))
             upload = cur.fetchone()
             if not upload:
                 raise HTTPException(404, "Import record not found")
             old = upload[0]
+            if result.get('display_name'):
+                if result['display_name'] == new and old == new:
+                    return {"ok": True, "old_name": result['filename'], "new_name": new, "updated": 0}
+                raise HTTPException(409, "This import was already named or changed later")
             if old != result.get('filename'):
                 raise HTTPException(409, "Import filename changed; review it in history")
             if not re.search(r'\.(pdf|csv)$', new, re.I) or new.rsplit('.', 1)[-1].lower() != old.rsplit('.', 1)[-1].lower():
