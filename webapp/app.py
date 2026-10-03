@@ -507,6 +507,9 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_tx_corrections ON transactions(user_id, date DESC, id DESC)
                 WHERE manually_corrected=TRUE AND status='active';
         """),
+        ("add correction revision", """
+            ALTER TABLE transactions ADD COLUMN IF NOT EXISTS correction_revision INTEGER NOT NULL DEFAULT 0;
+        """),
     ]
 
     for label, sql in migrations:
@@ -1117,9 +1120,10 @@ def list_categorization_corrections(
     params = [uid]
     term = search.strip()
     if term:
-        conditions.append("(t.description ILIKE %s OR t.source ILIKE %s OR "
-                          "t.correction_note ILIKE %s OR pt.name ILIKE %s)")
-        params.extend([f"%{term}%"] * 4)
+        conditions.append("(t.description ILIKE %s ESCAPE '!' OR t.source ILIKE %s ESCAPE '!' OR "
+                          "t.correction_note ILIKE %s ESCAPE '!' OR pt.name ILIKE %s ESCAPE '!')")
+        literal_term = term.replace('!', '!!').replace('%', '!%').replace('_', '!_')
+        params.extend([f"%{literal_term}%"] * 4)
     base = " AND ".join(conditions)
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1136,6 +1140,7 @@ def list_categorization_corrections(
             cur.execute(f"""
                 SELECT t.id, t.date::text, t.description, t.amount::float, t.source,
                        t.correction_scope, t.correction_note, t.correction_archived,
+                       t.correction_revision,
                        pt.name AS primary_tag,
                        COALESCE(ARRAY(
                            SELECT tg.name FROM transaction_tags tt
@@ -1153,32 +1158,56 @@ def list_categorization_corrections(
 
 
 @app.delete("/api/categorization-corrections/{tx_id}")
-def archive_categorization_correction(tx_id: int, user: dict = Depends(require_edit)):
+def archive_categorization_correction(
+    tx_id: int, expected_revision: Optional[int] = Query(None, ge=0),
+    user: dict = Depends(require_edit),
+):
+    revision_clause = " AND correction_revision=%s" if expected_revision is not None else ""
+    params = (tx_id, user["id"]) + ((expected_revision,) if expected_revision is not None else ())
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE transactions SET correction_archived=TRUE
+            cur.execute(f"""
+                UPDATE transactions SET correction_archived=TRUE,
+                    correction_revision=correction_revision+1
                 WHERE id=%s AND user_id=%s AND status='active'
                   AND manually_corrected=TRUE AND correction_archived=FALSE
+                  {revision_clause}
                 RETURNING id
-            """, (tx_id, user["id"]))
+            """, params)
             if not cur.fetchone():
-                raise HTTPException(404, "Correction not found")
+                _raise_missing_or_stale_correction(cur, tx_id, user["id"], expected_revision)
     return {"ok": True, "id": tx_id}
 
 
+def _raise_missing_or_stale_correction(cur, tx_id, uid, expected_revision):
+    if expected_revision is not None:
+        cur.execute("""SELECT correction_revision FROM transactions
+                       WHERE id=%s AND user_id=%s AND status='active'
+                         AND manually_corrected=TRUE""", (tx_id, uid))
+        if cur.fetchone():
+            raise HTTPException(409, "Correction changed. Refresh the list and try again.")
+    raise HTTPException(404, "Correction not found")
+
+
 @app.post("/api/categorization-corrections/{tx_id}/restore")
-def restore_categorization_correction(tx_id: int, user: dict = Depends(require_edit)):
+def restore_categorization_correction(
+    tx_id: int, expected_revision: Optional[int] = Query(None, ge=0),
+    user: dict = Depends(require_edit),
+):
+    revision_clause = " AND correction_revision=%s" if expected_revision is not None else ""
+    params = (tx_id, user["id"]) + ((expected_revision,) if expected_revision is not None else ())
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE transactions SET correction_archived=FALSE
+            cur.execute(f"""
+                UPDATE transactions SET correction_archived=FALSE,
+                    correction_revision=correction_revision+1
                 WHERE id=%s AND user_id=%s AND status='active'
                   AND manually_corrected=TRUE AND correction_archived=TRUE
+                  {revision_clause}
                 RETURNING id
-            """, (tx_id, user["id"]))
+            """, params)
             if not cur.fetchone():
-                raise HTTPException(404, "Archived correction not found")
+                _raise_missing_or_stale_correction(cur, tx_id, user["id"], expected_revision)
     return {"ok": True, "id": tx_id}
 
 # ── Transactions ──────────────────────────────────────────────────────────────────
@@ -1366,7 +1395,7 @@ def delete_transaction(tx_id: int, user: dict = Depends(require_edit)):
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE transactions SET status='deleted' WHERE id=%s AND user_id=%s AND status='active' RETURNING id",
+                "UPDATE transactions SET status='deleted', correction_revision=correction_revision+1 WHERE id=%s AND user_id=%s AND status='active' RETURNING id",
                 (tx_id, user["id"]))
             if cur.rowcount == 0:
                 raise HTTPException(404, "Transaction not found")
@@ -1381,7 +1410,7 @@ def bulk_delete_transactions(body: BulkDelete, user: dict = Depends(require_edit
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE transactions SET status='deleted' WHERE id=ANY(%s) AND user_id=%s AND status='active'",
+                "UPDATE transactions SET status='deleted', correction_revision=correction_revision+1 WHERE id=ANY(%s) AND user_id=%s AND status='active'",
                 (body.ids, user["id"]))
             deleted = cur.rowcount
     return {"ok": True, "deleted": deleted}
@@ -1392,7 +1421,7 @@ def restore_transaction(tx_id: int, user: dict = Depends(require_edit)):
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE transactions SET status='active', dedup_of=NULL WHERE id=%s AND user_id=%s RETURNING id",
+                "UPDATE transactions SET status='active', dedup_of=NULL, correction_revision=correction_revision+1 WHERE id=%s AND user_id=%s RETURNING id",
                 (tx_id, user["id"]))
             if cur.rowcount == 0:
                 raise HTTPException(404, "Transaction not found")
@@ -1407,7 +1436,7 @@ def bulk_restore_transactions(body: BulkRestore, user: dict = Depends(require_ed
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE transactions SET status='active', dedup_of=NULL WHERE id=ANY(%s) AND user_id=%s",
+                "UPDATE transactions SET status='active', dedup_of=NULL, correction_revision=correction_revision+1 WHERE id=ANY(%s) AND user_id=%s",
                 (body.ids, user["id"]))
             restored = cur.rowcount
     return {"ok": True, "restored": restored}
@@ -1765,7 +1794,8 @@ def clear_transaction_tags(tx_id: int, user: dict = Depends(require_edit)):
                 raise HTTPException(404, "Transaction not found")
             cur.execute(
                 """UPDATE transactions SET primary_tag_id=NULL, manually_corrected=TRUE,
-                    correction_scope='transaction', correction_note='', correction_archived=FALSE, needs_review=FALSE,
+                    correction_scope='transaction', correction_note='', correction_archived=FALSE,
+                    correction_revision=correction_revision+1, needs_review=FALSE,
                     suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
                     categorization_example_ids='{}' WHERE id=%s""",
                 (tx_id,))
@@ -1776,6 +1806,7 @@ class PrimaryTagUpdate(BaseModel):
     primary_tag: Optional[str] = Field(default=None, max_length=200)  # null to clear
     correction_scope: Literal["transaction", "similar"] = "transaction"
     correction_note: str = Field(default="", max_length=1000)
+    expected_correction_revision: Optional[int] = Field(default=None, ge=0)
 
 
 @app.put("/api/transactions/{tx_id}/primary-tag")
@@ -1784,11 +1815,17 @@ def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(req
     with db() as conn:
         with conn.cursor() as cur:
             # Verify ownership
-            cur.execute("SELECT id, primary_tag_id FROM transactions WHERE id=%s AND user_id=%s", (tx_id, uid))
+            cur.execute("""SELECT id, primary_tag_id, correction_revision,
+                                  manually_corrected, correction_archived, status
+                           FROM transactions WHERE id=%s AND user_id=%s FOR UPDATE""", (tx_id, uid))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(404, "Transaction not found")
             old_primary_id = row[1]
+            if body.expected_correction_revision is not None and (
+                row[2] != body.expected_correction_revision or not row[3] or row[4] or row[5] != 'active'
+            ):
+                raise HTTPException(409, "Correction changed. Refresh the list and try again.")
 
             if body.primary_tag is None:
                 # Clear primary tag — demote old primary to secondary
@@ -1798,7 +1835,8 @@ def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(req
                         (tx_id, old_primary_id))
                 cur.execute(
                     """UPDATE transactions SET primary_tag_id=NULL, manually_corrected=TRUE,
-                        correction_scope=%s, correction_note=%s, correction_archived=FALSE, needs_review=FALSE,
+                        correction_scope=%s, correction_note=%s, correction_archived=FALSE,
+                        correction_revision=correction_revision+1, needs_review=FALSE,
                         suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
                         categorization_example_ids='{}' WHERE id=%s""",
                     (body.correction_scope, body.correction_note.strip(), tx_id))
@@ -1829,7 +1867,8 @@ def set_primary_tag(tx_id: int, body: PrimaryTagUpdate, user: dict = Depends(req
             # Set new primary
             cur.execute(
                 """UPDATE transactions SET primary_tag_id=%s, manually_corrected=TRUE,
-                    correction_scope=%s, correction_note=%s, correction_archived=FALSE, needs_review=FALSE,
+                    correction_scope=%s, correction_note=%s, correction_archived=FALSE,
+                    correction_revision=correction_revision+1, needs_review=FALSE,
                     suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
                     categorization_example_ids='{}' WHERE id=%s""",
                 (new_tag_id, body.correction_scope, body.correction_note.strip(), tx_id))
@@ -1876,7 +1915,8 @@ def bulk_tag_transactions(body: BulkTagUpdate, user: dict = Depends(require_edit
                             cur.execute("INSERT INTO transaction_tags VALUES(%s,%s) ON CONFLICT DO NOTHING", (tx_id, old_primary))
                         cur.execute("""
                             UPDATE transactions SET primary_tag_id=%s, manually_corrected=TRUE,
-                                correction_scope=%s, correction_note=%s, correction_archived=FALSE, needs_review=FALSE,
+                                correction_scope=%s, correction_note=%s, correction_archived=FALSE,
+                                correction_revision=correction_revision+1, needs_review=FALSE,
                                 suggested_tag_id=NULL, categorization_reason='', categorization_confidence=NULL,
                                 categorization_example_ids='{}' WHERE id=%s AND user_id=%s
                         """, (tag_id, body.correction_scope, body.correction_note.strip(), tx_id, uid))
@@ -1945,7 +1985,7 @@ def update_migration_primary_tag(tx_id: int, body: MigrationPrimaryTagUpdate,
                     (tx_id, old_primary_id))
 
             cur.execute(
-                "UPDATE transactions SET primary_tag_id=%s, primary_migration_status='reviewed', manually_corrected=TRUE WHERE id=%s",
+                "UPDATE transactions SET primary_tag_id=%s, primary_migration_status='reviewed', manually_corrected=TRUE, correction_revision=correction_revision+1 WHERE id=%s",
                 (new_tag_id, tx_id))
     return {"ok": True, "id": tx_id, "primary_tag": tag_name}
 
