@@ -1055,7 +1055,7 @@ async function checkAuth() {
       return r.json();
     });
     showUserHeader(user);
-    await Promise.all([loadTags(), loadStats(), loadAnalytics(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
+    await Promise.all([loadTags(), loadTotals(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
     if (user.is_owner) checkMigrationBanner();
     applyPageFromHash();
   } catch(e) {
@@ -1203,6 +1203,10 @@ function setViewStatus(s) {
 }
 
 // ── Data loading ───────────────────────────────────────────────────────────────
+function loadTotals() {
+  return Promise.all([loadStats(), loadAnalytics()]);
+}
+
 async function loadStats() {
   const request = ++statsRequest;
   try {
@@ -1299,7 +1303,7 @@ async function loadUploadJobs() {
     clearTimeout(uploadJobRefreshTimer);
     const activeNow = jobs.some(j => active.has(j.status));
     if (uploadJobWasActive && !activeNow) {
-      await Promise.all([loadTags(), loadStats(), loadTransactions(), loadUploadHistory()]);
+      await Promise.all([loadTags(), loadTotals(), loadTransactions(), loadUploadHistory()]);
     }
     uploadJobWasActive = activeNow;
     if (activeNow) {
@@ -1313,7 +1317,7 @@ async function loadUploadJobs() {
 
 async function refreshAll() {
   clearLoadError();
-  await Promise.all([loadTags(), loadStats(), loadAnalytics(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
+  await Promise.all([loadTags(), loadTotals(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
 }
 
 // ── Render: cards ──────────────────────────────────────────────────────────────
@@ -1382,13 +1386,13 @@ async function saveTransactionType() {
     showToast('Transaction type saved', result.type_sign_issue
       ? 'The amount sign conflicts with this type and remains flagged for review.'
       : 'Only this transaction was updated.', result.type_sign_issue ? 'warn' : 'success');
-    await Promise.all([loadTransactions(), loadAnalytics()]);
+    await Promise.all([loadTransactions(), loadTotals()]);
   } catch(e) {
     if (e.status === 409) {
       document.getElementById('type-dialog').close();
       typeTarget = null;
       showToast('Type changed elsewhere', 'The transaction list has refreshed. Review the latest type before saving.', 'warn');
-      await Promise.all([loadTransactions(), loadAnalytics()]);
+      await Promise.all([loadTransactions(), loadTotals()]);
     } else showToast('Could not save transaction type', e.message, 'error');
   } finally { typeSaving = false; button.disabled = false; }
 }
@@ -1766,7 +1770,7 @@ async function saveSignChange(action) {
     pendingAmountOperation = null;
     amountPreviewState = await api(`/api/transactions/${tx.id}/amount`);
     renderSignPreview();
-    await Promise.all([loadStats(), loadAnalytics(), loadTransactions()]);
+    await Promise.all([loadTotals(), loadTransactions()]);
     showToast(action === 'undo' ? 'Sign reversal undone' : 'Sign reversed',
       'The imported amount and financial flow type were preserved.', 'success');
   } catch (e) {
@@ -2057,7 +2061,7 @@ async function saveUploadSource(filename, edit) {
     });
     await loadUploadHistory();
     loadTransactions();
-    loadStats();
+    loadTotals();
     showToast('Updated', `Issuer set to ${newSource}`, 'success');
   } catch(e) {
     showToast('Error', e.message, 'error');
@@ -2106,7 +2110,7 @@ async function deleteImport(filename, txCount) {
     showToast('Deleted', `"${filename}" and ${r.deleted_transactions} transactions removed`, 'warn');
     await loadUploadHistory();
     loadTransactions();
-    loadStats();
+    loadTotals();
   } catch(e) {
     showToast('Error', e.message, 'error');
   }
@@ -2555,7 +2559,7 @@ async function saveCorrection() {
     if (bulk) { document.getElementById('bulk-tag-input').value = ''; }
     clearSelection();
     showToast('Category saved', data.correction_scope === 'similar' ? 'Saved as an example for future imports.' : 'Saved as a one-time correction.', 'success');
-    await Promise.all([loadTags(), loadStats(), loadTransactions()]);
+    await Promise.all([loadTags(), loadTotals(), loadTransactions()]);
     if (managed) await loadCorrections();
   } catch(e) {
     if (e.status === 409) {
@@ -2589,7 +2593,7 @@ async function addTagToTx(txId, tagName, cell) {
     const td = cell.closest('td');
     if (td) td.innerHTML = tagsCell(tx);
     await loadTags();
-    loadStats();
+    loadTotals();
   } catch(e) {
     showToast('Failed to add tag', e.message, 'error');
   }
@@ -2613,7 +2617,7 @@ async function removeTagFromTx(txId, tagName, evt) {
       const td = cell?.closest('td');
       if (td) td.innerHTML = tagsCell(tx);
     }
-    loadStats();
+    loadTotals();
   } catch(e) {
     showToast('Failed to remove tag', e.message, 'error');
   }
@@ -2636,7 +2640,7 @@ async function clearAllTagsFromTx(txId, btn, evt) {
     tx.categorization_reason = '';
     const td = btn.closest('td');
     if (td) td.innerHTML = tagsCell(tx);
-    await Promise.all([loadStats(), loadTransactions()]);
+    await Promise.all([loadTotals(), loadTransactions()]);
   } catch(e) {
     btn.disabled = false;
     showToast('Failed to remove tags', e.message, 'error');
@@ -2666,8 +2670,7 @@ function applyFilters() {
   reviewFocusId = null;
   reviewIndex = 0;
   clearSelection();
-  loadStats();
-  loadAnalytics();
+  loadTotals();
   loadTransactions();
 }
 
@@ -3000,7 +3003,7 @@ async function saveSource(txId, newSource, wrap) {
     wrap.innerHTML = sourceTag(newSource);
     const inp = wrap.parentElement?.querySelector('input');
     inp?.replaceWith(wrap);
-    loadStats();
+    loadTotals();
   } catch(e) {
     showToast('Update failed', e.message, 'error');
   }
@@ -3083,7 +3086,7 @@ async function applyBulkTag(action) {
     inp.value = '';
     clearSelection();
     await loadTags();
-    loadStats();
+    loadTotals();
     loadTransactions();
   } catch(e) { showToast('Update failed', e.message, 'error'); }
 }
@@ -3101,7 +3104,7 @@ async function deleteSelected() {
     showToast(`Moved ${data.deleted} transaction${data.deleted!==1?'s':''} to trash`,
               'View in 🗑 Deleted tab to restore.', 'success');
     clearSelection();
-    loadStats();
+    loadTotals();
     loadTransactions();
   } catch(e) { showToast('Delete failed', e.message, 'error'); }
 }
@@ -3112,7 +3115,7 @@ async function restoreOne(id) {
     await api(`/api/transactions/${id}/restore`, { method: 'POST' });
     showToast('Restored', 'Transaction moved back to active.', 'success');
     clearSelection();
-    loadStats();
+    loadTotals();
     loadTransactions();
   } catch(e) {
     showToast('Restore failed', e.message, 'error');
@@ -3131,7 +3134,7 @@ async function restoreSelected() {
     showToast(`Restored ${data.restored} transaction${data.restored!==1?'s':''}`,
               'Moved back to active.', 'success');
     clearSelection();
-    loadStats();
+    loadTotals();
     loadTransactions();
   } catch(e) { showToast('Restore failed', e.message, 'error'); }
 }
@@ -3203,7 +3206,7 @@ async function toggleTagExclusion(name, excluded) {
     });
     await renderTagList();
     await loadTags();
-    loadStats();
+    loadTotals();
     showToast(
       excluded ? 'Excluded from spending' : 'Included in spending',
       `"${name}" will ${excluded ? 'no longer' : 'now'} count toward spending totals`,
@@ -3222,7 +3225,7 @@ async function setTagGroup(name, groupTag) {
       body: JSON.stringify({ name, group_tag: groupTag || null })
     });
     await loadTags();
-    loadStats();
+    loadTotals();
     loadTransactions();
     showToast('Group updated', groupTag ? `"${name}" → "${groupTag}"` : `"${name}" group cleared`, 'success');
   } catch(e) {
@@ -3276,7 +3279,7 @@ async function saveTagRename(btn) {
       tagFilters.delete(oldName);
       tagFilters.add(newName);
     }
-    loadStats();
+    loadTotals();
     loadTransactions();
   } catch(e) {
     showToast('Rename failed', e.message, 'error');
@@ -3312,7 +3315,7 @@ async function deleteTagFromModal(name) {
     tagFilters.delete(name);
     expandedParents.delete(name);
     updateFilterBadges();
-    loadStats();
+    loadTotals();
     loadTransactions();
     showToast('Tag deleted', `"${name}" removed from all transactions`, 'warn');
   } catch(e) {
@@ -3474,7 +3477,7 @@ async function updateMigrationPrimary(txId, tagName) {
       document.getElementById('migration-banner-text').textContent =
         `${remaining} transaction${remaining !== 1 ? 's' : ''} need primary tag review`;
     }
-    loadStats();
+    loadTotals();
     loadTransactions();
   } catch(e) {
     showToast('Failed to update', e.message, 'error');
@@ -3491,7 +3494,7 @@ async function finalizeMigration() {
     showToast('Migration finalized', `${data.finalized} transactions accepted`, 'success');
     document.getElementById('migration-banner').style.display = 'none';
     closeMigrationModal();
-    loadStats();
+    loadTotals();
     loadTransactions();
   } catch(e) {
     showToast('Failed to finalize', e.message, 'error');
