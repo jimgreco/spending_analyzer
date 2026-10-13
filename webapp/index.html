@@ -947,6 +947,7 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
   <p id="type-preview-summary" role="status"></p>
   <div id="type-preview-list"></div>
   <div class="type-preview-actions">
+    <button class="btn" id="type-preview-retry" onclick="loadTypePreview(typePreviewOffset)" hidden>Retry this page</button>
     <button class="btn" id="type-preview-prev" onclick="loadTypePreview(typePreviewOffset-50)">← Previous</button>
     <button class="btn" id="type-preview-next" onclick="loadTypePreview(typePreviewOffset+50)">Next →</button>
     <button class="btn" onclick="showUntypedTransactions()">Show unreviewed in list</button>
@@ -1017,6 +1018,7 @@ let intakeFiles = [];
 let uploadInFlight = false;
 let typeTarget = null;
 let typePreviewOffset = 0;
+let typePreviewRequest = 0;
 let typeSaving = false;
 
 const CAT_PALETTE = [
@@ -1403,26 +1405,39 @@ function openTypePreview() {
   loadTypePreview(0);
 }
 
+document.getElementById('type-preview-dialog').addEventListener('close', () => { ++typePreviewRequest; });
+
 async function loadTypePreview(offset) {
-  typePreviewOffset = Math.max(0, offset);
+  const request = ++typePreviewRequest;
+  const pageOffset = typePreviewOffset = Math.max(0, offset);
   const summary = document.getElementById('type-preview-summary');
   const list = document.getElementById('type-preview-list');
+  const previous = document.getElementById('type-preview-prev');
+  const next = document.getElementById('type-preview-next');
+  const retry = document.getElementById('type-preview-retry');
   summary.textContent = 'Loading preview…';
+  list.textContent = '';
+  previous.disabled = next.disabled = true;
+  retry.hidden = true;
   try {
-    const data = await api(`/api/transaction-type-preview?limit=50&offset=${typePreviewOffset}`);
+    const data = await api(`/api/transaction-type-preview?limit=50&offset=${pageOffset}`);
+    if (request !== typePreviewRequest) return;
     summary.textContent = `${data.untyped_count} active transactions have no type. ` +
-      `Showing ${data.sample.length ? typePreviewOffset+1 : 0}–${typePreviewOffset+data.sample.length}. ` +
+      `Showing ${data.sample.length ? pageOffset+1 : 0}–${data.sample.length ? pageOffset+data.sample.length : 0}. ` +
       `This preview changes no data.`;
     list.innerHTML = data.sample.length ? data.sample.map(row =>
       `<div class="type-preview-row"><strong>${escHtml(row.date)} · ${escHtml(row.description)}</strong>
        <small>${Number(row.amount).toLocaleString('en-US',{style:'currency',currency:'USD'})} · Category: ${escHtml(row.primary_tag || 'None')} ·
        ${row.suggested_type ? `Possible ${escHtml(row.suggested_type)}` : 'Ambiguous'} · ${escHtml(row.reason.replaceAll('_',' '))}</small></div>`).join('')
       : '<p class="help">No unreviewed transactions on this page.</p>';
-    document.getElementById('type-preview-prev').disabled = typePreviewOffset === 0;
-    document.getElementById('type-preview-next').disabled = typePreviewOffset + data.sample.length >= data.untyped_count;
+    previous.disabled = pageOffset === 0;
+    next.disabled = pageOffset + data.sample.length >= data.untyped_count;
   } catch(e) {
+    if (request !== typePreviewRequest) return;
     summary.textContent = 'Could not load the preview. Try again.';
     list.textContent = '';
+    previous.disabled = pageOffset === 0;
+    retry.hidden = false;
   }
 }
 
