@@ -903,7 +903,8 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
   <textarea id="category-guide" rows="10" maxlength="12000" placeholder="For example: Groceries covers food for home. Restaurant delivery belongs in Dining. Amazon purchases can have different purposes; ask me to review unclear ones."></textarea>
   <p id="guide-tags" class="help"></p>
   <p class="help">The guide and up to six relevant manual examples per transaction are sent to OpenAI during categorization. One-time corrections are excluded from examples.</p>
-  <div class="dialog-actions"><button class="btn" onclick="document.getElementById('guide-dialog').close()">Close</button><button class="btn" id="save-guide-btn" onclick="saveGuide()">Save guide</button></div>
+  <p id="guide-error" class="help" role="alert" style="color:var(--red)" hidden></p>
+  <div class="dialog-actions"><button class="btn" id="guide-close-btn" onclick="document.getElementById('guide-dialog').close()">Close</button><button class="btn" id="save-guide-btn" onclick="saveGuide()">Save guide</button></div>
 </dialog>
 
 <dialog id="correction-dialog" class="category-dialog" aria-labelledby="correction-title">
@@ -2361,27 +2362,59 @@ function startTagAdd(txId, btn, evt) {
   inp.addEventListener('blur', () => setTimeout(commit, 200));
 }
 
+let guideLoading = false;
+let guideSaving = false;
+document.getElementById('guide-dialog').addEventListener('cancel', event => {
+  if (guideSaving) event.preventDefault();
+});
+
 async function openGuideDialog() {
+  if (guideLoading || guideSaving || document.getElementById('guide-dialog').open) return;
+  guideLoading = true;
   try {
     const data = await api('/api/categorization-guide');
+    document.getElementById('guide-error').hidden = true;
+    document.getElementById('guide-error').textContent = '';
     document.getElementById('category-guide').value = data.guide;
     document.getElementById('category-guide').readOnly = currentUser?.role === 'read';
     document.getElementById('save-guide-btn').hidden = currentUser?.role === 'read';
     document.getElementById('guide-tags').textContent = `Available categories: ${tags.map(t => t.name).join(', ') || 'Create categories in Tags first.'}`;
     document.getElementById('guide-dialog').showModal();
   } catch(e) { showToast('Could not load guide', e.message, 'error'); }
+  finally { guideLoading = false; }
 }
 
 async function saveGuide() {
+  const dialog = document.getElementById('guide-dialog');
+  if (guideSaving || !dialog.open || currentUser?.role === 'read') return;
   const btn = document.getElementById('save-guide-btn');
+  const input = document.getElementById('category-guide');
+  const close = document.getElementById('guide-close-btn');
+  const error = document.getElementById('guide-error');
+  const guide = input.value;
+  guideSaving = true;
   btn.disabled = true;
+  btn.textContent = 'Saving…';
+  input.readOnly = true;
+  close.disabled = true;
+  error.hidden = true;
+  error.textContent = '';
   try {
     await api('/api/categorization-guide', {method:'PUT', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({guide:document.getElementById('category-guide').value})});
-    document.getElementById('guide-dialog').close();
+      body:JSON.stringify({guide})});
+    dialog.close();
     showToast('Guide saved', 'It will apply to future imports.', 'success');
-  } catch(e) { showToast('Could not save guide', e.message, 'error'); }
-  finally { btn.disabled = false; }
+  } catch {
+    error.textContent = 'Could not save guide. Your instructions are still here; try again.';
+    error.hidden = false;
+  }
+  finally {
+    guideSaving = false;
+    btn.disabled = false;
+    btn.textContent = 'Save guide';
+    input.readOnly = currentUser?.role === 'read';
+    close.disabled = false;
+  }
 }
 
 let correctionKind = 'reusable';
