@@ -21,9 +21,16 @@ function fixture(rows) {
   };
   const boxes = rows.map(row => ({dataset:{id:String(row.id)},checked:false,
     closest:() => element(`row-${row.id}`)}));
-  const context = vm.createContext({rows,boxes,
+  const downloads = [];
+  const revoked = [];
+  const blobs = [];
+  const context = vm.createContext({rows,boxes,downloads,revoked,blobs,
+    Blob,
+    URL:{createObjectURL(blob){blobs.push(blob);return 'blob:csv';}, revokeObjectURL(url){revoked.push(url);}},
+    setTimeout(fn){fn();},
     window:{addEventListener(){}},
-    document:{addEventListener(){},getElementById:element,querySelectorAll:() => boxes}});
+    document:{addEventListener(){},getElementById:element,querySelectorAll:() => boxes,
+      body:{appendChild(){}}, createElement:() => ({click(){downloads.push({href:this.href,name:this.download});},remove(){}})}});
   vm.runInContext(source + '\ntagsCell=typeCell=sourceTag=()=>""; renderTable(rows);', context);
   return {element,run:code => vm.runInContext(code, context)};
 }
@@ -72,4 +79,37 @@ test('clearing selection resets the amount and hides the summary', () => {
   assert.equal(element('bulk-total').textContent, 'Selected amount: $0.00');
   assert.equal(element('bulk-count').textContent, '0 transactions selected on this page');
   assert.equal(element('bulk-bar').classList.contains('visible'), false);
+});
+
+
+test('CSV exports only selected page rows, effective signed amounts and escaped fields', () => {
+  const {run} = fixture([
+    {id:1,date:'2026-10-15',description:'Cafe, "Family"\nLunch',amount:'-25.50',original_amount:'25.50',source:'Card',card_last4:'0123',primary_tag:'Food',tags:['Travel','Shared'],transaction_type:'refund',status:'active'},
+    {id:2,amount:900,description:'Not selected'},
+  ]);
+  run('selectedIds.add(1)');
+  assert.equal(run('selectedTransactionsCsv()'), '\ufeff"Date","Description","Amount","Source","Card last 4","Primary category","Tags","Type","Status"\r\n"2026-10-15","Cafe, ""Family""\nLunch",-25.50,"Card","0123","Food","Travel; Shared","refund","active"\r\n');
+  run('renderTable([{id:3,description:"Next page",amount:2}])');
+  assert.equal(run('selectedTransactionsCsv()'), '');
+});
+
+test('CSV neutralizes formulas in text while retaining signed numeric amounts', () => {
+  const {run} = fixture([{id:1,date:'2026-10-15',description:'  =HYPERLINK("x")',amount:-12,source:'+cmd',primary_tag:'@SUM(A1)',tags:['-danger'],card_last4:'\t=1'}]);
+  run('selectedIds.add(1)');
+  const csv = run('selectedTransactionsCsv()');
+  for (const text of ["'  =HYPERLINK", "'+cmd", "'@SUM", "'-danger", "'\t=1"]) assert.ok(csv.includes(text));
+  assert.ok(csv.includes(',-12.00,'));
+});
+
+test('CSV download uses UTF-8 content and releases its object URL without clearing selection', async () => {
+  const {run} = fixture([{id:1,description:'Crème brûlée',amount:4.5}]);
+  run('exportSelectedCsv()');
+  assert.equal(run('downloads.length'), 0);
+  run('selectedIds.add(1); exportSelectedCsv()');
+  assert.equal(run('downloads[0].name'), 'spending-selected-transactions.csv');
+  assert.equal(run('downloads[0].href'), 'blob:csv');
+  assert.equal(run('blobs[0].type'), 'text/csv;charset=utf-8');
+  assert.ok((await run('blobs[0].text()')).includes('Crème brûlée'));
+  assert.equal(run('revoked[0]'), 'blob:csv');
+  assert.equal(run('selectedIds.size'), 1);
 });

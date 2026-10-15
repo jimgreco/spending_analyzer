@@ -1005,7 +1005,9 @@ def parse_file_bytes(content: bytes, filename: str) -> tuple:
     return rows, source, ""
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────────
-app = FastAPI(title="Spending Dashboard")
+with open(os.path.join(os.path.dirname(__file__), "VERSION")) as version_source:
+    APP_VERSION = version_source.read().strip()
+app = FastAPI(title="Spending Dashboard", version=APP_VERSION)
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -1032,7 +1034,7 @@ def _get_git_version() -> dict:
     except Exception:
         return {"sha": "unknown", "timestamp": datetime.utcnow().isoformat()}
 
-GIT_VERSION = _get_git_version()
+GIT_VERSION = {**_get_git_version(), "version": APP_VERSION}
 
 @app.on_event("startup")
 def startup():
