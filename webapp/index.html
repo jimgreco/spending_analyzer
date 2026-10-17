@@ -447,7 +447,7 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
   .filter-bar{padding:10px 12px;gap:8px}
   .filter-bar input[type=search],.filter-bar input[type=text]{flex:none;width:100%}
   .filter-bar select{flex:1 1 calc(50% - 4px);min-width:0}
-  .filter-bar input[type=date]{flex:1;width:auto;min-width:0}
+  .filter-bar input[type=date]{flex:1 1 138px;width:auto;min-width:138px}
   .preset-btn{padding:3px 7px;font-size:.72rem}
 
   /* Transaction table → cards */
@@ -746,12 +746,14 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
       <input type="date" id="filter-date-from" onchange="onDateInput()" title="From" aria-label="Start date">
       <span class="filter-row-label">—</span>
       <input type="date" id="filter-date-to" onchange="onDateInput()" title="To" aria-label="End date">
-      <button class="preset-btn" id="preset-all"        onclick="setDatePreset('all')">All</button>
-      <button class="preset-btn" id="preset-month"      onclick="setDatePreset('month')">MTD</button>
-      <button class="preset-btn" id="preset-ytd"        onclick="setDatePreset('ytd')">YTD</button>
-      <button class="preset-btn" id="preset-last-month" onclick="setDatePreset('last-month')">Last Month</button>
-      <button class="preset-btn" id="preset-3months"    onclick="setDatePreset('3months')">Last 3 Mo</button>
-      <button class="preset-btn" id="preset-year"       onclick="setDatePreset('year')">Last Year</button>
+      <button class="preset-btn" id="preset-all" aria-pressed="false"        onclick="setDatePreset('all')">All</button>
+      <button class="preset-btn" id="preset-7days" aria-pressed="false"      onclick="setDatePreset('7days')" title="Today and the previous 6 days">Last 7 Days</button>
+      <button class="preset-btn" id="preset-30days" aria-pressed="false"     onclick="setDatePreset('30days')" title="Today and the previous 29 days">Last 30 Days</button>
+      <button class="preset-btn" id="preset-month" aria-pressed="false"      onclick="setDatePreset('month')">MTD</button>
+      <button class="preset-btn" id="preset-ytd" aria-pressed="false"        onclick="setDatePreset('ytd')">YTD</button>
+      <button class="preset-btn" id="preset-last-month" aria-pressed="false" onclick="setDatePreset('last-month')">Last Month</button>
+      <button class="preset-btn" id="preset-3months" aria-pressed="false"    onclick="setDatePreset('3months')">Last 3 Mo</button>
+      <button class="preset-btn" id="preset-year" aria-pressed="false"       onclick="setDatePreset('year')">Last Year</button>
     </div>
   </div>
 
@@ -1934,16 +1936,19 @@ document.addEventListener('keydown', e => {
 
 // ── Date range presets ─────────────────────────────────────────────────────────
 function fmtDate(d) {
-  return d.toISOString().slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 let activePreset = null;
 
 function highlightPreset(id) {
   activePreset = id;
-  ['all','month','ytd','last-month','3months','year'].forEach(p => {
+  ['all','7days','30days','month','ytd','last-month','3months','year'].forEach(p => {
     const el = document.getElementById('preset-' + p);
-    if (el) el.classList.toggle('active', p === id);
+    if (el) {
+      el.classList.toggle('active', p === id);
+      el.setAttribute('aria-pressed', String(p === id));
+    }
   });
 }
 
@@ -1961,9 +1966,14 @@ function setDatePreset(preset) {
       highlightPreset('all');
       applyFilters();
       return;
+    case '7days':
+    case '30days':
+      from = new Date(y, m, today.getDate() - (preset === '7days' ? 6 : 29));
+      to   = today;
+      break;
     case 'month':
       from = new Date(y, m, 1);
-      to   = new Date(y, m + 1, 0);
+      to   = today;
       break;
     case 'ytd':
       from = new Date(y, 0, 1);
