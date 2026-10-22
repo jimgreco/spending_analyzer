@@ -221,6 +221,22 @@ the added columns and audit table: older code continues to read the effective
 would remove audit history and is intentionally not automatic. Explicit import
 deletion still removes its transactions and their related audit rows.
 
+## Previous-period comparison
+
+Selecting both date bounds shows Total Spent's change from the immediately
+preceding equal-length period. Both ranges are inclusive calendar days, so the
+comparison also works across daylight-saving changes, leap days and year ends.
+The prior range uses the same source, card, import, search and tag filters and
+the existing active-transaction/excluded-category rules from `/api/stats`.
+Transaction type and status remain list-only filters. No logging records change.
+
+The summary shows the prior amount, transaction count and signed dollar change.
+Percentage change is omitted when there are no prior matches or the prior total
+is zero or negative. All-time, incomplete or invalid bounds prompt for a valid
+range. Previous-period errors preserve current totals, and stale responses cannot
+overwrite a newer filter selection. Synthetic date, filter, request-order and
+error/retry checks run through `test_period_comparison.py` in three time zones.
+
 ## Verification
 
 From the repository root, run the synthetic unit checks (no database or live API):

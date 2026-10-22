@@ -62,6 +62,11 @@ a{color:var(--accent2);text-decoration:none}
 .card .label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
 .card .value{font-size:1.75rem;font-weight:700}
 .card .sub{font-size:.8rem;color:var(--muted);margin-top:4px}
+.period-comparison{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:16px 20px;margin:-8px 0 24px;font-size:.85rem}
+.period-comparison header{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline}
+.period-comparison header span{color:var(--muted);font-size:.8rem}
+.period-comparison p{margin:8px 0 0;line-height:1.5;overflow-wrap:anywhere}
 
 /* ── Charts ─────────────────────────────────────────────────────────────── */
 .charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-bottom:24px}
@@ -695,6 +700,11 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
     </div>
   </div>
 
+  <section class="period-comparison" aria-label="Previous period comparison">
+    <header><strong>Previous period</strong><span id="comparison-range"></span></header>
+    <p id="comparison-result" role="status">Choose a start and end date to compare Total Spent with the preceding equal-length period.</p>
+  </section>
+
   <section class="flow-panel" aria-labelledby="flow-title">
     <h2 id="flow-title">Reviewed transaction types</h2>
     <p>Types describe money flow separately from transaction categories. Net spend includes reviewed charges and refunds only. Untyped and conflicting rows need review; the Total Spent card keeps its existing calculation. The type filter below applies to the transaction list only.</p>
@@ -1222,13 +1232,75 @@ function loadTotals() {
 
 async function loadStats() {
   const request = ++statsRequest;
+  const params = new URLSearchParams(buildFilterParams());
+  const range = previousComparisonRange(params);
+  resetPeriodComparison(range);
+  const previousParams = new URLSearchParams(params);
+  if (range) {
+    previousParams.set('date_from', range.from);
+    previousParams.set('date_to', range.to);
+  }
+  // Catch the comparison separately so a failed comparison never hides current totals.
+  const previous = range ? api('/api/stats?' + previousParams)
+    .then(data => ({data}), () => ({error:true})) : null;
   try {
-    const data = await api('/api/stats?' + buildFilterParams());
+    const data = await api('/api/stats?' + params);
     if (request !== statsRequest) return;
     stats = data;
-    renderCards(stats);
+    renderCards(stats, params);
     renderCharts(stats);
-  } catch(e) { if (request === statsRequest) showLoadError('Could not load spending totals.'); }
+    if (previous) {
+      const result = await previous;
+      if (request !== statsRequest) return;
+      document.getElementById('comparison-result').textContent = result.error
+        ? 'Previous period unavailable. Refresh to try again.'
+        : periodComparisonText(data, result.data);
+    }
+  } catch(e) {
+    if (request !== statsRequest) return;
+    showLoadError('Could not load spending totals.');
+    if (range) document.getElementById('comparison-result').textContent = 'Comparison unavailable until current totals load.';
+  }
+}
+
+function previousComparisonRange(params) {
+  // Treat date inputs as calendar-day ordinals; local DST must not change the length.
+  const parseDay = value => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '') || value < '0001-01-01') return null;
+    const time = Date.parse(value + 'T00:00:00Z');
+    return Number.isFinite(time) && new Date(time).toISOString().slice(0,10) === value ? time : null;
+  };
+  const from = parseDay(params.get('date_from'));
+  const to = parseDay(params.get('date_to'));
+  if (from === null || to === null || to < from) return null;
+  const day = 86400000;
+  const days = Math.round((to - from) / day) + 1;
+  const previousFrom = new Date(from - days * day).toISOString().slice(0,10);
+  if (previousFrom < '0001-01-01' || !/^\d{4}-\d{2}-\d{2}$/.test(previousFrom)) return null;
+  return {from:previousFrom, to:new Date(from - day).toISOString().slice(0,10), days};
+}
+
+function resetPeriodComparison(range) {
+  document.getElementById('comparison-range').textContent = range
+    ? `${range.from} – ${range.to} · ${range.days} day${range.days === 1 ? '' : 's'}` : '';
+  document.getElementById('comparison-result').textContent = range
+    ? 'Loading comparison…'
+    : 'Choose a valid start and end date to compare Total Spent with the preceding equal-length period.';
+}
+
+function periodComparisonText(current, previous) {
+  const money = value => value.toLocaleString('en-US', {style:'currency',currency:'USD'});
+  const total = Number(current.total), prior = Number(previous.total);
+  const count = Number(previous.count);
+  if (!Number.isFinite(total) || !Number.isFinite(prior) || !Number.isInteger(count) || count < 0)
+    return 'Previous period unavailable. Refresh to try again.';
+  if (!count) return 'No matching transactions in the previous period. Percentage change is unavailable.';
+  const difference = Math.round((total - prior) * 100) / 100;
+  const change = difference === 0 ? 'No change' : `${money(Math.abs(difference))} ${difference > 0 ? 'more' : 'less'}`;
+  const percent = prior > 0 && difference !== 0
+    ? ` (${(Math.abs(difference) / prior * 100).toLocaleString('en-US', {maximumFractionDigits:1})}%)` : '';
+  const baseline = prior <= 0 ? ' Percentage change is unavailable for a zero or negative prior total.' : '';
+  return `${money(prior)} across ${count.toLocaleString('en-US')} transaction${count === 1 ? '' : 's'}. ${change}${percent} in Total Spent with the same filters.${baseline}`;
 }
 
 async function loadAnalytics() {
@@ -1334,9 +1406,12 @@ async function refreshAll() {
 }
 
 // ── Render: cards ──────────────────────────────────────────────────────────────
-function renderCards(s) {
+function renderCards(s, params = new URLSearchParams(buildFilterParams())) {
   const fmt = v => Number(v || 0).toLocaleString('en-US',{style:'currency',currency:'USD'});
   document.getElementById('card-total').textContent = fmt(s.total);
+  const from = params.get('date_from'), to = params.get('date_to');
+  document.getElementById('card-sub').textContent = from && to ? `${from} – ${to}`
+    : from ? `From ${from}` : to ? `Through ${to}` : 'all time';
   document.getElementById('card-count').textContent = (s.count || 0).toLocaleString();
   document.getElementById('card-avg').textContent   = s.count ? fmt(s.total / s.count) : '—';
   if (s.by_tag && s.by_tag.length) {
@@ -2800,6 +2875,7 @@ function scheduleSearch() {
   ++txRequest;
   ++statsRequest;
   ++analyticsRequest;
+  resetPeriodComparison(previousComparisonRange(new URLSearchParams(buildFilterParams())));
   reviewFocusId = null;
   reviewIndex = 0;
   clearSelection();
