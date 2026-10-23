@@ -89,6 +89,10 @@ a{color:var(--accent2);text-decoration:none}
 .btn{background:var(--border);border:none;color:var(--muted);border-radius:8px;
   padding:7px 14px;font-size:.875rem;cursor:pointer;transition:all .15s}
 .btn:hover{background:var(--accent);color:#fff}
+.export-matches{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin:14px 0}
+.export-matches .help{flex:1 1 300px;color:var(--muted);font-size:.78rem;line-height:1.5}
+.export-matches [role=status]{flex-basis:100%;font-size:.83rem;overflow-wrap:anywhere}
+.export-matches button:disabled{opacity:.65;cursor:wait}
 .preset-btn{background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.25);
   color:var(--accent);border-radius:6px;padding:4px 11px;font-size:.78rem;
   cursor:pointer;white-space:nowrap;transition:all .15s}
@@ -793,6 +797,12 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
   </section>
 
   <!-- Transaction table -->
+  <div class="export-matches">
+    <button class="btn" id="export-matches-btn" onclick="exportMatchingCsv()" aria-describedby="export-matches-help">Export matches CSV</button>
+    <button class="btn" id="export-matches-cancel" onclick="cancelMatchingExport()" hidden>Cancel export</button>
+    <p class="help" id="export-matches-help">Every matching transaction across all pages, in the current sort order. Includes rows excluded from spending totals. Up to 50,000 transactions.</p>
+    <p id="export-matches-status" role="status" aria-live="polite"></p>
+  </div>
   <div class="table-box">
     <div class="pagination pagination-top">
       <button id="prev-btn-top" onclick="changePage(-1)">‹ Prev</button>
@@ -1041,6 +1051,7 @@ let typeTarget = null;
 let typePreviewOffset = 0;
 let typePreviewRequest = 0;
 let typeSaving = false;
+let matchingExport = null;
 
 const CAT_PALETTE = [
   '#6366f1','#22d3ee','#10b981','#f59e0b','#ef4444','#8b5cf6',
@@ -1090,6 +1101,7 @@ async function checkAuth() {
 let currentUser = null;
 
 function showUserHeader(user) {
+  cancelMatchingExport('Account refreshed. Start the export again.');
   currentUser = user;
   document.body.dataset.role = user.role;
   const header = document.getElementById('user-header');
@@ -1134,6 +1146,7 @@ document.addEventListener('click', e => {
 });
 
 async function logout() {
+  cancelMatchingExport('Export canceled.');
   await fetch('/auth/logout', { method: 'POST' });
   window.location.reload();
 }
@@ -1177,6 +1190,7 @@ function buildFilterParams(extra = {}) {
 
 // ── Status view ────────────────────────────────────────────────────────────────
 function setViewStatus(s) {
+  cancelMatchingExport('Filters changed. Start the export again.');
   clearLoadError();
   viewStatus = s;
   document.querySelectorAll('.status-tab').forEach(t =>
@@ -2861,6 +2875,7 @@ function toggleTagMatch() {
 }
 
 function applyFilters() {
+  cancelMatchingExport('Filters changed. Start the export again.');
   clearLoadError();
   currentPage = 1;
   reviewFocusId = null;
@@ -2872,6 +2887,7 @@ function applyFilters() {
 
 const debouncedApplyFilters = debounce(applyFilters, 300);
 function scheduleSearch() {
+  cancelMatchingExport('Filters changed. Start the export again.');
   ++txRequest;
   ++statsRequest;
   ++analyticsRequest;
@@ -2917,6 +2933,7 @@ function clearFilter() {
 }
 
 function sortBy(col) {
+  cancelMatchingExport('Sort changed. Start the export again.');
   if (sortCol === col) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
   else { sortCol = col; sortDir = 'desc'; }
   // Update header indicators
@@ -3298,6 +3315,99 @@ function exportSelectedCsv() {
   // Leave time for Safari to start consuming the download before releasing it.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// ── Full filtered CSV snapshot ─────────────────────────────────────────────────
+function matchingExportParams() {
+  const params = new URLSearchParams(buildFilterParams({sort_by:sortCol, sort_dir:sortDir}));
+  // Empty date strings are not dates; absent bounds mean an open-ended range.
+  for (const [key, value] of [...params]) if (!value) params.delete(key);
+  return params.toString();
+}
+
+function setMatchingExportBusy(busy) {
+  const button = document.getElementById('export-matches-btn');
+  button.disabled = busy;
+  button.textContent = busy ? 'Preparing CSV…' : 'Export matches CSV';
+  document.getElementById('export-matches-cancel').hidden = !busy;
+}
+
+function cancelMatchingExport(message = 'Export canceled. You can try again.') {
+  if (!matchingExport) return;
+  matchingExport.controller.abort();
+  matchingExport = null;
+  setMatchingExportBusy(false);
+  document.getElementById('export-matches-status').textContent = message;
+}
+
+function sameExportAccount(left, right) {
+  return left && right && left.id === right.id &&
+    (left.auth_id || left.id) === (right.auth_id || right.id);
+}
+
+async function exportMatchingCsv() {
+  if (matchingExport || !currentUser) return;
+  const job = {controller:new AbortController(), params:matchingExportParams(), user:currentUser,
+    account:{id:currentUser.id, auth_id:currentUser.auth_id || currentUser.id}};
+  const stillCurrent = () => matchingExport === job && currentUser === job.user &&
+    sameExportAccount(currentUser, job.account) && matchingExportParams() === job.params;
+  matchingExport = job;
+  setMatchingExportBusy(true);
+  const status = document.getElementById('export-matches-status');
+  status.textContent = 'Preparing all matching transactions…';
+  try {
+    const params = new URLSearchParams(job.params);
+    params.set('expected_dataset_id', job.account.id);
+    params.set('expected_actor_id', job.account.auth_id);
+    const response = await fetch('/api/transactions/export.csv?' + params,
+      {signal:job.controller.signal, cache:'no-store'});
+    if (!stillCurrent()) return;
+    if (!response.ok) {
+      let message = 'Could not export transactions. Try again.';
+      if ([401, 403, 409].includes(response.status)) message = 'Account access changed. Reload the dashboard before exporting.';
+      else if (response.status === 413) message = 'Export is too large. Narrow the filters and try again.';
+      else if (response.status === 422) message = 'Check the date range and filters, then try again.';
+      throw new Error(message);
+    }
+    const countHeader = response.headers.get('X-Export-Row-Count');
+    const count = Number(countHeader);
+    if (countHeader === null || !Number.isInteger(count) || count < 0 ||
+        !response.headers.get('Content-Type')?.startsWith('text/csv')) {
+      throw new Error('Could not verify the export. Try again.');
+    }
+    const blob = await response.blob();
+    if (!stillCurrent()) return;
+    // Recheck identity after the file arrives, including logout/account changes
+    // in another tab while the request was in flight.
+    const accountResponse = await fetch('/auth/me', {signal:job.controller.signal, cache:'no-store'});
+    const account = accountResponse.ok ? await accountResponse.json() : null;
+    if (!stillCurrent()) return;
+    if (!sameExportAccount(job.account, account)) throw new Error('Account access changed. Reload the dashboard before exporting.');
+    if (!count) {
+      status.textContent = 'No matching transactions to export.';
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'spending-filtered-transactions.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    status.textContent = `Downloaded ${count.toLocaleString()} matching transaction${count === 1 ? '' : 's'}.`;
+  } catch (error) {
+    if (matchingExport === job && error.name !== 'AbortError') status.textContent =
+      error instanceof TypeError ? 'Connection interrupted. Try the export again.' : error.message;
+  } finally {
+    if (matchingExport === job) {
+      if (!stillCurrent()) status.textContent = 'Filters or account changed. Start the export again.';
+      matchingExport = null;
+      setMatchingExportBusy(false);
+    }
+  }
+}
+
+window.addEventListener('pagehide', () => cancelMatchingExport());
 
 async function applyBulkTag(action) {
   const inp = document.getElementById('bulk-tag-input');

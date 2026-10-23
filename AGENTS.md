@@ -24,8 +24,10 @@
   samples or private financial records unless the task needs that evidence.
 - Match validation to the edit: Python syntax/import checks plus the affected API
   or browser journey. The frontend is served directly and has no bundler.
-- Current deployment source: `.github/workflows/deploy.yml` and the sibling
-  `../deploy/docker-compose.yml`. The Elastic Beanstalk notes below are legacy.
+- Publication gates: `.github/workflows/ci.yml` and
+  `docs/release-runtime-cutover.md`. Production uses the separately approved,
+  image-pinned procedure in consolidated-deploy. `deploy.yml` is retired and
+  refuses activation; the Elastic Beanstalk notes below are legacy.
 
 
 ## Project Overview
@@ -88,10 +90,14 @@ python app.py           # or: uvicorn app:app --reload --port 8000
 
 ## Deployment
 
-The current checked-in deployment is EC2/Docker Compose. On a push to `main`,
-`.github/workflows/deploy.yml` syncs `webapp/` to the server and rebuilds/restarts
-its `spending` service through the shared Compose project. Use that workflow and
-`../deploy/docker-compose.yml` for current deployment work.
+The current runtime is EC2/Docker Compose. A push to `main` runs validation-only
+`.github/workflows/ci.yml`: synthetic PostgreSQL tests and the ARM64 image build.
+It does not deploy. The old `deploy.yml` is retired, remains disabled, and refuses
+activation even if dispatched. Follow `docs/release-runtime-cutover.md` and the
+current verified release evidence for a separately approved, image-pinned
+production procedure that preserves runtime configuration and neighboring apps.
+Do not replay historical one-use release kits or rebuild floating dependencies
+and treat that image as an approved production artifact.
 
 The Elastic Beanstalk instructions below are historical recovery context; use
 that platform only if the user explicitly requests restoring it.
@@ -322,6 +328,17 @@ A transaction is excluded from spending totals if **any** of its tags has `exclu
 
 ### Source (Card) Chip Colors
 Card/issuer chips are color-coded dynamically — no hard-coded color map. `allSources` is populated (sorted alphabetically) in `renderUploadHistory()`. `sourceColor(src)` returns a color from `CAT_PALETTE` by alphabetical index. `contrastText(hex)` auto-picks black or white text for readability.
+
+### Filtered CSV export
+
+`GET /api/transactions/export.csv` shares `_transaction_filters` and stable sort
+ordering with the transaction list. Preserve all list filters, including status,
+review/type, hierarchical tags, import and card. Excluded-from-total rows remain
+in the list/export. A single server cursor supplies the snapshot; the CSV encoder
+fails above 50,000 rows or 10 MiB instead of truncating. Keep exact signed decimals
+numeric and neutralize formula prefixes only in text. Expected actor/dataset IDs,
+the client's post-response auth check and cancellation guards prevent stale
+account/filter downloads. Export requires existing read access, not edit access.
 
 ### CSS Variables (dark theme)
 `--bg`, `--bg-soft`, `--surface`, `--border`, `--text`, `--muted`, `--accent` (#6366f1 indigo), `--accent2` (#22d3ee cyan), `--red`, `--green`

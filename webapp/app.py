@@ -12,7 +12,7 @@ Auth:
 import os, re, io, json, hashlib, secrets, uuid, threading, subprocess, math
 from collections import Counter
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import List, Optional, Literal
@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 from categorization import SYSTEM_PROMPT, prepare_context, request_payload, validate_results, review
 from import_checks import reconcile_card_statement, detect_account_key, StatementMismatch
 from transaction_types import preview_candidate, sign_issue, summarize_ledger
+from transaction_export import ExportTooLarge, transactions_csv
 from dotenv import load_dotenv
 
 # ── Load .env (one level up from this file) ───────────────────────────────────────
@@ -1363,18 +1364,9 @@ def restore_categorization_correction(
     return {"ok": True, "id": tx_id}
 
 # ── Transactions ──────────────────────────────────────────────────────────────────
-@app.get("/api/transactions")
-def get_transactions(
-    page: int = Query(1, ge=1, le=1000000), per_page: int = Query(100, ge=1, le=100),
-    source: str = "", tag: List[str] = Query([]), tag_match: str = "any",
-    search: str = "", date_from: str = "", date_to: str = "",
-    import_file: str = "", card_last4: str = "",
-    sort_by: str = "date", sort_dir: str = "desc",
-    status: str = "active",
-    transaction_type: Optional[Literal["expense", "income", "transfer", "refund", "unreviewed"]] = None,
-    user: dict = Depends(get_current_user)
-):
-    uid = user["id"]
+def _transaction_filters(uid, source, tag, tag_match, search, date_from, date_to,
+                         import_file, card_last4, status, transaction_type):
+    """One filter contract for the visible list and its complete CSV export."""
     where, params = ["t.user_id = %s"], [uid]
     if status == "review":
         where.extend(["t.status = 'active'", "t.needs_review = TRUE"])
@@ -1395,11 +1387,86 @@ def get_transactions(
     if card_last4:
         where.append("t.import_file IN (SELECT filename FROM uploaded_files WHERE user_id=%s AND card_last4=%s)")
         params.extend([uid, card_last4])
-    wc = " AND ".join(where)
+    return " AND ".join(where), params
 
+
+def _transaction_order(sort_by, sort_dir):
     valid_cols = {"date", "amount", "description", "source"}
     sc = "t." + (sort_by if sort_by in valid_cols else "date")
     sd = "DESC" if sort_dir == "desc" else "ASC"
+    return f"{sc} {sd}, t.id {sd}"
+
+
+TRANSACTION_EXPORT_MAX_ROWS = 50_000
+
+
+@app.get('/api/transactions/export.csv')
+def export_transactions(
+    expected_dataset_id: int = Query(..., ge=1), expected_actor_id: int = Query(..., ge=1),
+    source: str = "", tag: List[str] = Query([]), tag_match: Literal['any', 'all'] = 'any',
+    search: str = "", date_from: Optional[date] = None, date_to: Optional[date] = None,
+    import_file: str = "", card_last4: str = "",
+    sort_by: str = 'date', sort_dir: str = 'desc',
+    status: Literal['active', 'review', 'deleted', 'deduped'] = 'active',
+    transaction_type: Optional[Literal['expense', 'income', 'transfer', 'refund', 'unreviewed']] = None,
+    user: dict = Depends(get_current_user)
+):
+    if (expected_dataset_id != user['id'] or
+            expected_actor_id != user.get('auth_id', user['id'])):
+        raise HTTPException(409, 'Account changed. Reload the dashboard before exporting.')
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(422, 'Start date must be on or before end date.')
+    wc, params = _transaction_filters(user['id'], source, tag, tag_match, search,
+        date_from, date_to, import_file, card_last4, status, transaction_type)
+    order = _transaction_order(sort_by, sort_dir)
+    try:
+        with db() as conn:
+            # One SELECT supplies a consistent snapshot across every page. A server
+            # cursor bounds fetched rows; the encoder bounds the final file size.
+            with conn.cursor(name='transaction_csv_export',
+                             cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.itersize = 1000
+                cur.execute(f"""
+                    SELECT t.id, t.date::text, t.description, t.amount, t.source,
+                           t.status, t.transaction_type, t.needs_review, t.import_file,
+                           pt.name AS primary_tag,
+                           (SELECT MIN(u.card_last4) FROM uploaded_files u
+                            WHERE u.user_id = t.user_id AND u.filename = t.import_file
+                            HAVING COUNT(DISTINCT u.card_last4) = 1) AS card_last4,
+                           ARRAY(SELECT tg.name FROM transaction_tags tt
+                                 JOIN tags tg ON tg.id = tt.tag_id
+                                 WHERE tt.transaction_id = t.id ORDER BY tg.name) AS tags
+                    FROM transactions t
+                    LEFT JOIN tags pt ON pt.id = t.primary_tag_id AND pt.user_id = t.user_id
+                    WHERE {wc}
+                    ORDER BY {order}
+                    LIMIT %s
+                """, params + [TRANSACTION_EXPORT_MAX_ROWS + 1])
+                content, count = transactions_csv(cur, max_rows=TRANSACTION_EXPORT_MAX_ROWS)
+    except ExportTooLarge as exc:
+        raise HTTPException(413, str(exc)) from exc
+    return Response(content, media_type='text/csv', headers={
+        'Content-Disposition': 'attachment; filename="spending-filtered-transactions.csv"',
+        'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+        'X-Export-Row-Count': str(count),
+    })
+
+
+@app.get("/api/transactions")
+def get_transactions(
+    page: int = Query(1, ge=1, le=1000000), per_page: int = Query(100, ge=1, le=100),
+    source: str = "", tag: List[str] = Query([]), tag_match: str = "any",
+    search: str = "", date_from: str = "", date_to: str = "",
+    import_file: str = "", card_last4: str = "",
+    sort_by: str = "date", sort_dir: str = "desc",
+    status: str = "active",
+    transaction_type: Optional[Literal["expense", "income", "transfer", "refund", "unreviewed"]] = None,
+    user: dict = Depends(get_current_user)
+):
+    wc, params = _transaction_filters(user['id'], source, tag, tag_match, search,
+        date_from, date_to, import_file, card_last4, status, transaction_type)
+    order = _transaction_order(sort_by, sort_dir)
+
     offset = (page - 1) * per_page
 
     with db() as conn:
@@ -1437,7 +1504,7 @@ def get_transactions(
                 LEFT JOIN tags pt ON pt.id = t.primary_tag_id
                 LEFT JOIN tags st ON st.id = t.suggested_tag_id AND st.user_id = t.user_id
                 WHERE {wc}
-                ORDER BY {sc} {sd}, t.id {sd}
+                ORDER BY {order}
                 LIMIT %s OFFSET %s
             """, params + [per_page, offset])
             rows = [dict(r) for r in cur.fetchall()]

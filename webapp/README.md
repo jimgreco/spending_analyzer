@@ -237,6 +237,32 @@ range. Previous-period errors preserve current totals, and stale responses canno
 overwrite a newer filter selection. Synthetic date, filter, request-order and
 error/retry checks run through `test_period_comparison.py` in three time zones.
 
+## Export matching transactions
+
+**Export matches CSV** downloads every transaction matching the list's current
+filters, status and sort order, including matches on other pages. This differs
+from the selection bar's current-page export. It includes transactions excluded
+from spending totals, because it follows the transaction list rather than the
+Total Spent card. The file includes signed amounts, categories, tags, reviewed
+type, status, import filename and verified card suffix when unambiguous.
+
+The read-only `/api/transactions/export.csv` endpoint uses one database snapshot
+and the list's shared filter contract. It accepts `expected_dataset_id` and
+`expected_actor_id` to reject an export begun from a stale account view. Owners,
+editors and existing viewers can export only the dataset they can already read.
+No amounts, classifications, histories or schema are changed. A result exceeding
+50,000 rows or 10 MiB fails with HTTP 413 and asks for narrower filters; it never
+silently downloads a partial file. Empty results have a CSV header only.
+
+The client supports cancel and retry, suppresses duplicate clicks, and discards
+responses after filter, sort or account changes. It rechecks authentication
+before download to catch account changes in another tab. Text fields are quoted
+and spreadsheet formula prefixes are escaped; signed decimal amounts stay
+numeric. The existing date comparison and selected-row export are unchanged.
+
+Synthetic coverage is in `test_transaction_export.py`,
+`test_transaction_export_api.py` and `check_transaction_export.js`.
+
 ## Verification
 
 From the repository root, run the synthetic unit checks (no database or live API):
@@ -261,10 +287,13 @@ SPENDING_TEST_DATABASE_URL='postgresql://user@localhost/spending_test' \
 
 This app is deployed as part of a consolidated Docker environment on EC2.
 
-### Auto-Deployment
-Pushes to the `main` branch automatically deploy to the EC2 instance via GitHub Actions.
-- **Workflow**: `.github/workflows/deploy.yml`
-- **Mechanism**: `rsync` syncs the `webapp/` folder → `docker-compose up -d --build spending`.
+### Validation and activation
+Pushes to `main` run `.github/workflows/ci.yml` for synthetic database tests and
+an ARM64 image build. The retired `deploy.yml` does not deploy and must stay
+disabled. Production activation uses the separately approved, image-pinned
+procedure described in [release controls](../docs/release-runtime-cutover.md),
+with current preservation and rollback evidence. Do not replay old release kits
+or use a fresh floating-dependency image as the approved artifact.
 
 ## Usage
 
