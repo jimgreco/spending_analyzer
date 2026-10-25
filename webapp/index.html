@@ -798,6 +798,11 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
 
   <!-- Transaction table -->
   <div class="export-matches">
+    <label for="page-size">Rows per page
+      <select id="page-size" class="btn" onchange="changePageSize(this.value)">
+        <option value="25">25</option><option value="50">50</option><option value="100" selected>100</option>
+      </select>
+    </label>
     <button class="btn" id="export-matches-btn" onclick="exportMatchingCsv()" aria-describedby="export-matches-help">Export matches CSV</button>
     <button class="btn" id="export-matches-cancel" onclick="cancelMatchingExport()" hidden>Cancel export</button>
     <p class="help" id="export-matches-help">Every matching transaction across all pages, in the current sort order. Includes rows excluded from spending totals. Up to 50,000 transactions.</p>
@@ -1021,6 +1026,7 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
 let currentPage  = 1;
+let pageSize = 100;
 let totalPages   = 1;
 let sortCol      = 'date';
 let sortDir      = 'desc';
@@ -1346,7 +1352,7 @@ async function loadTransactions() {
   const request = ++txRequest;
   try {
     const data = await api('/api/transactions?' + buildFilterParams({
-      page: currentPage, per_page: 100,
+      page: currentPage, per_page: pageSize,
       sort_by: sortCol, sort_dir: sortDir
     }));
     if (request !== txRequest) return;
@@ -2003,7 +2009,7 @@ function moveReview(direction) {
   if (next >= 0 && next < currentTxs.length) {
     reviewIndex = next;
     reviewFocusId = currentTxs[next].id;
-    renderReviewQueue({transactions:currentTxs,total:reviewTotal,page:currentPage,per_page:100});
+    renderReviewQueue({transactions:currentTxs,total:reviewTotal,page:currentPage,per_page:pageSize});
   } else if ((direction > 0 && currentPage < totalPages) || (direction < 0 && currentPage > 1)) {
     currentPage += direction;
     reviewIndex = direction > 0 ? 0 : 99;
@@ -2942,6 +2948,17 @@ function sortBy(col) {
   const th = document.querySelectorAll('thead th')[colMap[col]];
   if (th) th.classList.add(sortDir);
   currentPage = 1;
+  clearSelection();
+  loadTransactions();
+}
+
+function changePageSize(value) {
+  const size = Number(value);
+  if (![25, 50, 100].includes(size) || size === pageSize) return;
+  pageSize = size;
+  currentPage = 1;
+  reviewFocusId = null;
+  reviewIndex = 0;
   clearSelection();
   loadTransactions();
 }
