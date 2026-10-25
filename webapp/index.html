@@ -85,6 +85,7 @@ a{color:var(--accent2);text-decoration:none}
 .filter-bar input[type=search],.filter-bar input[type=text]{flex:1;min-width:200px}
 .filter-bar input[type=date]{flex:none;width:138px;color-scheme:dark}
 .filter-row{width:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.filter-row small,.filter-row [role=status]{flex-basis:100%;color:var(--muted)}
 .filter-row-label{font-size:.78rem;color:var(--muted);white-space:nowrap}
 .btn{background:var(--border);border:none;color:var(--muted);border-radius:8px;
   padding:7px 14px;font-size:.875rem;cursor:pointer;transition:all .15s}
@@ -769,6 +770,15 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
       <button class="preset-btn" id="preset-3months" aria-pressed="false"    onclick="setDatePreset('3months')">Last 3 Mo</button>
       <button class="preset-btn" id="preset-year" aria-pressed="false"       onclick="setDatePreset('year')">Last Year</button>
     </div>
+    <div class="filter-row">
+      <label for="saved-view">Saved filters</label>
+      <select id="saved-view" onchange="applySavedView(this.value)"><option value="">Choose a view…</option></select>
+      <input id="saved-view-name" type="text" maxlength="60" placeholder="Name this view" aria-label="Saved filter name">
+      <button class="btn" onclick="saveFilterView()">Save / update</button>
+      <button class="btn" id="delete-saved-view" onclick="deleteFilterView()" disabled>Delete view</button>
+      <small>On this device for your account. Date shortcuts stay relative; status and sort stay unchanged.</small>
+      <span id="saved-view-status" role="status" aria-live="polite"></span>
+    </div>
   </div>
 
   <div id="dashboard-error" class="load-error" role="alert" hidden><span id="dashboard-error-text"></span><button class="btn" onclick="refreshAll()">Retry</button></div>
@@ -1109,6 +1119,7 @@ let currentUser = null;
 function showUserHeader(user) {
   cancelMatchingExport('Account refreshed. Start the export again.');
   currentUser = user;
+  renderSavedViews();
   document.body.dataset.role = user.role;
   const header = document.getElementById('user-header');
   header.classList.add('visible');
@@ -1192,6 +1203,93 @@ function buildFilterParams(extra = {}) {
   tagFilters.forEach(t => p.append('tag', t));
   if (tagFilters.size > 1) p.set('tag_match', tagMatchMode);
   return p.toString();
+}
+
+// Saved filter views contain no transaction data and never apply automatically.
+const savedFilterFields = ['search', 'filter-source', 'filter-card', 'filter-import', 'filter-type', 'filter-date-from', 'filter-date-to'];
+const savedDatePresets = ['all', '7days', '30days', 'month', 'ytd', 'last-month', '3months', 'year'];
+function savedViewsKey() {
+  return currentUser?.email ? 'spending.filterViews.v1:' + currentUser.email.trim().toLowerCase() : null;
+}
+function savedViewStatus(message) { document.getElementById('saved-view-status').textContent = message; }
+function readSavedViews() {
+  const key = savedViewsKey();
+  if (!key) return [];
+  const data = JSON.parse(localStorage.getItem(key) || '[]');
+  if (!Array.isArray(data)) throw new Error('Invalid saved views');
+  return data.filter(view => view && typeof view.name === 'string' && view.name.trim() && view.name.length <= 60 &&
+    view.fields && savedFilterFields.every(id => typeof view.fields[id] === 'string' && view.fields[id].length <= 500) &&
+    Array.isArray(view.tags) && view.tags.length <= 100 && view.tags.every(tag => typeof tag === 'string' && tag.length <= 500) &&
+    ['any', 'all'].includes(view.tagMatch) && (view.preset === null || savedDatePresets.includes(view.preset))).slice(0, 12);
+}
+function renderSavedViews(selected = '') {
+  savedViewStatus('');
+  const select = document.getElementById('saved-view');
+  select.innerHTML = '<option value="">Choose a view…</option>';
+  document.getElementById('saved-view-name').value = selected;
+  document.getElementById('delete-saved-view').disabled = true;
+  try {
+    for (const view of readSavedViews()) {
+      const option = document.createElement('option');
+      option.value = option.textContent = view.name;
+      select.appendChild(option);
+    }
+    select.value = selected;
+    document.getElementById('delete-saved-view').disabled = !select.value;
+  } catch { savedViewStatus('Saved filters are unavailable in this browser. Current filters still work.'); }
+}
+function saveFilterView() {
+  const key = savedViewsKey();
+  const name = document.getElementById('saved-view-name').value.trim();
+  if (!key || !name) { savedViewStatus('Enter a name for this filter view.'); return; }
+  if (name.length > 60) { savedViewStatus('Use a name with 60 characters or fewer.'); return; }
+  try {
+    const views = readSavedViews();
+    const index = views.findIndex(view => view.name === name);
+    if (index < 0 && views.length >= 12) { savedViewStatus('Delete a saved view before adding another (12 maximum).'); return; }
+    const view = {name, fields: Object.fromEntries(savedFilterFields.map(id => [id, document.getElementById(id).value])),
+      tags: [...tagFilters], tagMatch: tagMatchMode, preset: activePreset};
+    if (index < 0) views.push(view); else views[index] = view;
+    localStorage.setItem(key, JSON.stringify(views));
+    renderSavedViews(name);
+    savedViewStatus(index < 0 ? 'Filter view saved.' : 'Filter view updated.');
+  } catch { savedViewStatus('Could not save filters on this device. Your current filters are unchanged.'); }
+}
+function retainFilterChoice(select, value) {
+  if (value && ![...select.options].some(option => option.value === value)) {
+    const option = document.createElement('option');
+    option.value = value; option.textContent = value + ' (saved filter)';
+    select.appendChild(option);
+  }
+  select.value = value;
+}
+function applySavedView(name) {
+  if (!name) { document.getElementById('delete-saved-view').disabled = true; return; }
+  try {
+    const view = readSavedViews().find(view => view.name === name);
+    if (!view) return;
+    savedFilterFields.forEach(id => {
+      const input = document.getElementById(id);
+      if (input.tagName === 'SELECT') retainFilterChoice(input, view.fields[id]);
+      else input.value = view.fields[id];
+    });
+    tagFilters = new Set(view.tags); tagMatchMode = view.tagMatch; monthFilter = '';
+    updateFilterBadges();
+    if (view.preset !== null) setDatePreset(view.preset);
+    else { highlightPreset(null); applyFilters(); }
+    document.getElementById('saved-view-name').value = view.name;
+    document.getElementById('delete-saved-view').disabled = false;
+    savedViewStatus('Saved filters applied.');
+  } catch { savedViewStatus('Could not open this saved view.'); }
+}
+function deleteFilterView() {
+  const key = savedViewsKey();
+  const name = document.getElementById('saved-view').value;
+  if (!key || !name) return;
+  try {
+    localStorage.setItem(key, JSON.stringify(readSavedViews().filter(view => view.name !== name)));
+    renderSavedViews(); savedViewStatus('Saved view deleted. Current filters are unchanged.');
+  } catch { savedViewStatus('Could not delete the saved view.'); }
 }
 
 // ── Status view ────────────────────────────────────────────────────────────────
@@ -2140,6 +2238,10 @@ function renderUploadHistory(uploads, apiData) {
     filenames.map(f =>
       `<option ${f === curImport ? 'selected' : ''}>${escHtml(f)}</option>`
     ).join('');
+
+  retainFilterChoice(sourceSel, curSource);
+  retainFilterChoice(cardSel, curCard);
+  retainFilterChoice(importSel, curImport);
 
   const el = document.getElementById('upload-history');
   if (!uploads || !uploads.length) { el.innerHTML = ''; return; }
