@@ -183,6 +183,9 @@ tbody tr.selected{background:rgba(99,102,241,.1) !important}
 .bulk-summary{display:flex;flex-direction:column;gap:2px}
 #bulk-count{font-weight:600;font-size:.875rem;color:var(--accent2);min-width:110px}
 #bulk-total{font-size:.8rem;color:var(--muted)}
+.bulk-summary-open{align-self:flex-start;background:none;border:none;color:var(--accent2);
+  font:inherit;font-size:.75rem;padding:3px 0;text-decoration:underline;cursor:pointer}
+.bulk-summary-open:disabled{opacity:.5;cursor:default}
 #bulk-tag-input{background:var(--bg);border:1px solid var(--border);color:var(--text);
   border-radius:8px;padding:6px 10px;font-size:.875rem;outline:none;width:140px}
 #bulk-tag-input:focus{border-color:var(--accent)}
@@ -520,6 +523,12 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 .category-dialog .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .category-dialog fieldset{border:1px solid var(--border);border-radius:6px;margin:16px 0;padding:0 14px 12px}
 .category-dialog .help{color:var(--muted);font-size:.85rem}
+.selection-account{border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px}
+.selection-account h3{font-size:1rem;margin:0;overflow-wrap:anywhere}
+.selection-account p{margin:4px 0 12px}
+.selection-account dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin:0}
+.selection-account dt{font-size:.78rem;color:var(--muted)}
+.selection-account dd{font-variant-numeric:tabular-nums;font-weight:600;margin:3px 0 0;overflow-wrap:anywhere}
 .category-review{display:block;margin-top:6px;max-width:300px;white-space:normal;color:#f59e0b;font-size:.78rem}
 .category-edit{font-size:.75rem;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);padding:3px 7px;cursor:pointer}
 .workflow-nav{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
@@ -876,6 +885,7 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
     <div class="bulk-summary" role="status" aria-live="polite" aria-atomic="true">
       <span id="bulk-count">0 selected on this page</span>
       <span id="bulk-total">Selected amount: $0.00</span>
+      <button class="bulk-summary-open" id="selection-summary-btn" onclick="openSelectionSummary()">Break down by account</button>
     </div>
     <button class="bulk-apply" onclick="exportSelectedCsv()" title="Export selected transactions on this page">Export CSV</button>
     <button class="bulk-delete" id="bulk-delete-btn" onclick="deleteSelected()">🗑 Delete</button>
@@ -890,6 +900,14 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
     <button class="bulk-apply" style="background:rgba(99,102,241,.7)" onclick="applyBulkTag('set-primary')">Set Primary</button>
   </div>
 </div>
+
+<dialog id="selection-summary-dialog" class="category-dialog" aria-labelledby="selection-summary-title" aria-describedby="selection-summary-help">
+  <h2 id="selection-summary-title" tabindex="-1" autofocus>Selected transactions by account</h2>
+  <p id="selection-summary-overview" role="status" aria-live="polite"></p>
+  <p class="help" id="selection-summary-help">Only selected transactions on this page. Amounts use their current signs and include any rows excluded from spending totals. Positive and negative amounts do not determine transaction type.</p>
+  <div id="selection-summary-accounts"></div>
+  <div class="dialog-actions"><button class="btn" onclick="closeSelectionSummary()">Close</button></div>
+</dialog>
 
 <!-- Invite / Access modal -->
 <div id="invite-modal-overlay" onclick="if(event.target===this)closeInviteModal()">
@@ -1051,6 +1069,7 @@ let childTags       = new Set(); // all tags that are a child of something
 let expandedParents = new Set(); // which parent chips are currently expanded
 let monthFilter  = '';        // month filter set by clicking bar chart
 let selectedIds  = new Set();
+let selectionSummaryUser = null;
 let viewStatus   = 'active';  // 'active' | 'deleted' | 'deduped'
 
 let allSources = [];   // sorted alphabetically; populated in renderUploadHistory
@@ -1118,6 +1137,8 @@ let currentUser = null;
 
 function showUserHeader(user) {
   cancelMatchingExport('Account refreshed. Start the export again.');
+  closeSelectionSummary();
+  if (!sameExportAccount(currentUser, user) || user.role === 'read') clearSelection();
   currentUser = user;
   renderSavedViews();
   document.body.dataset.role = user.role;
@@ -1128,6 +1149,7 @@ function showUserHeader(user) {
   document.getElementById('access-nav-btn').hidden = !user.is_owner;
   document.querySelector('[data-destination=import]').hidden = user.role === 'read';
   document.querySelectorAll('#bulk-bar button,#bulk-bar input').forEach(el => { el.disabled = user.role === 'read'; });
+  document.getElementById('selection-summary-btn').disabled = !canSummarizeSelection();
   document.getElementById('bulk-bar').hidden = user.role === 'read';
   document.getElementById('tag-new-input').disabled = user.role === 'read';
   document.getElementById('save-guide-btn').hidden = user.role === 'read';
@@ -1164,6 +1186,7 @@ document.addEventListener('click', e => {
 
 async function logout() {
   cancelMatchingExport('Export canceled.');
+  closeSelectionSummary();
   await fetch('/auth/logout', { method: 'POST' });
   window.location.reload();
 }
@@ -1448,12 +1471,13 @@ async function loadAnalytics() {
 
 async function loadTransactions() {
   const request = ++txRequest;
+  const user = currentUser;
   try {
     const data = await api('/api/transactions?' + buildFilterParams({
       page: currentPage, per_page: pageSize,
       sort_by: sortCol, sort_dir: sortDir
     }));
-    if (request !== txRequest) return;
+    if (request !== txRequest || user !== currentUser) return;
     if (currentPage > data.pages) { currentPage = data.pages; return loadTransactions(); }
     renderTable(data.transactions);
     renderPagination(data.page, data.pages, data.total);
@@ -1858,6 +1882,7 @@ function renderCharts(s) {
 // ── Render: table ──────────────────────────────────────────────────────────────
 function renderTable(txs) {
   currentTxs = txs || [];
+  selectionSummaryUser = currentUser;
   const visibleIds = new Set(currentTxs.map(tx => tx.id));
   for (const id of selectedIds) if (!visibleIds.has(id)) selectedIds.delete(id);
   updateBulkBar();
@@ -3401,6 +3426,61 @@ function updateBulkBar() {
     total + (selectedIds.has(tx.id) ? Math.round(Number(tx.amount) * 100) : 0), 0);
   document.getElementById('bulk-total').textContent = `Selected amount: ${displayAmount(cents / 100)}`;
   bar.classList.toggle('visible', n > 0);
+  document.getElementById('selection-summary-btn').disabled = !canSummarizeSelection();
+  if (document.getElementById('selection-summary-dialog').open) renderSelectionSummary();
+}
+
+function canSummarizeSelection() {
+  return !!currentUser && currentUser.role !== 'read' && selectionSummaryUser === currentUser &&
+    currentTxs.some(tx => selectedIds.has(tx.id));
+}
+
+function selectedAccountGroups() {
+  const groups = new Map();
+  for (const tx of currentTxs) {
+    if (!selectedIds.has(tx.id)) continue;
+    const source = String(tx.source || '');
+    const card = String(tx.card_last4 || '');
+    const key = JSON.stringify([source, card]);
+    if (!groups.has(key)) groups.set(key, {source, card, count:0, positive:0, negative:0});
+    const group = groups.get(key);
+    const cents = Math.round(Number(tx.amount) * 100);
+    group.count++;
+    group.positive += Math.max(cents, 0);
+    group.negative += Math.min(cents, 0);
+  }
+  return [...groups.values()].sort((a, b) =>
+    a.source.localeCompare(b.source) || a.card.localeCompare(b.card));
+}
+
+function closeSelectionSummary() {
+  const dialog = document.getElementById('selection-summary-dialog');
+  if (dialog.open) dialog.close();
+  document.getElementById('selection-summary-overview').textContent = '';
+  document.getElementById('selection-summary-accounts').textContent = '';
+}
+
+function renderSelectionSummary() {
+  if (!canSummarizeSelection()) { closeSelectionSummary(); return; }
+  const groups = selectedAccountGroups();
+  const count = groups.reduce((n, group) => n + group.count, 0);
+  const net = groups.reduce((n, group) => n + group.positive + group.negative, 0);
+  document.getElementById('selection-summary-overview').textContent =
+    `${count} transaction${count === 1 ? '' : 's'} · ${groups.length} account${groups.length === 1 ? '' : 's'} · Net ${displayAmount(net / 100)}`;
+  document.getElementById('selection-summary-accounts').innerHTML = groups.map(group => `
+    <section class="selection-account">
+      <h3>${escHtml(group.source || 'Unknown account')}${group.card ? ` · •••• ${escHtml(group.card)}` : ''}</h3>
+      <p class="help">${group.count} transaction${group.count === 1 ? '' : 's'}</p>
+      <dl>${[['Positive amounts', group.positive], ['Negative amounts', group.negative], ['Net amount', group.positive + group.negative]]
+        .map(([label, cents]) => `<div><dt>${label}</dt><dd>${displayAmount(cents / 100)}</dd></div>`).join('')}</dl>
+    </section>`).join('');
+}
+
+function openSelectionSummary() {
+  if (!canSummarizeSelection()) return;
+  renderSelectionSummary();
+  const dialog = document.getElementById('selection-summary-dialog');
+  if (!dialog.open) dialog.showModal();
 }
 
 // Quote text for CSV and keep spreadsheet formulas inert when opening exports.

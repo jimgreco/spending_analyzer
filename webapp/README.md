@@ -265,6 +265,16 @@ Synthetic coverage is in `test_transaction_export.py`,
 
 ## Verification
 
+The selection bar's **Break down by account** opens a summary of selected rows
+on the current page, grouped by source and card last four digits. Each account
+shows a row count, positive amounts, negative amounts, and signed net using the
+current corrected amounts. These are selected amounts, including rows excluded
+from spending totals and rows in the current status view; they do not infer
+transaction types. Closing the dialog keeps the selection and CSV export intact.
+Refreshing rows updates an open summary; clearing selection or changing account
+access closes it. Selection remains available to editors and owners only.
+Synthetic browser behavior checks are in `check_selection_accounts.js`.
+
 From the repository root, run the synthetic unit checks (no database or live API):
 
 ```bash
