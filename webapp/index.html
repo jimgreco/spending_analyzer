@@ -130,6 +130,11 @@ tbody tr{border-bottom:1px solid var(--border);transition:background .1s}
 tbody tr:hover{background:rgba(255,255,255,.02)}
 td{padding:9px 12px}
 td.amount{font-variant-numeric:tabular-nums;text-align:right;font-weight:600}
+.transaction-details-open{background:none;border:0;padding:0;color:var(--text);font:inherit;
+  text-align:left;text-decoration:underline;text-decoration-color:var(--muted);
+  text-underline-offset:3px;cursor:pointer;overflow-wrap:anywhere}
+.transaction-details-open:hover,.transaction-details-open:focus-visible{color:var(--accent2)}
+.transaction-details-open:disabled{cursor:wait;text-decoration:none}
 .amount-action{display:block;margin:3px 0 0 auto;padding:1px 5px;background:none;
   border:1px solid var(--border);border-radius:5px;color:var(--muted);font-size:.7rem;cursor:pointer}
 .amount-action:hover,.amount-action:focus-visible{border-color:var(--accent);color:var(--accent)}
@@ -523,6 +528,17 @@ td.import-file{color:var(--muted);font-size:.78rem;max-width:140px;
 .category-dialog .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .category-dialog fieldset{border:1px solid var(--border);border-radius:6px;margin:16px 0;padding:0 14px 12px}
 .category-dialog .help{color:var(--muted);font-size:.85rem}
+.transaction-details-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.transaction-details-heading h2{min-width:0}
+.transaction-details-heading button{flex:none;font-size:1.25rem;padding:2px 10px}
+.transaction-description{font-weight:600;white-space:pre-wrap;overflow-wrap:anywhere}
+.transaction-metadata{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:20px 0}
+.transaction-metadata .wide{grid-column:1/-1}
+.transaction-metadata dt{color:var(--muted);font-size:.78rem;margin-bottom:4px}
+.transaction-metadata dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.transaction-review{border:1px solid var(--border);border-radius:8px;padding:12px;overflow-wrap:anywhere}
+.transaction-review h3{font-size:.9rem;margin:0 0 8px}
+.transaction-review p{margin:6px 0;white-space:pre-wrap}
 .selection-account{border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px}
 .selection-account h3{font-size:1rem;margin:0;overflow-wrap:anywhere}
 .selection-account p{margin:4px 0 12px}
@@ -901,6 +917,15 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
   </div>
 </div>
 
+<dialog id="transaction-details-dialog" class="category-dialog" aria-labelledby="transaction-details-title">
+  <div class="transaction-details-heading">
+    <h2 id="transaction-details-title" tabindex="-1" autofocus>Transaction details</h2>
+    <button class="btn" aria-label="Close transaction details" onclick="closeTransactionDetails()">×</button>
+  </div>
+  <div id="transaction-details-content"></div>
+  <div class="dialog-actions"><button class="btn" onclick="closeTransactionDetails()">Close</button></div>
+</dialog>
+
 <dialog id="selection-summary-dialog" class="category-dialog" aria-labelledby="selection-summary-title" aria-describedby="selection-summary-help">
   <h2 id="selection-summary-title" tabindex="-1" autofocus>Selected transactions by account</h2>
   <p id="selection-summary-overview" role="status" aria-live="polite"></p>
@@ -1070,6 +1095,7 @@ let expandedParents = new Set(); // which parent chips are currently expanded
 let monthFilter  = '';        // month filter set by clicking bar chart
 let selectedIds  = new Set();
 let selectionSummaryUser = null;
+let transactionDetailsUser = null;
 let viewStatus   = 'active';  // 'active' | 'deleted' | 'deduped'
 
 let allSources = [];   // sorted alphabetically; populated in renderUploadHistory
@@ -1137,6 +1163,7 @@ let currentUser = null;
 
 function showUserHeader(user) {
   cancelMatchingExport('Account refreshed. Start the export again.');
+  invalidateTransactionDetails();
   closeSelectionSummary();
   if (!sameExportAccount(currentUser, user) || user.role === 'read') clearSelection();
   currentUser = user;
@@ -1186,6 +1213,7 @@ document.addEventListener('click', e => {
 
 async function logout() {
   cancelMatchingExport('Export canceled.');
+  invalidateTransactionDetails();
   closeSelectionSummary();
   await fetch('/auth/logout', { method: 'POST' });
   window.location.reload();
@@ -1470,6 +1498,7 @@ async function loadAnalytics() {
 }
 
 async function loadTransactions() {
+  invalidateTransactionDetails();
   const request = ++txRequest;
   const user = currentUser;
   try {
@@ -1881,7 +1910,9 @@ function renderCharts(s) {
 
 // ── Render: table ──────────────────────────────────────────────────────────────
 function renderTable(txs) {
+  closeTransactionDetails();
   currentTxs = txs || [];
+  transactionDetailsUser = currentUser;
   selectionSummaryUser = currentUser;
   const visibleIds = new Set(currentTxs.map(tx => tx.id));
   for (const id of selectedIds) if (!visibleIds.has(id)) selectedIds.delete(id);
@@ -1927,7 +1958,7 @@ function renderTable(txs) {
         ${Number(t.original_amount) !== Number(t.amount) ? '<span class="amount-corrected">Sign corrected</span>' : ''}
         <button class="amount-action" onclick="openSignDialog(${t.id})" aria-label="Review sign and history for ${escHtml(t.description)}">Sign…</button>
       </td>
-      <td class="description-cell">${escHtml(t.description)}<div>${typeCell(t)}</div></td>
+      <td class="description-cell"><button class="transaction-details-open" onclick="openTransactionDetails(${t.id})" aria-label="View details for ${escHtml(t.description)}">${escHtml(t.description)}</button><div>${typeCell(t)}</div></td>
       <td>${tagsCell(t)}</td>
       <td style="font-size:.8rem;white-space:nowrap">${t.source ? sourceTag(t.source) : '<span style="color:var(--border)">—</span>'}</td>
       <td class="import-file" title="${escHtml(t.import_file||'')}">${escHtml(fname)}</td>
@@ -1942,6 +1973,59 @@ function renderTable(txs) {
   selectAllCb.checked = allChecked;
   selectAllCb.indeterminate = someChecked && !allChecked;
 }
+
+// Details use only the current authenticated page; no fetch or mutation occurs.
+function closeTransactionDetails() {
+  const dialog = document.getElementById('transaction-details-dialog');
+  if (dialog.open) dialog.close();
+  document.getElementById('transaction-details-content').textContent = '';
+}
+
+function invalidateTransactionDetails() {
+  closeTransactionDetails();
+  transactionDetailsUser = null;
+  document.querySelectorAll('.transaction-details-open').forEach(button => { button.disabled = true; });
+}
+
+function openTransactionDetails(id) {
+  if (!currentUser || transactionDetailsUser !== currentUser) return;
+  const tx = currentTxs.find(row => row.id === id);
+  if (!tx) return;
+  const status = {active:'Active',deleted:'Deleted',deduped:'Duplicate'}[tx.status] || 'Active';
+  const type = {expense:'Expense',refund:'Refund',income:'Income',transfer:'Transfer'}[tx.transaction_type] || 'Unreviewed';
+  const fields = [
+    ['Date', tx.date || 'Not provided'], ['Signed amount', displayAmount(tx.amount)],
+    ['Account source', tx.source || 'Not provided', true],
+    ['Import filename', tx.import_file || 'Not provided', true],
+    ['Primary category', tx.primary_tag || 'Unassigned'], ['Transaction type', type],
+    ['Inherited categories', (tx.primary_tag_implicit || []).join(', ') || 'None', true],
+    ['Additional tags', (tx.tags || []).join(', ') || 'None', true],
+    ['Status', status],
+  ];
+  if (tx.correction_note) fields.push(['Category note', tx.correction_note, true]);
+  const totalNote = ['deleted','deduped'].includes(tx.status)
+    ? 'This row is not counted in Total Spent because it is ' + (tx.status === 'deleted' ? 'deleted.' : 'a duplicate.')
+    : 'Total Spent excludes rows whose primary category or an inherited category is marked excluded. Those rows still appear in the transaction list.';
+  document.getElementById('transaction-details-content').innerHTML = `
+    <p class="transaction-description">${escHtml(tx.description || 'No description')}</p>
+    <dl class="transaction-metadata">${fields.map(([label,value,wide]) =>
+      `<div${wide ? ' class="wide"' : ''}><dt>${label}</dt><dd>${escHtml(String(value))}</dd></div>`).join('')}</dl>
+    ${tx.needs_review ? `<section class="transaction-review" aria-label="Category review">
+      <h3>Needs category review</h3>
+      <p>Suggested category: ${escHtml(tx.suggested_tag || 'None')}</p>
+      <p>${escHtml(tx.categorization_reason || 'No explanation was supplied.')}</p>
+    </section>` : ''}
+    <p class="help">The amount uses its current sign. Its sign alone does not determine transaction type.${Number(tx.original_amount) !== Number(tx.amount) && tx.original_amount != null ? ' Its sign has been corrected.' : ''}</p>
+    <p class="help">${totalNote}</p>`;
+  const dialog = document.getElementById('transaction-details-dialog');
+  if (!dialog.open) dialog.showModal();
+}
+
+document.getElementById('transaction-details-dialog').addEventListener('close', () => {
+  // A close event can arrive after another row has already been opened.
+  if (!document.getElementById('transaction-details-dialog').open)
+    document.getElementById('transaction-details-content').textContent = '';
+});
 
 // ── Per-transaction sign correction ──────────────────────────────────────────
 let amountPreviewState = null;
@@ -2679,6 +2763,7 @@ function closeRulesPage() {
 }
 
 function applyPageFromHash() {
+  closeTransactionDetails();
   const requested = location.hash === '#category-rules' ? 'rules' : (location.hash.slice(1) || 'analyze');
   const destination = (requested === 'import' && currentUser?.role === 'read') ||
     (requested === 'access' && !currentUser?.is_owner) ? 'analyze' : requested;

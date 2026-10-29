@@ -275,6 +275,25 @@ Refreshing rows updates an open summary; clearing selection or changing account
 access closes it. Selection remains available to editors and owners only.
 Synthetic browser behavior checks are in `check_selection_accounts.js`.
 
+### Transaction details
+
+Select a transaction description to open a read-only details dialog. Editors,
+owners and viewers can inspect the full description, exact import filename,
+account source, current signed amount, categories, type, status and review context
+without changing the row. Account source is a label, not an inferred card number;
+the existing transaction list does not supply card last-four digits. Suggestions
+are identified separately from the assigned primary category. The dialog explains
+that sign alone does not establish transaction type and that category exclusions
+can keep a visible row out of Total Spent.
+
+Details use only the current authenticated page. Starting a transaction reload,
+changing account access, signing out or navigating away closes the dialog and
+clears its content. A failed reload leaves stale details unavailable until a new
+page loads. Close and Escape preserve selection and restore focus to the trigger.
+Synthetic behavior checks are in `check_transaction_details.js`, run by
+`test_transaction_details.py`; no database or live financial records are needed.
+
+
 From the repository root, run the synthetic unit checks (no database or live API):
 
 ```bash
