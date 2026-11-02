@@ -350,3 +350,7 @@ account/filter downloads. Export requires existing read access, not edit access.
 - Existing databases require reviewed `--adopt-existing` (with `--` before that flag for npm). Adoption validates structure and adds only compatibility metadata; it does not replay historical data repairs. Fresh initialization requires an empty public schema.
 - See `docs/database-runtime-access.md` for the owner/runtime split, rollout ordering and rollback limits. Do not deploy this startup change before schema adoption is approved and completed.
 - Runtime must not receive migration credentials or membership in its object-owner role. Schema changes require an updated contract, an explicit migration, reviewed grants and a compatible rollback floor.
+
+## Current takeover guide
+
+Read [the coding handoff](docs/AGENT_HANDOFF.md) for the verified source/release snapshot, setup, tests, active work and remaining gaps. Reconcile it with current Git state before editing; historical release receipts are not new authorization.
