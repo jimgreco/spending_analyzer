@@ -12,7 +12,7 @@ Auth:
 import os, re, io, json, hashlib, secrets, uuid, threading, subprocess, math
 from collections import Counter
 from decimal import Decimal
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import List, Optional, Literal
@@ -29,7 +29,7 @@ import uvicorn
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from openai import OpenAI
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Response, Depends, Query
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from categorization import SYSTEM_PROMPT, prepare_context, request_payload, validate_results, review
@@ -1667,6 +1667,36 @@ def undo_transaction_amount(tx_id: int, body: AmountUndoRequest,
                             user: dict = Depends(require_edit)):
     return _change_transaction_amount(tx_id, body, user, 'undo', body.change_id)
 
+# ── Spending exclusion and category rollup (shared SQL, alias `t` = transactions) ──
+# A transaction is excluded from spending when its primary tag, or any ancestor
+# reached through tags.group_tag_id, is one of the same user's
+# excluded_from_spending tags. Secondary tags (transaction_tags) never exclude.
+# Used by /api/stats, /api/analytics (_financial_ledger_rows) and
+# /api/weekly-summary so all three agree. Contains no bind parameters.
+SPENDING_EXCLUDED_SQL = """EXISTS (
+    WITH RECURSIVE chain AS (
+        SELECT t.primary_tag_id AS cid WHERE t.primary_tag_id IS NOT NULL
+        UNION ALL
+        SELECT tg.group_tag_id FROM tags tg JOIN chain c ON tg.id = c.cid
+        WHERE tg.group_tag_id IS NOT NULL
+    )
+    SELECT 1 FROM chain JOIN tags excluded_tag ON excluded_tag.id = chain.cid
+    WHERE excluded_tag.user_id = t.user_id AND excluded_tag.excluded_from_spending = TRUE
+)"""
+SPENDING_INCLUDED_SQL = f"NOT {SPENDING_EXCLUDED_SQL}"
+
+# Name of the top-level ancestor of the primary tag (the tag itself when it has
+# no group), or 'Untagged' when there is no primary tag.
+SPENDING_ROOT_TAG_SQL = """COALESCE((
+    WITH RECURSIVE up AS (
+        SELECT id, name, group_tag_id FROM tags WHERE id = t.primary_tag_id
+        UNION ALL
+        SELECT g.id, g.name, g.group_tag_id FROM tags g JOIN up ON g.id = up.group_tag_id
+    )
+    SELECT name FROM up WHERE group_tag_id IS NULL LIMIT 1
+), 'Untagged')"""
+
+
 @app.get("/api/stats")
 def get_stats(
     source: str = "", tag: List[str] = Query([]), tag_match: str = "any",
@@ -1685,27 +1715,11 @@ def get_stats(
     if card_last4:
         where.append("t.import_file IN (SELECT filename FROM uploaded_files WHERE user_id=%s AND card_last4=%s)")
         params.extend([uid, card_last4])
+    # Exclude transactions whose primary tag (or ancestor) is excluded
+    where.append(SPENDING_INCLUDED_SQL)
 
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Exclude transactions whose primary tag (or ancestor) is excluded
-            cur.execute(
-                "SELECT id FROM tags WHERE user_id=%s AND excluded_from_spending=TRUE",
-                (uid,)
-            )
-            excluded_tag_ids = [r["id"] for r in cur.fetchall()]
-            if excluded_tag_ids:
-                where.append("""(t.primary_tag_id IS NULL OR NOT EXISTS (
-                    WITH RECURSIVE chain AS (
-                        SELECT t.primary_tag_id AS cid
-                        UNION ALL
-                        SELECT tg.group_tag_id FROM tags tg JOIN chain c ON tg.id = c.cid
-                        WHERE tg.group_tag_id IS NOT NULL
-                    )
-                    SELECT 1 FROM chain WHERE cid = ANY(%s)
-                ))""")
-                params.append(excluded_tag_ids)
-
             wc = " AND ".join(where)
             cur.execute(f"SELECT TO_CHAR(t.date,'YYYY-MM') AS month, SUM(t.amount)::float AS total FROM transactions t WHERE {wc} GROUP BY month ORDER BY month", params)
             by_month = [dict(r) for r in cur.fetchall()]
@@ -1778,16 +1792,7 @@ def _financial_ledger_rows(uid, source="", tag=(), tag_match="any", search="",
                 SELECT t.id, t.date::text AS date, t.description, t.amount,
                        t.source, t.import_file, t.transaction_type, t.needs_review,
                        pt.name AS primary_tag,
-                       EXISTS (
-                           WITH RECURSIVE chain AS (
-                               SELECT t.primary_tag_id AS cid WHERE t.primary_tag_id IS NOT NULL
-                               UNION ALL
-                               SELECT tg.group_tag_id FROM tags tg JOIN chain c ON tg.id=c.cid
-                               WHERE tg.group_tag_id IS NOT NULL
-                           )
-                           SELECT 1 FROM chain JOIN tags excluded_tag ON excluded_tag.id=chain.cid
-                           WHERE excluded_tag.user_id=t.user_id AND excluded_tag.excluded_from_spending=TRUE
-                       ) AS excluded
+                       {SPENDING_EXCLUDED_SQL} AS excluded
                 FROM transactions t
                 LEFT JOIN tags pt ON pt.id=t.primary_tag_id AND pt.user_id=t.user_id
                 WHERE {' AND '.join(where)}
@@ -1807,6 +1812,175 @@ def get_analytics(
     rows = _financial_ledger_rows(user["id"], source, tag, tag_match, search,
                                   date_from, date_to, import_file, card_last4, transaction_type)
     return summarize_ledger(rows)
+
+
+# ── Weekly summary (read-only, bearer token) ─────────────────────────────────────
+# Contract: weekly-review docs/weekly-summary-contract.md. `data` mirrors
+# weekly-review src/sources/spending.js collectSpending exactly.
+WEEKLY_SUMMARY_WEEK_ERROR = "week must be a Monday (YYYY-MM-DD)"
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
+def require_weekly_summary_token(request: Request) -> str:
+    """Bearer-token auth used only by GET /api/weekly-summary.
+
+    Returns WEEKLY_SUMMARY_EMAIL. Every failure is a 404 so the route looks absent.
+    Deliberately ignores LOCAL_DEV and session cookies, and is never used elsewhere.
+    """
+    expected = os.getenv("WEEKLY_SUMMARY_TOKEN_SHA256", "").strip().lower()
+    email = os.getenv("WEEKLY_SUMMARY_EMAIL", "").strip()
+    if not expected or not email:
+        raise HTTPException(status_code=404)
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=404)
+    presented = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if not secrets.compare_digest(presented.encode("ascii"), expected.encode("utf-8")):
+        raise HTTPException(status_code=404)
+    return email
+
+
+def round_half_up(value, digits=0):
+    """Port of weekly-review stats.js round(): Math.round(v * 10**d) / 10**d.
+
+    Math.round picks the nearest integer and breaks .5 ties toward +infinity
+    (so -2.5 -> -2), unlike Python's round(). Integral results come back as int
+    and -0 as 0 so the JSON text matches JSON.stringify of the JS result.
+    """
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    scaled = value * (10 ** digits)
+    if not math.isfinite(scaled):
+        return scaled
+    whole = math.floor(scaled)
+    if scaled - whole >= 0.5:
+        whole += 1
+    result = whole / (10 ** digits)
+    return int(result) if result.is_integer() else result
+
+
+def _parse_week_monday(value: Optional[str]) -> Optional[date]:
+    if not value or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return None
+    try:
+        start = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return start if start.weekday() == 0 else None
+
+
+def _weekly_summary_user_id(cur, email: str) -> Optional[int]:
+    """Whose ledger to report, following get_current_user's owner rule without its
+    side effects: an invited reader/editor sees OWNER_EMAIL's data; any other
+    non-owner is unknown while OWNER_EMAIL is set."""
+    if OWNER_EMAIL and email.lower() != OWNER_EMAIL.lower():
+        cur.execute("SELECT 1 FROM invited_users WHERE lower(email) = lower(%s)", (email,))
+        if not cur.fetchone():
+            return None
+        email = OWNER_EMAIL
+    cur.execute("SELECT id FROM users WHERE lower(email) = lower(%s) ORDER BY id LIMIT 1", (email,))
+    row = cur.fetchone()
+    return row["id"] if row else None
+
+
+def _weekly_spending_total(cur, uid: int, start: date, end: date) -> dict:
+    cur.execute(f"""
+        SELECT COALESCE(SUM(t.amount), 0)::float8 AS total, COUNT(*)::int AS count
+        FROM transactions t
+        WHERE t.user_id = %s AND t.status = 'active'
+          AND t.date BETWEEN %s AND %s AND {SPENDING_INCLUDED_SQL}
+    """, (uid, start, end))
+    return cur.fetchone()
+
+
+def _collect_weekly_spending(cur, uid: int, start: date) -> dict:
+    end = start + timedelta(days=6)
+    current = _weekly_spending_total(cur, uid, start, end)
+    previous = _weekly_spending_total(cur, uid, start - timedelta(days=7), start - timedelta(days=1))
+    # 8-week baseline: the 8 weeks before this one.
+    baseline_start = start - timedelta(days=56)
+    baseline = _weekly_spending_total(cur, uid, baseline_start, start - timedelta(days=1))
+
+    cur.execute(f"""
+        SELECT {SPENDING_ROOT_TAG_SQL} AS category,
+               SUM(t.amount) FILTER (WHERE t.date >= %s)::float8 AS this_week,
+               SUM(t.amount) FILTER (WHERE t.date < %s)::float8 AS baseline
+        FROM transactions t
+        WHERE t.user_id = %s AND t.status = 'active'
+          AND t.date BETWEEN %s AND %s AND {SPENDING_INCLUDED_SQL}
+        GROUP BY 1
+        ORDER BY 1
+    """, (start, start, uid, baseline_start, end))
+    categories = cur.fetchall()
+    cur.execute(f"""
+        SELECT to_char(t.date, 'YYYY-MM-DD') AS date, t.description, t.amount::float8 AS amount,
+               {SPENDING_ROOT_TAG_SQL} AS category
+        FROM transactions t
+        WHERE t.user_id = %s AND t.status = 'active'
+          AND t.date BETWEEN %s AND %s AND {SPENDING_INCLUDED_SQL}
+        ORDER BY t.amount DESC, t.id
+        LIMIT 3
+    """, (uid, start, end))
+    largest = cur.fetchall()
+    cur.execute("""
+        SELECT COUNT(*)::int AS n FROM transactions t
+        WHERE t.user_id = %s AND t.status = 'active'
+          AND (t.needs_review OR t.transaction_type IS NULL)
+          AND t.date BETWEEN %s AND %s
+    """, (uid, start, end))
+    needs_review = cur.fetchone()["n"]
+    cur.execute("SELECT to_char(MAX(date), 'YYYY-MM-DD') AS d FROM transactions "
+                "WHERE user_id = %s AND status = 'active'", (uid,))
+    latest = cur.fetchone()["d"]
+
+    by_category = [
+        {"category": r["category"],
+         "total": round_half_up(r["this_week"] or 0, 2),
+         "weeklyBaseline": round_half_up((r["baseline"] or 0) / 8, 2)}
+        for r in categories
+    ]
+    by_category = sorted((r for r in by_category if r["total"] != 0), key=lambda r: -r["total"])
+
+    return {
+        "status": "ok",
+        "latestTransactionDate": latest,
+        "importsLagging": not latest or latest < (end - timedelta(days=2)).isoformat(),
+        "current": {"total": round_half_up(current["total"], 2), "count": current["count"]},
+        "previous": {"total": round_half_up(previous["total"], 2), "count": previous["count"]},
+        "weeklyBaseline": round_half_up(baseline["total"] / 8, 2),
+        "byCategory": by_category[:6],
+        "largest": [{"date": r["date"], "description": r["description"],
+                     "amount": round_half_up(r["amount"], 2), "category": r["category"]}
+                    for r in largest if r["amount"] > 0],
+        "needsReview": needs_review,
+        "change": {"total": round_half_up(current["total"] - previous["total"], 2)},
+    }
+
+
+@app.get("/api/weekly-summary")
+def weekly_summary(week: Optional[str] = None,
+                   email: str = Depends(require_weekly_summary_token)):
+    start = _parse_week_monday(week)
+    if start is None:
+        return JSONResponse({"error": WEEKLY_SUMMARY_WEEK_ERROR}, status_code=400, headers=_NO_STORE)
+    try:
+        with db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # One read-only snapshot: the database rejects any write here.
+                cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                uid = _weekly_summary_user_id(cur, email)
+                data = _collect_weekly_spending(cur, uid, start) if uid else {"status": "no-account"}
+    except Exception as exc:
+        print(f"[weekly-summary] {type(exc).__name__}")
+        return JSONResponse({"error": "internal"}, status_code=500, headers=_NO_STORE)
+    return JSONResponse({
+        "version": 1,
+        "app": "spending",
+        "week": {"start": start.isoformat(), "end": (start + timedelta(days=6)).isoformat()},
+        "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "data": data,
+    }, headers=_NO_STORE)
 
 
 @app.get("/api/transaction-type-preview")
