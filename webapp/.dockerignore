@@ -7,4 +7,3 @@ __pycache__/
 .env
 .git/
 .elasticbeanstalk/
-version.json
