@@ -133,6 +133,8 @@ Environment variables (set via EBS console or `eb setenv`):
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL`
 - `OWNER_EMAIL` — the single account owner; invited users share this owner's data
 - `SECRET_KEY` — itsdangerous session signing key
+- `WEEKLY_SUMMARY_TOKEN_SHA256` — lowercase hex SHA-256 of the weekly-review bearer token (the plaintext token is never stored in the app). Optional: while it or `WEEKLY_SUMMARY_EMAIL` is unset or empty, `/api/weekly-summary` returns 404.
+- `WEEKLY_SUMMARY_EMAIL` — whose ledger `/api/weekly-summary` reports (case-insensitive). An invited user's email reports the `OWNER_EMAIL` ledger, as in the app.
 
 ---
 
@@ -164,7 +166,7 @@ Environment variables (set via EBS console or `eb setenv`):
 
 **Migrations** live at the bottom of `app.py` as a list of `(name, sql)` tuples. Each runs in its own transaction on startup — failures are logged and skipped, never blocking.
 
-**Tags** are global per user. A transaction can have zero or more tags (many-to-many via `transaction_tags`). Tag names are unique per user. Tags have an `excluded_from_spending` boolean — transactions are excluded from spending totals if any of their tags are marked excluded; excluded tags are also hidden from the "By Tag" chips.
+**Tags** are global per user. A transaction can have zero or more tags (many-to-many via `transaction_tags`). Tag names are unique per user. Tags have an `excluded_from_spending` boolean — transactions are excluded from spending totals when their primary tag or any ancestor group tag is marked excluded (see Tag Exclusion); excluded tags are also hidden from the "By Tag" chips.
 
 **Multi-user model:** `OWNER_EMAIL` identifies the owner. Invited users (`invited_users`) always query the owner's `user_id` — they see and edit the same dataset.
 
@@ -188,7 +190,12 @@ Environment variables (set via EBS console or `eb setenv`):
 ### Stats
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/api/stats` | Returns `total`, `count`, `by_month`, `by_source`, `by_tag`. Same filter params as transactions. Transactions with any excluded tag are omitted from totals. `by_tag` only includes non-excluded tags. |
+| GET | `/api/stats` | Returns `total`, `count`, `by_month`, `by_source`, `by_tag`. Same filter params as transactions. Transactions whose primary tag (or an ancestor) is excluded are omitted from totals. `by_tag` only includes non-excluded tags. |
+
+### Weekly summary
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/api/weekly-summary?week=YYYY-MM-DD` | Read-only, for the weekly-review routine. `Authorization: Bearer <token>` checked against `WEEKLY_SUMMARY_TOKEN_SHA256` (constant-time); session cookies and `LOCAL_DEV` are not honoured. Unset config or a missing/wrong token → 404; non-Monday → 400. `data` mirrors weekly-review `src/sources/spending.js` (`round_half_up` ports JS `Math.round`). Runs in one `READ ONLY` transaction; `Cache-Control: no-store`. |
 
 ### Tags
 | Method | Path | Notes |
@@ -318,7 +325,7 @@ synthetic unit/integration checks. The integration suite requires a disposable
 local `_test` database and must never run against real financial data.
 
 ### Tag Exclusion
-A transaction is excluded from spending totals if **any** of its tags has `excluded_from_spending = TRUE`. This is enforced via a `NOT IN` subquery on `transaction_tags` in both `/api/stats` and `/api/transactions`. Excluded tags are also filtered out of the `by_tag` stats results.
+A transaction is excluded from spending totals when its **primary tag**, or any ancestor reached through `tags.group_tag_id`, has `excluded_from_spending = TRUE`. Secondary tags in `transaction_tags` never exclude. The rule is the shared `SPENDING_EXCLUDED_SQL` / `SPENDING_INCLUDED_SQL` constants in `app.py`, used by `/api/stats`, `/api/analytics` (`_financial_ledger_rows`) and `/api/weekly-summary`; `SPENDING_ROOT_TAG_SQL` rolls a primary tag up to its top-level ancestor (or `Untagged`). `/api/transactions` and the CSV export still list excluded rows. Excluded tags are also filtered out of the `by_tag` stats results.
 
 ### Deduplication
 `dedup_key = MD5(date|source|amount|normalized_description|seq)`. On upload, any transaction whose key already exists in the DB is inserted with `status='deduped'` rather than 'active'.
