@@ -317,12 +317,11 @@ SPENDING_TEST_DATABASE_URL='postgresql://user@localhost/spending_test' \
 This app is deployed as part of a consolidated Docker environment on EC2.
 
 ### Validation and activation
-Pushes to `main` run `.github/workflows/ci.yml` for synthetic database tests and
-an ARM64 image build. The retired `deploy.yml` does not deploy and must stay
-disabled. Production activation uses the separately approved, image-pinned
-procedure described in [release controls](../docs/release-runtime-cutover.md),
-with current preservation and rollback evidence. Do not replay old release kits
-or use a fresh floating-dependency image as the approved artifact.
+Pull requests run `.github/workflows/ci.yml` (synthetic database tests and an
+ARM64 image build). Each merge to `main` runs `.github/workflows/deploy.yml`, which
+validates first and then rebuilds and replaces only the `spending` service with
+`scripts/deploy-service.py`, keeping its runtime configuration. See
+[deployment](../docs/deploy.md).
 
 ## Usage
 

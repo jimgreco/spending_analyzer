@@ -24,10 +24,9 @@
   samples or private financial records unless the task needs that evidence.
 - Match validation to the edit: Python syntax/import checks plus the affected API
   or browser journey. The frontend is served directly and has no bundler.
-- Publication gates: `.github/workflows/ci.yml` and
-  `docs/release-runtime-cutover.md`. Production uses the separately approved,
-  image-pinned procedure in consolidated-deploy. `deploy.yml` is retired and
-  refuses activation; the Elastic Beanstalk notes below are legacy.
+- Publication: every merge to `main` deploys to production after `ci.yml`
+  passes (`.github/workflows/deploy.yml`, `scripts/deploy-service.py`; see
+  `docs/deploy.md`). The Elastic Beanstalk notes below are legacy.
 
 
 ## Project Overview
@@ -90,14 +89,14 @@ python app.py           # or: uvicorn app:app --reload --port 8000
 
 ## Deployment
 
-The current runtime is EC2/Docker Compose. A push to `main` runs validation-only
-`.github/workflows/ci.yml`: synthetic PostgreSQL tests and the ARM64 image build.
-It does not deploy. The old `deploy.yml` is retired, remains disabled, and refuses
-activation even if dispatched. Follow `docs/release-runtime-cutover.md` and the
-current verified release evidence for a separately approved, image-pinned
-production procedure that preserves runtime configuration and neighboring apps.
-Do not replay historical one-use release kits or rebuild floating dependencies
-and treat that image as an approved production artifact.
+The current runtime is EC2/Docker Compose. Pull requests run validation-only
+`.github/workflows/ci.yml` (synthetic PostgreSQL tests, ARM64 image build, no
+secrets). A push to `main` runs `.github/workflows/deploy.yml`: it calls `ci.yml`,
+then (environment `production`) transfers `webapp/` and runs
+`scripts/deploy-service.py`, which rebuilds and replaces only the `spending`
+Compose service while keeping its live configuration and DB URL exactly. See
+`docs/deploy.md` for guards, rollback and required secrets. Do not run ad hoc
+`docker-compose` commands against production.
 
 The Elastic Beanstalk instructions below are historical recovery context; use
 that platform only if the user explicitly requests restoring it.

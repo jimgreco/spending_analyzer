@@ -1,11 +1,10 @@
 name: Validate Spending release
 
-# Publication only validates. Production activation uses the separately approved,
-# image-pinned DB cutover in consolidated-deploy; no production credentials here.
+# Validation only: no secrets, no environment, no remote commands. Pull requests
+# run it directly; deploy.yml calls it on main pushes before deploying.
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
