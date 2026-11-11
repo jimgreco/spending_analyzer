@@ -37,7 +37,7 @@ def validate_verify(text):
         assert 'permissions' not in job
 
 
-RT_SHA = 'ff61f1c6a6eb51ea982246473203bcc903ce8153'
+RT_SHA = '082f38d35995b50526c43da11fa6a9e73300fd4d'
 RELEASE_WORKFLOW = 'jimgreco/release-tools/.github/workflows/server-release.yml@' + RT_SHA
 EC2_SECRETS = ('EC2_HOST', 'EC2_USER', 'EC2_SSH_KEY', 'EC2_SSH_KNOWN_HOSTS')
 
