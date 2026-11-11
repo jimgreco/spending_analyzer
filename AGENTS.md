@@ -24,9 +24,9 @@
   samples or private financial records unless the task needs that evidence.
 - Match validation to the edit: Python syntax/import checks plus the affected API
   or browser journey. The frontend is served directly and has no bundler.
-- Publication: every merge to `main` deploys to production after `ci.yml`
-  passes (`.github/workflows/deploy.yml`, `scripts/deploy-service.py`; see
-  `docs/deploy.md`). The Elastic Beanstalk notes below are legacy.
+- Publication: every merge to `main` deploys to production after `verify.yml`
+  passes (`.github/workflows/release.yml` calls the pinned `jimgreco/release-tools`
+  server engine with `.github/release/server.json`; see `docs/deploy.md`). The Elastic Beanstalk notes below are legacy.
 
 
 ## Project Overview
@@ -89,12 +89,14 @@ python app.py           # or: uvicorn app:app --reload --port 8000
 
 ## Deployment
 
-The current runtime is EC2/Docker Compose. Pull requests run validation-only
-`.github/workflows/ci.yml` (synthetic PostgreSQL tests, ARM64 image build, no
-secrets). A push to `main` runs `.github/workflows/deploy.yml`: it calls `ci.yml`,
-then (environment `production`) transfers `webapp/` and runs
-`scripts/deploy-service.py`, which rebuilds and replaces only the `spending`
-Compose service while keeping its live configuration and DB URL exactly. See
+The current runtime is EC2/Docker Compose. `.github/workflows/release.yml` (the
+standard release-tools template) runs on pull requests, pushes to `main` and manual
+dispatch. It always calls `.github/workflows/verify.yml` (synthetic PostgreSQL
+tests, ARM64 image build, no secrets referenced); pull requests stop there. On
+`main` it then calls the shared `jimgreco/release-tools` server-release workflow (pinned by
+commit, environment `production`). It publishes an exact-commit ARM64 image to GHCR
+and replaces only the `spending` Compose service while keeping its live
+configuration and DB URL exactly (manifest: `.github/release/server.json`). See
 `docs/deploy.md` for guards, rollback and required secrets. Do not run ad hoc
 `docker-compose` commands against production.
 

@@ -1,0 +1,47 @@
+name: Release
+
+# The standard release workflow, identical in every app (only the pinned
+# release-tools commit changes). Do not add app-specific steps here:
+#   - app checks go in .github/workflows/verify.yml   (on: workflow_call)
+#   - the TestFlight job goes in .github/workflows/testflight.yml (on: workflow_call)
+# Pull requests: verify only. Push to main: verify, then release everything.
+# Manual run on main: verify, then release what the checkboxes select.
+# Template: https://github.com/jimgreco/release-tools/blob/main/templates/release.yml
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      server:
+        description: Release the server to the shared host
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+    secrets: inherit
+
+  server:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.server))
+    permissions:
+      contents: read
+      packages: write
+    uses: jimgreco/release-tools/.github/workflows/server-release.yml@ff61f1c6a6eb51ea982246473203bcc903ce8153
+    with:
+      tools_ref: ff61f1c6a6eb51ea982246473203bcc903ce8153
+    secrets:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+      EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+      EC2_SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}

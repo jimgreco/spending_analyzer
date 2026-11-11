@@ -1,18 +1,13 @@
-name: Validate Spending release
+name: Verify Spending
 
-# Validation only: no secrets, no environment, no remote commands. Pull requests
-# run it directly; deploy.yml calls it on main pushes before deploying.
+# All of Spending's own checks. Called only by release.yml: pull requests run
+# it alone; pushes to main (and manual runs) run it before releasing. No step
+# references secrets, uses an environment or runs remote commands.
 on:
-  pull_request:
   workflow_call:
-  workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: spending-validation-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   tests:

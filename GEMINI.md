@@ -9,9 +9,9 @@ Migrated from Elastic Beanstalk to a consolidated EC2 instance (`18.219.163.101`
 - **CI/CD**: GitHub Actions auto-deploy on push to `main`.
 
 ### Auto-Deployment Workflow
-1. GitHub Action checks out code.
-2. `rsync` transfers the `webapp/` directory to the server.
-3. Server runs `docker-compose build spending && docker-compose up -d spending`.
+Each push to `main` runs CI, then the pinned shared `jimgreco/release-tools`
+server-release workflow: it pushes an exact-commit ARM64 image to GHCR and replaces
+only the `spending` service on the host. See `docs/deploy.md`.
 
 ## Key Patches
 - **Schema Initialization**: `webapp/app.py` was patched to wrap `cur.execute(SCHEMA)` in a try-except block to handle `SERIAL` sequence conflicts when starting on an existing database.

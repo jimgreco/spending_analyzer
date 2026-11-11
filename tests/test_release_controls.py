@@ -1,4 +1,5 @@
-"""Release policy: PR validation is secret-free; only main pushes deploy, after CI, via the helper."""
+"""Release policy: PRs only verify; only main releases, after verify, via the pinned shared engine."""
+import json
 from pathlib import Path
 import re
 import unittest
@@ -18,9 +19,10 @@ def job_text(job):
     return yaml.dump(job, default_flow_style=False, width=10000)
 
 
-def validate_ci(text):
+def validate_verify(text):
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
-    assert set(workflow['on']) == {'pull_request', 'workflow_call', 'workflow_dispatch'}
+    # Only release.yml calls it; it has no triggers of its own.
+    assert set(workflow['on']) == {'workflow_call'}
     assert workflow['permissions'] == {'contents': 'read'}
     assert not re.search(r'\bsecrets\b', text)
     assert not REMOTE.search(text)
@@ -35,112 +37,121 @@ def validate_ci(text):
         assert 'permissions' not in job
 
 
-def validate_deploy(text):
+RT_SHA = 'ff61f1c6a6eb51ea982246473203bcc903ce8153'
+RELEASE_WORKFLOW = 'jimgreco/release-tools/.github/workflows/server-release.yml@' + RT_SHA
+EC2_SECRETS = ('EC2_HOST', 'EC2_USER', 'EC2_SSH_KEY', 'EC2_SSH_KNOWN_HOSTS')
+
+
+def validate_release(text):
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
-    assert set(workflow['on']) == {'push', 'workflow_dispatch'}
+    assert set(workflow['on']) == {'pull_request', 'push', 'workflow_dispatch'}
     assert workflow['on']['push'] == {'branches': ['main']}
-    assert not re.search(r'\b(?:pull_request|pull_request_target|workflow_run)\b', text)
+    assert set(workflow['on']['workflow_dispatch']['inputs']) == {'server'}
+    assert not re.search(r'\b(?:pull_request_target|workflow_run)\b', text)
     assert workflow['permissions'] == {'contents': 'read'}
-    assert workflow['concurrency']['cancel-in-progress'] == 'false'
-    assert set(workflow['jobs']) == {'validate', 'deploy'}
+    # Only pull requests cancel in progress; releases on main queue.
+    assert workflow['concurrency']['cancel-in-progress'] == "${{ github.event_name == 'pull_request' }}"
+    assert set(workflow['jobs']) == {'verify', 'server'}
 
-    validate = workflow['jobs']['validate']
-    # The full CI workflow (ending in Required Checks) runs first, with no secrets passed.
-    assert validate == {'name': validate.get('name'), 'uses': './.github/workflows/ci.yml'}
+    verify = workflow['jobs']['verify']
+    # Every check in verify.yml (ending in Required Checks) runs first.
+    assert verify == {'uses': './.github/workflows/verify.yml', 'secrets': 'inherit'}
 
-    deploy = workflow['jobs']['deploy']
-    assert deploy['needs'] == 'validate'
-    assert "github.ref == 'refs/heads/main'" in deploy['if']
-    assert deploy['environment'] == 'production'
-    assert 'permissions' not in deploy
-
-    steps = deploy['steps']
-    body = job_text(deploy) + '\n'.join(step.get('run', '') for step in steps)
-    assert 'secrets.EC2_SSH_KNOWN_HOSTS' in body
-    # Secrets live only in the deploy job.
-    assert 'secrets' not in job_text(validate)
-    # Host key is pinned from the secret; no fallback to trust-on-first-use.
-    assert not re.search(r'StrictHostKeyChecking[\s=]+(?!yes\b)', body)
-    assert "StrictHostKeyChecking yes" in body and 'UserKnownHostsFile $dir/known_hosts' in body
-    assert '"$EC2_SSH_KNOWN_HOSTS" > "$dir/known_hosts"' in body
-    for step in steps:
-        for line in step.get('run', '').splitlines():
-            if re.search(r'^\s*(?:ssh|rsync)(?![\w-])', line):
-                assert re.search(r'ssh -F "?\$SSH_CONFIG"? ', line), line
-            assert not re.search(r'\bssh\s+-o|\bssh\s+-i', line), line
-    # Only the single-service helper touches containers; no compose/prune in the workflow.
-    assert not re.search(r'\b(?:docker-compose|docker\s+compose|docker\s+(?:system|builder|image)\s+prune|prune)\b', body)
-    remote = [step for step in steps if '--release' in step.get('run', '')]
-    assert len(remote) == 1 and 'deploy-service.py' in remote[0]['run'] and '$GITHUB_SHA' in remote[0]['run']
-    assert any('/api/version' in step.get('run', '') for step in steps)
-    cleanup = steps[-1]
-    assert cleanup.get('if') == 'always()' and 'rm -rf' in cleanup['run'] and 'spending-ssh' in cleanup['run']
-    names = [step.get('name', '') for step in steps]
-    assert names.index('Bake version metadata') < names.index('Transfer webapp source')
-    assert names.index('Transfer release helper and run read-only preflight') < names.index('Transfer webapp source')
+    server = workflow['jobs']['server']
+    assert server['needs'] == 'verify'
+    # Pull requests never release: only main, on push or a manual run that selects the server.
+    assert server['if'] == ("github.ref == 'refs/heads/main' && (github.event_name == 'push' || "
+                            "(github.event_name == 'workflow_dispatch' && inputs.server))")
+    # The shared engine is pinned by full commit, and tools_ref names the same commit.
+    assert server['uses'] == RELEASE_WORKFLOW
+    assert server['with'] == {'tools_ref': RT_SHA}
+    assert server['permissions'] == {'contents': 'read', 'packages': 'write'}
+    assert server['secrets'] == {name: '${{ secrets.%s }}' % name for name in EC2_SECRETS}
+    assert set(server) <= {'needs', 'if', 'permissions', 'uses', 'with', 'secrets'}
+    # No app-local host access: the engine owns ssh, Compose and health checks.
+    assert not REMOTE.search(text)
+    assert not re.search(r'\b(?:docker-compose|docker\s+compose|deploy-service)\b', text)
 
 
-class ValidationWorkflow(unittest.TestCase):
+def validate_manifest(manifest):
+    assert manifest['app'] == 'spending'
+    assert manifest['image'] == 'ghcr.io/jimgreco/spending_analyzer'
+    assert set(manifest['services']) == {'spending'}
+    # DB runtime-role cutover overlays must stay in the Compose chain.
+    for pattern in manifest.get('legacy_overrides', []):
+        assert not re.fullmatch(pattern, 'db-runtime-spending-0123456789abcdef.json'), pattern
+    # The container never migrates on start and no release step migrates.
+    assert 'migrate' not in manifest
+    assert '{sha7}' in manifest['services']['spending']['health']
+    assert manifest['public']['field'] == 'sha' and manifest['public']['length'] == 7
+
+
+class WorkflowSet(unittest.TestCase):
+    def test_only_the_standard_workflows_exist(self):
+        names = {p.name for p in (ROOT / '.github/workflows').iterdir()}
+        self.assertEqual(names, {'release.yml', 'verify.yml'})
+
+
+class VerifyWorkflow(unittest.TestCase):
     def setUp(self):
-        self.text, _ = load('ci.yml')
+        self.text, _ = load('verify.yml')
 
-    def test_validation_workflow_is_secret_free(self):
-        validate_ci(self.text)
+    def test_verify_workflow_is_secret_free(self):
+        validate_verify(self.text)
 
     def test_rejects_remote_deploy_or_secret_reintroduction(self):
         for command in ('ssh host command', 'docker system prune -f', 'rsync source host:dest',
                         'docker-compose up -d spending', 'docker push example', '${{ secrets.EC2_SSH_KEY }}'):
             with self.subTest(command=command), self.assertRaises(AssertionError):
-                validate_ci(self.text.replace('test "$TESTS_RESULT"', command + ' && test "$TESTS_RESULT"'))
+                validate_verify(self.text.replace('test "$TESTS_RESULT"', command + ' && test "$TESTS_RESULT"'))
 
-    def test_rejects_privileged_or_push_triggers(self):
-        for old, new in (('  pull_request:', '  pull_request_target:'),
-                         ('  workflow_dispatch:', '  workflow_dispatch:\n  push:\n    branches: [main]')):
-            with self.subTest(new=new), self.assertRaises(AssertionError):
-                validate_ci(self.text.replace(old, new))
-
-    def test_rejects_environment_in_validation(self):
-        with self.assertRaises(AssertionError):
-            validate_ci(self.text.replace('    runs-on: ubuntu-24.04-arm',
-                                          '    runs-on: ubuntu-24.04-arm\n    environment: production'))
-
-
-class DeployWorkflow(unittest.TestCase):
-    def setUp(self):
-        self.text, _ = load('deploy.yml')
-
-    def test_deploys_only_main_after_validation(self):
-        validate_deploy(self.text)
-
-    def test_rejects_pull_request_triggers(self):
-        for trigger in ('pull_request', 'pull_request_target', 'workflow_run'):
+    def test_rejects_own_triggers(self):
+        for trigger in ('pull_request:', 'pull_request_target:', 'workflow_dispatch:', 'push:\n    branches: [main]'):
             with self.subTest(trigger=trigger), self.assertRaises(AssertionError):
-                validate_deploy(self.text.replace('  workflow_dispatch:', '  workflow_dispatch:\n  {}:'.format(trigger), 1))
+                validate_verify(self.text.replace('  workflow_call:', '  workflow_call:\n  ' + trigger, 1))
 
-    def test_rejects_unpinned_host_keys(self):
-        for old, new in (("StrictHostKeyChecking yes", "StrictHostKeyChecking no"),
-                         ("StrictHostKeyChecking yes", "StrictHostKeyChecking accept-new"),
-                         ('ssh -F "$SSH_CONFIG" production', 'ssh -o StrictHostKeyChecking=no host')):
-            with self.subTest(new=new), self.assertRaises(AssertionError):
-                validate_deploy(self.text.replace(old, new))
-
-    def test_rejects_skipping_validation_or_environment(self):
-        for old, new in (('    needs: validate\n', ''), ('    environment: production\n', ''),
-                         ("github.ref == 'refs/heads/main' && ", ''),
-                         ('    uses: ./.github/workflows/ci.yml',
-                          '    uses: ./.github/workflows/ci.yml\n    secrets: inherit')):
-            with self.subTest(old=old), self.assertRaises((AssertionError, KeyError)):
-                validate_deploy(self.text.replace(old, new))
-
-    def test_rejects_direct_compose_or_prune(self):
-        for command in ('docker-compose up -d spending', 'docker compose build spending', 'docker system prune -f'):
-            with self.subTest(command=command), self.assertRaises(AssertionError):
-                validate_deploy(self.text.replace('set -euo pipefail\n          expected=',
-                                                  'set -euo pipefail\n          ' + command + '\n          expected='))
-
-    def test_ssh_material_cleanup_is_unconditional(self):
+    def test_rejects_environment_in_verification(self):
         with self.assertRaises(AssertionError):
-            validate_deploy(self.text.replace('        if: always()\n', ''))
+            validate_verify(self.text.replace('    runs-on: ubuntu-24.04-arm',
+                                              '    runs-on: ubuntu-24.04-arm\n    environment: production'))
+
+
+class ReleaseWorkflow(unittest.TestCase):
+    def setUp(self):
+        self.text, _ = load('release.yml')
+
+    def test_releases_only_main_after_verification(self):
+        validate_release(self.text)
+
+    def test_rejects_privileged_triggers(self):
+        for trigger in ('pull_request_target', 'workflow_run'):
+            with self.subTest(trigger=trigger), self.assertRaises(AssertionError):
+                validate_release(self.text.replace('  workflow_dispatch:', '  {}:\n  workflow_dispatch:'.format(trigger), 1))
+
+    def test_rejects_skipping_verification_or_unpinned_engine(self):
+        for old, new in (('    needs: verify\n', ''),
+                         ("github.ref == 'refs/heads/main' && ", ''),
+                         ("github.event_name == 'push'", "github.event_name != 'workflow_dispatch'"),
+                         ('server-release.yml@' + RT_SHA, 'server-release.yml@main'),
+                         ('tools_ref: ' + RT_SHA, 'tools_ref: main'),
+                         ('    uses: ./.github/workflows/verify.yml',
+                          '    uses: ./.github/workflows/verify.yml\n    if: false')):
+            with self.subTest(old=old), self.assertRaises((AssertionError, KeyError)):
+                validate_release(self.text.replace(old, new))
+
+
+class ReleaseManifest(unittest.TestCase):
+    def setUp(self):
+        self.manifest = json.loads((ROOT / '.github/release/server.json').read_text())
+
+    def test_manifest_policy(self):
+        validate_manifest(self.manifest)
+
+    def test_rejects_dropping_db_cutover_overlay(self):
+        manifest = json.loads(json.dumps(self.manifest))
+        manifest['legacy_overrides'].append(r'db-runtime-spending-[0-9a-f]{16}\.json')
+        with self.assertRaises(AssertionError):
+            validate_manifest(manifest)
 
 
 class ImageMetadata(unittest.TestCase):
