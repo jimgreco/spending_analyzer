@@ -7,18 +7,21 @@ Releases use the shared server engine in
 
 ## Workflows
 
-- `.github/workflows/ci.yml` — validation only. Runs on pull requests, manual
-  dispatch, and when `deploy.yml` calls it. No secrets, no environment, no
-  remote commands. Its `Required Checks` job is the branch-protection gate.
-- `.github/workflows/deploy.yml` — runs on push to `main` (and manual dispatch on
-  `main`). Job `validate` calls `ci.yml` without passing secrets; job `release`
-  `needs: validate` and calls
+- `.github/workflows/release.yml` — a verbatim copy of release-tools'
+  `templates/release.yml` (pinned commit substituted, `ios` job and input
+  removed: Spending is server-only). Runs on pull requests, push to `main` and
+  manual dispatch. Job `verify` calls `verify.yml`; job `server` `needs: verify`
+  and, only on `main` (push, or a manual run with the `server` box ticked), calls
   `jimgreco/release-tools/.github/workflows/server-release.yml@<commit>` with the
-  same commit as `tools_ref`. Concurrency group `spending-production-deploy`
-  queues releases and never cancels one in progress.
+  same commit as `tools_ref`. Concurrency group `release-<ref>` cancels
+  superseded pull-request runs and queues releases on `main`.
+- `.github/workflows/verify.yml` — `workflow_call` only. All of Spending's
+  checks: synthetic PostgreSQL tests and the ARM64 image build. No secret
+  references, no environment, no remote commands. Its `Required Checks` job
+  (shown as `verify / Required Checks`) is the branch-protection gate.
 
-`tests/test_release_controls.py` enforces this: a secret-free PR path, releases
-only from main after validation, the engine pinned by full commit, no app-local
+`tests/test_release_controls.py` enforces this: only these two workflows, a
+secret-free verify path, releases only from main after verification, the engine pinned by full commit, no app-local
 ssh/rsync/Compose, and a manifest that never drops the DB runtime cutover overlay.
 
 ## What a release does
@@ -61,7 +64,7 @@ Records: `~/deploy/release-records/spending-<sha>.json`. Rollback images are tag
 `DATABASE_URL` at `${SPENDING_RUNTIME_DATABASE_URL}`. Releases keep that overlay
 and supersede only its image. The retired helper also refused to release within
 24 hours of a cutover. The engine has no such window. If you run another cutover,
-disable `deploy.yml` until its observation window closes.
+disable `release.yml` until its observation window closes.
 
 ## Rollback
 

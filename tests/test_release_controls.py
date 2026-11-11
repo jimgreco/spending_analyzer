@@ -1,4 +1,4 @@
-"""Release policy: PR validation is secret-free; only main pushes release, after CI, via the pinned shared engine."""
+"""Release policy: PRs only verify; only main releases, after verify, via the pinned shared engine."""
 import json
 from pathlib import Path
 import re
@@ -19,9 +19,10 @@ def job_text(job):
     return yaml.dump(job, default_flow_style=False, width=10000)
 
 
-def validate_ci(text):
+def validate_verify(text):
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
-    assert set(workflow['on']) == {'pull_request', 'workflow_call', 'workflow_dispatch'}
+    # Only release.yml calls it; it has no triggers of its own.
+    assert set(workflow['on']) == {'workflow_call'}
     assert workflow['permissions'] == {'contents': 'read'}
     assert not re.search(r'\bsecrets\b', text)
     assert not REMOTE.search(text)
@@ -41,28 +42,32 @@ RELEASE_WORKFLOW = 'jimgreco/release-tools/.github/workflows/server-release.yml@
 EC2_SECRETS = ('EC2_HOST', 'EC2_USER', 'EC2_SSH_KEY', 'EC2_SSH_KNOWN_HOSTS')
 
 
-def validate_deploy(text):
+def validate_release(text):
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
-    assert set(workflow['on']) == {'push', 'workflow_dispatch'}
+    assert set(workflow['on']) == {'pull_request', 'push', 'workflow_dispatch'}
     assert workflow['on']['push'] == {'branches': ['main']}
-    assert not re.search(r'\b(?:pull_request|pull_request_target|workflow_run)\b', text)
+    assert set(workflow['on']['workflow_dispatch']['inputs']) == {'server'}
+    assert not re.search(r'\b(?:pull_request_target|workflow_run)\b', text)
     assert workflow['permissions'] == {'contents': 'read'}
-    assert workflow['concurrency']['cancel-in-progress'] == 'false'
-    assert set(workflow['jobs']) == {'validate', 'release'}
+    # Only pull requests cancel in progress; releases on main queue.
+    assert workflow['concurrency']['cancel-in-progress'] == "${{ github.event_name == 'pull_request' }}"
+    assert set(workflow['jobs']) == {'verify', 'server'}
 
-    validate = workflow['jobs']['validate']
-    # The full CI workflow (ending in Required Checks) runs first, with no secrets passed.
-    assert validate == {'name': validate.get('name'), 'uses': './.github/workflows/ci.yml'}
+    verify = workflow['jobs']['verify']
+    # Every check in verify.yml (ending in Required Checks) runs first.
+    assert verify == {'uses': './.github/workflows/verify.yml', 'secrets': 'inherit'}
 
-    release = workflow['jobs']['release']
-    assert release['needs'] == 'validate'
-    assert "github.ref == 'refs/heads/main'" in release['if']
+    server = workflow['jobs']['server']
+    assert server['needs'] == 'verify'
+    # Pull requests never release: only main, on push or a manual run that selects the server.
+    assert server['if'] == ("github.ref == 'refs/heads/main' && (github.event_name == 'push' || "
+                            "(github.event_name == 'workflow_dispatch' && inputs.server))")
     # The shared engine is pinned by full commit, and tools_ref names the same commit.
-    assert release['uses'] == RELEASE_WORKFLOW
-    assert release['with'] == {'tools_ref': RT_SHA}
-    assert release['permissions'] == {'contents': 'read', 'packages': 'write'}
-    assert release['secrets'] == {name: '${{ secrets.%s }}' % name for name in EC2_SECRETS}
-    assert set(release) <= {'name', 'needs', 'if', 'permissions', 'uses', 'with', 'secrets'}
+    assert server['uses'] == RELEASE_WORKFLOW
+    assert server['with'] == {'tools_ref': RT_SHA}
+    assert server['permissions'] == {'contents': 'read', 'packages': 'write'}
+    assert server['secrets'] == {name: '${{ secrets.%s }}' % name for name in EC2_SECRETS}
+    assert set(server) <= {'needs', 'if', 'permissions', 'uses', 'with', 'secrets'}
     # No app-local host access: the engine owns ssh, Compose and health checks.
     assert not REMOTE.search(text)
     assert not re.search(r'\b(?:docker-compose|docker\s+compose|deploy-service)\b', text)
@@ -81,52 +86,58 @@ def validate_manifest(manifest):
     assert manifest['public']['field'] == 'sha' and manifest['public']['length'] == 7
 
 
-class ValidationWorkflow(unittest.TestCase):
-    def setUp(self):
-        self.text, _ = load('ci.yml')
+class WorkflowSet(unittest.TestCase):
+    def test_only_the_standard_workflows_exist(self):
+        names = {p.name for p in (ROOT / '.github/workflows').iterdir()}
+        self.assertEqual(names, {'release.yml', 'verify.yml'})
 
-    def test_validation_workflow_is_secret_free(self):
-        validate_ci(self.text)
+
+class VerifyWorkflow(unittest.TestCase):
+    def setUp(self):
+        self.text, _ = load('verify.yml')
+
+    def test_verify_workflow_is_secret_free(self):
+        validate_verify(self.text)
 
     def test_rejects_remote_deploy_or_secret_reintroduction(self):
         for command in ('ssh host command', 'docker system prune -f', 'rsync source host:dest',
                         'docker-compose up -d spending', 'docker push example', '${{ secrets.EC2_SSH_KEY }}'):
             with self.subTest(command=command), self.assertRaises(AssertionError):
-                validate_ci(self.text.replace('test "$TESTS_RESULT"', command + ' && test "$TESTS_RESULT"'))
+                validate_verify(self.text.replace('test "$TESTS_RESULT"', command + ' && test "$TESTS_RESULT"'))
 
-    def test_rejects_privileged_or_push_triggers(self):
-        for old, new in (('  pull_request:', '  pull_request_target:'),
-                         ('  workflow_dispatch:', '  workflow_dispatch:\n  push:\n    branches: [main]')):
-            with self.subTest(new=new), self.assertRaises(AssertionError):
-                validate_ci(self.text.replace(old, new))
-
-    def test_rejects_environment_in_validation(self):
-        with self.assertRaises(AssertionError):
-            validate_ci(self.text.replace('    runs-on: ubuntu-24.04-arm',
-                                          '    runs-on: ubuntu-24.04-arm\n    environment: production'))
-
-
-class DeployWorkflow(unittest.TestCase):
-    def setUp(self):
-        self.text, _ = load('deploy.yml')
-
-    def test_releases_only_main_after_validation(self):
-        validate_deploy(self.text)
-
-    def test_rejects_pull_request_triggers(self):
-        for trigger in ('pull_request', 'pull_request_target', 'workflow_run'):
+    def test_rejects_own_triggers(self):
+        for trigger in ('pull_request:', 'pull_request_target:', 'workflow_dispatch:', 'push:\n    branches: [main]'):
             with self.subTest(trigger=trigger), self.assertRaises(AssertionError):
-                validate_deploy(self.text.replace('  workflow_dispatch:', '  workflow_dispatch:\n  {}:'.format(trigger), 1))
+                validate_verify(self.text.replace('  workflow_call:', '  workflow_call:\n  ' + trigger, 1))
 
-    def test_rejects_skipping_validation_or_unpinned_engine(self):
-        for old, new in (('    needs: validate\n', ''),
+    def test_rejects_environment_in_verification(self):
+        with self.assertRaises(AssertionError):
+            validate_verify(self.text.replace('    runs-on: ubuntu-24.04-arm',
+                                              '    runs-on: ubuntu-24.04-arm\n    environment: production'))
+
+
+class ReleaseWorkflow(unittest.TestCase):
+    def setUp(self):
+        self.text, _ = load('release.yml')
+
+    def test_releases_only_main_after_verification(self):
+        validate_release(self.text)
+
+    def test_rejects_privileged_triggers(self):
+        for trigger in ('pull_request_target', 'workflow_run'):
+            with self.subTest(trigger=trigger), self.assertRaises(AssertionError):
+                validate_release(self.text.replace('  workflow_dispatch:', '  {}:\n  workflow_dispatch:'.format(trigger), 1))
+
+    def test_rejects_skipping_verification_or_unpinned_engine(self):
+        for old, new in (('    needs: verify\n', ''),
                          ("github.ref == 'refs/heads/main' && ", ''),
+                         ("github.event_name == 'push'", "github.event_name != 'workflow_dispatch'"),
                          ('server-release.yml@' + RT_SHA, 'server-release.yml@main'),
                          ('tools_ref: ' + RT_SHA, 'tools_ref: main'),
-                         ('    uses: ./.github/workflows/ci.yml',
-                          '    uses: ./.github/workflows/ci.yml\n    secrets: inherit')):
+                         ('    uses: ./.github/workflows/verify.yml',
+                          '    uses: ./.github/workflows/verify.yml\n    if: false')):
             with self.subTest(old=old), self.assertRaises((AssertionError, KeyError)):
-                validate_deploy(self.text.replace(old, new))
+                validate_release(self.text.replace(old, new))
 
 
 class ReleaseManifest(unittest.TestCase):
