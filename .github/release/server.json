@@ -1,0 +1,25 @@
+{
+  "app": "spending",
+  "image": "ghcr.io/jimgreco/spending_analyzer",
+  "images": [
+    {
+      "context": "webapp",
+      "dockerfile": "webapp/Dockerfile",
+      "prebuild": "python3 -c 'import json,os,subprocess; sha=os.environ[\"GITHUB_SHA\"]; ts=subprocess.check_output([\"git\",\"log\",\"-1\",\"--format=%ci\",sha],text=True).strip(); version=open(\"webapp/VERSION\").read().strip(); open(\"webapp/version.json\",\"w\").write(json.dumps({\"sha\":sha[:7],\"timestamp\":ts,\"version\":version})+\"\\n\")'"
+    }
+  ],
+  "services": {
+    "spending": {
+      "health": ["python", "-c", "import json,sys,urllib.request\nsha=sys.argv[1]\nassert json.load(open('/app/version.json')).get('sha')==sha\nr=urllib.request.urlopen('http://127.0.0.1:8000/api/version',timeout=5)\nassert r.status==200 and json.load(r).get('sha')==sha\n", "{sha7}"]
+    }
+  },
+  "legacy_overrides": ["spending-image-[0-9a-f]{40}\\.json"],
+  "preflight": [
+    {
+      "service": "spending",
+      "command": ["python", "-c", "import os,sys\nif 'MIGRATION_DATABASE_URL' in os.environ: sys.exit('Runtime environment contains MIGRATION_DATABASE_URL; reconcile before release')\nif not os.environ.get('DATABASE_URL','').startswith(('postgres://','postgresql://')): sys.exit('DATABASE_URL is missing or not PostgreSQL')\n"]
+    }
+  ],
+  "backup": { "database": "spending", "require_table": "transactions", "keep": 20 },
+  "public": { "url": "https://spending-analyzer.jim-greco.com/api/version", "field": "sha", "length": 7 }
+}

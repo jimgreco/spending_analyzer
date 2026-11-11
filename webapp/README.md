@@ -319,8 +319,9 @@ This app is deployed as part of a consolidated Docker environment on EC2.
 ### Validation and activation
 Pull requests run `.github/workflows/ci.yml` (synthetic database tests and an
 ARM64 image build). Each merge to `main` runs `.github/workflows/deploy.yml`, which
-validates first and then rebuilds and replaces only the `spending` service with
-`scripts/deploy-service.py`, keeping its runtime configuration. See
+validates first and then releases an exact-commit GHCR image of only the `spending`
+service through the shared `jimgreco/release-tools` engine, keeping its runtime
+configuration. See
 [deployment](../docs/deploy.md).
 
 ## Usage

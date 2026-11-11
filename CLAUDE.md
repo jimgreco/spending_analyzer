@@ -59,7 +59,7 @@ python app.py           # or: uvicorn app:app --reload --port 8000
 
 ## Deployment
 
-Production is EC2/Docker Compose: every merge to `main` deploys after CI passes (`.github/workflows/deploy.yml` + `scripts/deploy-service.py`; see `docs/deploy.md`). The Elastic Beanstalk notes below are legacy.
+Production is EC2/Docker Compose: every merge to `main` releases after CI passes (`.github/workflows/deploy.yml` calls the pinned shared `jimgreco/release-tools` server engine with `.github/release/server.json`; see `docs/deploy.md`). The Elastic Beanstalk notes below are legacy.
 
 ### GitHub
 ```bash

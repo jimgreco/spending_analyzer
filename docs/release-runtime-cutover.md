@@ -11,14 +11,14 @@ What still applies from the cutover:
   `scripts/db-runtime/cutover.py` and is coordinated separately. Only
   `spending_runtime` needs LOGIN; `spending_owner` and `spending_migrator` stay
   NOLOGIN. Do not rerun historical Spending corrections.
-- The automatic release helper never changes `DATABASE_URL` or any other runtime
+- Automatic releases never change `DATABASE_URL` or any other runtime
   setting. It keeps the recorded Compose overlays, including
   `db-runtime-spending-*.json`, so whichever cutover state is live carries over. It
-  waits out the cutover's 24-hour recovery window before replacing the
-  cutover-pinned image with a build of the merged commit.
+  replaces the cutover-pinned image with the merged commit's image. (The old
+  helper's 24-hour post-cutover window is gone; see deploy.md.)
 - The production host is aarch64. CI still builds a native ARM64 image on
-  `ubuntu-24.04-arm` to validate it. Production images are built on the host
-  from the transferred source.
+  `ubuntu-24.04-arm` to validate it. Production images are built in CI
+  (`ubuntu-24.04-arm`) and pulled from GHCR.
 
 Local checks: `python3 -B -m unittest discover -s tests -v` (requires PyYAML),
 `actionlint .github/workflows/*.yml`, and the app suite with
