@@ -201,7 +201,7 @@ def reconcile_card_statement(pages, source, rows, filename=''):
     """Return a reconciliation summary or raise ValueError before DB insertion.
 
     Match a multiset of (date, signed amount), which catches missing identical
-    small charges as well as missing credits. Descriptions remain GPT's concern.
+    small charges as well as missing credits. Descriptions remain the AI extractor's concern.
     """
     if not pages:
         return None

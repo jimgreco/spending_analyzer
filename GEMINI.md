@@ -19,7 +19,7 @@ only the `spending` service on the host. See `docs/deploy.md`.
 
 ## Environment Variables (Production)
 Managed in `~/deploy/.env` on the EC2 instance:
-- `SPENDING_OPENAI_API_KEY`
+- `SPENDING_ANTHROPIC_API_KEY` (optional `SPENDING_ANTHROPIC_MODEL`)
 - `SPENDING_GOOGLE_CLIENT_ID / SECRET`
 - `SPENDING_SECRET_KEY`
 - `DB_PASSWORD`

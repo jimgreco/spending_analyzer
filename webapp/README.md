@@ -23,18 +23,16 @@ Open http://localhost:8000
 
 ## AI model configuration
 
-- `OPENAI_MODEL` controls PDF/CSV transaction extraction (default: `gpt-4o-mini`).
-- `OPENAI_TAG_MODEL` controls AI categorization (default: `gpt-6-astra`). A blank
-  value also uses the default. It is independent of `OPENAI_MODEL`, so an existing
-  extraction-model override does not keep categorization on the older model.
-- Categorization uses Chat Completions JSON mode with `reasoning_effort="low"`
-  and a 16,384-token completion budget, including reasoning. Model overrides must
-  support these options. Unsupported sampling parameters are omitted.
+- Statement extraction and categorization both call Claude through `ai_client.py`
+  (Anthropic Python SDK). `ANTHROPIC_API_KEY` is required for either; without it,
+  uploads fail extraction and categorization sends every row to review.
+- `ANTHROPIC_MODEL` overrides the model for both (default: `claude-opus-5-5`).
+- Requests use structured JSON outputs (the schema is enforced by the API) and
+  server-side refusal fallback. Extraction runs at medium effort with a 64,000-token
+  streamed budget; categorization runs at low effort with 16,384 tokens. Claude Opus
+  5.5 always thinks, and thinking counts toward these budgets.
 
-The default follows the current [OpenAI production-model recommendation](https://developers.openai.com/api/docs/models/chat-latest)
-and [GPT-6 migration guidance](https://developers.openai.com/api/docs/guides/latest-model).
-It is an explicit model ID, so future model releases require a deliberate update.
-GPT-6 Astra costs more per token than the prior mini models. Categorization now
+Categorization
 sends one decision request per transaction in batches of 20 (up to three concurrent
 requests), with the guide and up to six relevant manual examples per row. It uses
 no direct merchant-history bypass. The upgrade applies to new imports and does
@@ -66,7 +64,7 @@ not recategorize existing transactions.
 - Retrieval considers merchant similarity, amount, charge/refund sign, source and
   recency among the most recent 5,000 eligible corrections for the dataset. The
   prompt includes dates, descriptions, amounts, sources, chosen categories and
-  notes. The guide and selected examples are sent to OpenAI when importing.
+  notes. The guide and selected examples are sent to Anthropic (Claude) when importing.
 - **Needs review** lists uncertain or failed categorizations with a suggested
   category (when available) and a short reason. Pending suggestions do not become
   primary tags until a human saves the correction. Conflicting close manual
@@ -302,7 +300,7 @@ python3 -m unittest discover -s webapp -p 'test_tag_model.py' -v
 
 The optional API/import integration suite needs a **disposable local PostgreSQL
 DB** whose name ends in `_test`. It clears test tables; never use a real dataset.
-It mocks the parser and OpenAI transport and never reads statement files.
+It mocks the parser and Claude client and never reads statement files.
 The synthetic statement unit tests exercise Apple, Coinbase, BofA, Citi, and
 Chase refund, payment, credit-sign, repeated-row, total-mismatch, section,
 and failed-recovery paths.
