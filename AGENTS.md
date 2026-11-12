@@ -62,9 +62,8 @@ spending/
 # .env (at project root)
 LOCAL_DEV=true
 DATABASE_URL=postgresql://spending:spending@localhost:5434/spending
-OPENAI_API_KEY=sk-...   # Optional — falls back to no tags if absent
-OPENAI_MODEL=gpt-4.1-mini
-OPENAI_TAG_MODEL=gpt-6-astra
+ANTHROPIC_API_KEY=sk-ant-...   # Required for statement extraction and categorization
+ANTHROPIC_MODEL=claude-opus-5-5
 
 # Run
 cd webapp && pip install -r requirements.txt
@@ -128,9 +127,8 @@ eb logs                     # tail logs
 
 Environment variables (set via EBS console or `eb setenv`):
 - `DATABASE_URL` — RDS PostgreSQL connection string
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
-- `OPENAI_TAG_MODEL` — categorization only; defaults to `gpt-6-astra`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_MODEL` — extraction and categorization; defaults to `claude-opus-5-5`
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL`
 - `OWNER_EMAIL` — the single account owner; invited users share this owner's data
 - `SECRET_KEY` — itsdangerous session signing key
@@ -147,8 +145,8 @@ Environment variables (set via EBS console or `eb setenv`):
 | Database | PostgreSQL via psycopg2 (connection pool) |
 | Auth | Google OAuth 2.0 (or local dev bypass) |
 | Sessions | itsdangerous signed cookies (30-day) |
-| PDF/CSV parsing | GPT-only (pdfplumber for text extraction, no hand-coded parsers) |
-| AI tag assignment | OpenAI API (`OPENAI_TAG_MODEL`, default `gpt-6-astra`) |
+| PDF/CSV parsing | Claude only (pdfplumber for text extraction, no hand-coded parsers) |
+| AI (extraction + tag assignment) | Claude via `webapp/ai_client.py` (`ANTHROPIC_MODEL`, default `claude-opus-5-5`) |
 | Frontend | Vanilla JS + inline CSS, no frameworks |
 | Charts | Chart.js 4.4.1 |
 
@@ -296,13 +294,13 @@ Three dependency levels in `app.py`:
 Historical cleanup logic is retained in the explicit legacy initializer. Runtime startup and existing-schema adoption never run it.
 
 ### File Parsing Pipeline
-`parse_file_bytes(content, filename)` — GPT-only, no hand-coded parsers:
+`parse_file_bytes(content, filename)` — AI-only, no hand-coded parsers:
 1. PDF: extract text with pdfplumber page by page
 2. CSV: decode as UTF-8
 3. If text > 30,000 chars: chunk by pages (PDF) or rows (CSV, repeating header); each chunk sent separately
-4. `parse_with_gpt()` sends each chunk to gpt-4.1-mini with `max_tokens=32000`, `response_format=json_object`
+4. `parse_with_ai()` sends each chunk to Claude (`PARSE_PROMPT`, `PARSE_SCHEMA`, medium effort, 64,000-token streamed budget)
 5. Returns `{date, description, amount}` rows; source detected via `detect_source(text)` regex
-6. `clean_description()` applied to all rows before GPT tag assignment and DB insert
+6. `clean_description()` applied to all rows before AI tag assignment and DB insert
 
 ### Tag Assignment Pipeline (on upload)
 1. `load_categorization_context(user_id)` loads the saved guide and up to 5,000
@@ -310,8 +308,8 @@ Historical cleanup logic is retained in the explicit legacy initializer. Runtime
    are excluded; older manual corrections are legacy evidence with unknown scope.
 2. `categorization.py` retrieves up to six relevant manual examples per row using
    description, amount, sign, source and recency, retaining conflicts for review.
-3. `assign_tags_with_gpt(rows, tag_list, guide, history)` sends rows in batches of
-   20 using `OPENAI_TAG_MODEL` (default `gpt-6-astra`), low reasoning and JSON mode.
+3. `assign_tags_with_ai(rows, tag_list, guide, history)` sends rows in batches of
+   20 to Claude (`SYSTEM_PROMPT`, `RESULTS_SCHEMA`, low effort).
    It returns one validated decision per row, preserving amount/source differences.
 4. Confident results become primary tags. Conflicting, uncertain, invalid or failed
    results remain unassigned with `needs_review`, an optional suggested tag and a
@@ -319,8 +317,7 @@ Historical cleanup logic is retained in the explicit legacy initializer. Runtime
 5. Human primary corrections store `correction_scope` (`transaction` or `similar`)
    and `correction_note`, and clear review metadata. Clear-all is always one-time.
 
-`OPENAI_MODEL` remains the separate statement extraction setting. The guide and
-selected manual examples are sent to OpenAI during new imports; existing labels
+The guide and selected manual examples are sent to Anthropic (Claude) during new imports; existing labels
 are not automatically rewritten. See `webapp/README.md` for the API contract and
 synthetic unit/integration checks. The integration suite requires a disposable
 local `_test` database and must never run against real financial data.

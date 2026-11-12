@@ -214,7 +214,7 @@ class AmountReversalTests(unittest.TestCase):
         rows = [{'date':'2026-09-01', 'description':'SYNTHETIC SIGN',
                  'amount':30.0, 'source':'Example', 'dedup_key':'raw-30'}]
         with patch.object(app, 'parse_file_bytes', return_value=(rows, 'Example', None)), \
-             patch.object(app, 'assign_tags_with_gpt',
+             patch.object(app, 'assign_tags_with_ai',
                           return_value=[app.review('Choose a category.')]):
             for job_id, force in (('sign-first', False), ('sign-force', True)):
                 with app.db() as conn:

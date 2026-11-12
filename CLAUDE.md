@@ -33,8 +33,8 @@ spending/
 # .env (at project root)
 LOCAL_DEV=true
 DATABASE_URL=postgresql://spending:spending@localhost:5434/spending
-OPENAI_API_KEY=sk-...   # Optional — falls back to no tags if absent
-OPENAI_MODEL=gpt-4.1-mini
+ANTHROPIC_API_KEY=sk-ant-...   # Required for statement extraction and categorization
+ANTHROPIC_MODEL=claude-opus-5-5
 
 # Run
 cd webapp && pip install -r requirements.txt
@@ -86,8 +86,8 @@ eb logs                     # tail logs
 
 Environment variables (set via EBS console or `eb setenv`):
 - `DATABASE_URL` — RDS PostgreSQL connection string
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_MODEL` (default `claude-opus-5-5`)
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL`
 - `OWNER_EMAIL` — the single account owner; invited users share this owner's data
 - `SECRET_KEY` — itsdangerous session signing key
@@ -104,8 +104,8 @@ Environment variables (set via EBS console or `eb setenv`):
 | Database | PostgreSQL via psycopg2 (connection pool) |
 | Auth | Google OAuth 2.0 (or local dev bypass) |
 | Sessions | itsdangerous signed cookies (30-day) |
-| PDF/CSV parsing | GPT-only (pdfplumber for text extraction, no hand-coded parsers) |
-| AI tag assignment | OpenAI API (gpt-4.1-mini) |
+| PDF/CSV parsing | Claude only (pdfplumber for text extraction, no hand-coded parsers) |
+| AI tag assignment | Claude via `webapp/ai_client.py` (default `claude-opus-5-5`) |
 | Frontend | Vanilla JS + inline CSS, no frameworks |
 | Charts | Chart.js 4.4.1 |
 
@@ -252,18 +252,18 @@ Three dependency levels in `app.py`:
 DB migrations run on startup to retroactively clean existing records.
 
 ### File Parsing Pipeline
-`parse_file_bytes(content, filename)` — GPT-only, no hand-coded parsers:
+`parse_file_bytes(content, filename)` — AI-only, no hand-coded parsers:
 1. PDF: extract text with pdfplumber page by page
 2. CSV: decode as UTF-8
 3. If text > 30,000 chars: chunk by pages (PDF) or rows (CSV, repeating header); each chunk sent separately
-4. `parse_with_gpt()` sends each chunk to gpt-4.1-mini with `max_tokens=32000`, `response_format=json_object`
+4. `parse_with_ai()` sends each chunk to Claude with structured JSON output (`PARSE_SCHEMA`), medium effort, 64,000-token streamed budget
 5. Returns `{date, description, amount}` rows; source detected via `detect_source(text)` regex
-6. `clean_description()` applied to all rows before GPT tag assignment and DB insert
+6. `clean_description()` applied to all rows before AI tag assignment and DB insert
 
 ### Tag Assignment Pipeline (on upload)
-GPT assigns zero or more tags per transaction from the user's existing tag list:
-1. `assign_tags_with_gpt(descriptions, tag_list)` — batch GPT call (gpt-4.1-mini); returns `{description: [tag, ...]}` map
-2. If no tags exist or GPT is unavailable, transactions are imported with no tags
+Claude assigns one primary tag (or review) per transaction from the user's existing tag list:
+1. `assign_tags_with_ai(rows, tag_list, guide, history)` — batches of 20 to Claude (low effort, `RESULTS_SCHEMA`); one validated decision per row
+2. If no tags exist or the AI is unavailable, transactions are imported unassigned and marked for review
 3. After bulk insert (via `execute_values` with `RETURNING id`), tags are upserted and `transaction_tags` rows inserted
 
 ### Tag Exclusion

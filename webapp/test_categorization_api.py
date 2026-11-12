@@ -217,8 +217,7 @@ class CategorizationApiTests(unittest.TestCase):
                 cur.execute("INSERT INTO upload_jobs(id,user_id,filename) VALUES('test-job',%s,'synthetic.csv')",(self.uid,))
         helper=model_tests.TagModelTests()
         client=helper.make_client([decision(0),decision(1,'Home','medium'),decision(2)])
-        self.addCleanup(client.close)
-        with patch.object(app,'parse_file_bytes',return_value=(rows,'Example card',None)),patch.object(app,'OpenAI',return_value=client):
+        with patch.object(app,'parse_file_bytes',return_value=(rows,'Example card',None)),model_tests.patch_claude(client):
             app._process_upload_job('test-job',self.uid,'synthetic.csv',b'fake statement',False)
         job=self.client.get('/api/upload/status/test-job').json()
         self.assertEqual(job['status'],'done',job)
@@ -262,7 +261,7 @@ class CategorizationApiTests(unittest.TestCase):
             with conn.cursor() as cur:
                 cur.execute("INSERT INTO upload_jobs(id,user_id,filename) VALUES('test-job-force',%s,'synthetic.csv')",(self.uid,))
         with patch.object(app,'parse_file_bytes',return_value=(rows+[refund],'Example card',None)), \
-             patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Choose a category.')]*4):
+             patch.object(app,'assign_tags_with_ai',return_value=[app.review('Choose a category.')]*4):
             app._process_upload_job('test-job-force',self.uid,'synthetic.csv',b'fake statement',True)
         forced=self.client.get('/api/upload/status/test-job-force').json()
         self.assertEqual(forced['status'],'done',forced)
@@ -276,7 +275,7 @@ class CategorizationApiTests(unittest.TestCase):
             with conn.cursor() as cur:
                 cur.execute("INSERT INTO upload_jobs(id,user_id,filename) VALUES('test-job-force-again',%s,'synthetic.csv')",(self.uid,))
         with patch.object(app,'parse_file_bytes',return_value=(rows+[refund],'Example card',None)), \
-             patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Choose a category.')]*4):
+             patch.object(app,'assign_tags_with_ai',return_value=[app.review('Choose a category.')]*4):
             app._process_upload_job('test-job-force-again',self.uid,'synthetic.csv',b'fake statement',True)
         repeated=self.client.get('/api/upload/status/test-job-force-again').json()['result']
         self.assertEqual((repeated['new'],repeated['dupes'],repeated['skipped']),(0,0,4))
@@ -357,7 +356,7 @@ class CategorizationApiTests(unittest.TestCase):
             try: app._process_upload_job(job_id,self.uid,'race.csv',b'race bytes',False)
             except Exception as exc: errors.append(exc)
         with patch.object(app,'parse_file_bytes',return_value=(rows,'Example card',None)), \
-             patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Choose a category.')]):
+             patch.object(app,'assign_tags_with_ai',return_value=[app.review('Choose a category.')]):
             workers=[threading.Thread(target=run,args=(job_id,)) for job_id in ('race-one','race-two')]
             for worker in workers: worker.start()
             for worker in workers: worker.join()
@@ -386,7 +385,7 @@ class CategorizationApiTests(unittest.TestCase):
                     cur.execute('INSERT INTO upload_jobs(id,user_id,filename) VALUES(%s,%s,%s)',
                                 (job_id,self.uid,name))
             with patch.object(app,'parse_file_bytes',return_value=([account_row(last4)],'Bank of America',None)), \
-                 patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Synthetic review.')]):
+                 patch.object(app,'assign_tags_with_ai',return_value=[app.review('Synthetic review.')]):
                 app._process_upload_job(job_id,self.uid,name,name.encode(),False)
             self.assertEqual(self.client.get(f'/api/upload/status/{job_id}').json()['result']['new'],1)
         with app.db() as conn:
@@ -404,7 +403,7 @@ class CategorizationApiTests(unittest.TestCase):
                     'active','old-unknown.csv')""",(self.uid,description,legacy))
                 cur.execute("INSERT INTO upload_jobs(id,user_id,filename) VALUES('account-9142',%s,'trust.csv')",(self.uid,))
         with patch.object(app,'parse_file_bytes',return_value=([account_row('9142')],'Bank of America',None)), \
-             patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Synthetic review.')]):
+             patch.object(app,'assign_tags_with_ai',return_value=[app.review('Synthetic review.')]):
             app._process_upload_job('account-9142',self.uid,'trust.csv',b'trust bytes',False)
         result=self.client.get('/api/upload/status/account-9142').json()['result']
         self.assertEqual((result['new'],result['dupes'],result['possible_overlap']),(1,0,1))
@@ -429,7 +428,7 @@ class CategorizationApiTests(unittest.TestCase):
                  date=args[0],account_key='bofa:5090',legacy_dedup_key=old_key,
                  legacy_dedup_keys=[app.make_dedup_key(*args),old_key],dedup_key=new_key)
         with patch.object(app,'parse_file_bytes',return_value=([row],'Bank of America',None)), \
-             patch.object(app,'assign_tags_with_gpt',return_value=[app.review('Synthetic review.')]):
+             patch.object(app,'assign_tags_with_ai',return_value=[app.review('Synthetic review.')]):
             app._process_upload_job('legacy-force',self.uid,'old-bofa.pdf',content,True)
         result=self.client.get('/api/upload/status/legacy-force').json()['result']
         self.assertEqual((result['new'],result['dupes'],result['skipped']),(0,0,1))

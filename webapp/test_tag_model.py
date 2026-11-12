@@ -1,18 +1,62 @@
-"""Synthetic categorization checks: no statements, DB, or live OpenAI calls."""
+"""Synthetic categorization checks: no statements, DB, or live Claude calls."""
 import importlib
+import os
 import json
 import unittest
 from unittest.mock import patch
 
-import httpx
-from openai import OpenAI
+from types import SimpleNamespace
+
+import ai_client
 from categorization import prepare_context, validate_results
 
 with patch('dotenv.load_dotenv'), patch.dict('os.environ', {
-    'OPENAI_API_KEY':'synthetic-test-key', 'OPENAI_MODEL':'gpt-4.1-mini',
-    'OPENAI_TAG_MODEL':'', 'SECRET_KEY':'synthetic-test-secret', 'LOCAL_DEV':'false',
+    'ANTHROPIC_API_KEY':'synthetic-test-key', 'ANTHROPIC_MODEL':'',
+    'SECRET_KEY':'synthetic-test-secret', 'LOCAL_DEV':'false',
 }):
     app = importlib.import_module('app')
+
+# ai_client reads the key per request, so keep a synthetic one for the whole run.
+os.environ['ANTHROPIC_API_KEY']='synthetic-test-key'
+os.environ.pop('ANTHROPIC_MODEL',None)
+
+
+class FakeClaude:
+    """Stands in for anthropic.Anthropic: records each request, returns one fixed reply."""
+    def __init__(self, text, stop_reason='end_turn', requests=None):
+        self.text, self.stop_reason = text, stop_reason
+        self.requests = [] if requests is None else requests
+        self.beta = SimpleNamespace(messages=SimpleNamespace(stream=self._stream))
+
+    def _stream(self, **request):
+        self.requests.append(request)
+        message = SimpleNamespace(stop_reason=self.stop_reason,
+                                  content=[SimpleNamespace(type='text', text=self.text)])
+        return _Stream(message)
+
+    def close(self):
+        pass
+
+
+class _Stream:
+    def __init__(self, message):
+        self.message = message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self):
+        return self.message
+
+
+def patch_claude(client=None, **kwargs):
+    """Patch the SDK client that ai_client builds for every request."""
+    if client is None:
+        return patch.object(ai_client.anthropic, 'Anthropic', **kwargs)
+    return patch.object(ai_client.anthropic, 'Anthropic', return_value=client)
 
 
 def transaction(description='EXAMPLE GROCERY', amount=30, source='Example card'):
@@ -30,43 +74,35 @@ def decision(index=0, tag='Groceries', confidence='high', ids=None):
 
 
 class TagModelTests(unittest.TestCase):
-    def make_client(self, results, finish_reason='stop'):
+    def make_client(self, results, stop_reason='end_turn'):
         self.requests=[]
-        def handle(request):
-            self.requests.append(json.loads(request.content))
-            return httpx.Response(200, json={
-                'id':'synthetic-completion', 'object':'chat.completion', 'created':0,
-                'model':'gpt-6-astra', 'choices':[{'index':0, 'finish_reason':finish_reason,
-                    'message':{'role':'assistant', 'content':json.dumps({'results':results})}}]})
-        client=OpenAI(api_key='synthetic-test-key', http_client=httpx.Client(transport=httpx.MockTransport(handle)))
-        self.addCleanup(client.close)
-        return client
+        return FakeClaude(json.dumps({'results':results}), stop_reason, self.requests)
 
     def test_model_request_contains_guide_and_manual_context(self):
         client=self.make_client([decision(ids=[1])])
-        with patch.object(app,'OpenAI',return_value=client):
-            result=app.assign_tags_with_gpt([transaction()],['Groceries'],'Food for home.',[example()])
+        with patch_claude(client):
+            result=app.assign_tags_with_ai([transaction()],['Groceries'],'Food for home.',[example()])
         self.assertEqual(result[0]['primary_tag'],'Groceries')
         self.assertFalse(result[0]['needs_review'])
-        self.assertEqual(app.OPENAI_MODEL,'gpt-4.1-mini')
         request=self.requests[0]
-        self.assertEqual(request['model'],'gpt-6-astra')
-        self.assertEqual(request['reasoning_effort'],'low')
-        self.assertEqual(request['max_completion_tokens'],16384)
-        self.assertEqual(request['response_format'],{'type':'json_object'})
+        self.assertEqual(request['model'],'claude-opus-5-5')
+        self.assertEqual(request['system'],app.SYSTEM_PROMPT)
+        self.assertEqual(request['output_config']['effort'],'low')
+        self.assertEqual(request['output_config']['format']['type'],'json_schema')
+        self.assertEqual(request['max_tokens'],16384)
+        self.assertEqual(request['fallbacks'],'default')
         self.assertNotIn('temperature',request)
-        self.assertNotIn('max_tokens',request)
-        payload=json.loads(request['messages'][1]['content'])
+        payload=json.loads(request['messages'][0]['content'])
         self.assertEqual(payload['categorization_guide'],'Food for home.')
         self.assertEqual(payload['transactions'][0]['manual_examples'][0]['note'],'Food for home')
         self.assertEqual(payload['transactions'][0]['amount'],30)
 
     def test_same_description_different_amount_keeps_independent_decisions(self):
         client=self.make_client([decision(0,'Groceries'),decision(1,'Home')])
-        with patch.object(app,'OpenAI',return_value=client):
-            result=app.assign_tags_with_gpt([transaction(amount=30),transaction(amount=300)],['Groceries','Home'])
+        with patch_claude(client):
+            result=app.assign_tags_with_ai([transaction(amount=30),transaction(amount=300)],['Groceries','Home'])
         self.assertEqual([r['primary_tag'] for r in result],['Groceries','Home'])
-        rows=json.loads(self.requests[0]['messages'][1]['content'])['transactions']
+        rows=json.loads(self.requests[0]['messages'][0]['content'])['transactions']
         self.assertEqual([r['amount'] for r in rows],[30,300])
 
     def test_automatic_and_one_time_examples_never_train(self):
@@ -122,17 +158,18 @@ class TagModelTests(unittest.TestCase):
         self.assertIsNone(result['primary_tag'])
 
     def test_token_limit_and_transport_failure_go_to_review(self):
-        client=self.make_client([decision()],finish_reason='length')
-        with patch.object(app,'OpenAI',return_value=client):
-            result=app.assign_tags_with_gpt([transaction()],['Groceries'])
-        self.assertTrue(result[0]['needs_review'])
-        with patch.object(app,'OpenAI',side_effect=RuntimeError('synthetic failure')):
-            self.assertTrue(app.assign_tags_with_gpt([transaction()],['Groceries'])[0]['needs_review'])
+        for stop_reason in ('max_tokens','refusal'):
+            client=self.make_client([decision()],stop_reason=stop_reason)
+            with patch_claude(client):
+                result=app.assign_tags_with_ai([transaction()],['Groceries'])
+            self.assertTrue(result[0]['needs_review'])
+        with patch_claude(side_effect=RuntimeError('synthetic failure')):
+            self.assertTrue(app.assign_tags_with_ai([transaction()],['Groceries'])[0]['needs_review'])
 
     def test_unavailable_key_or_no_categories_remains_reviewable(self):
-        with patch.object(app,'OPENAI_API_KEY',''):
-            self.assertTrue(app.assign_tags_with_gpt([transaction()],['Groceries'])[0]['needs_review'])
-        self.assertIn('Create categories',app.assign_tags_with_gpt([transaction()],[])[0]['reason'])
+        with patch.dict('os.environ',{'ANTHROPIC_API_KEY':''}):
+            self.assertTrue(app.assign_tags_with_ai([transaction()],['Groceries'])[0]['needs_review'])
+        self.assertIn('Create categories',app.assign_tags_with_ai([transaction()],[])[0]['reason'])
 
 
 if __name__=='__main__':unittest.main()

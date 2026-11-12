@@ -147,7 +147,7 @@ class ImportCheckTests(unittest.TestCase):
         missing_refund = [r for r in APPLE_ROWS if r['amount'] != -104.04]
         refund = [r for r in APPLE_ROWS if r['amount'] == -104.04]
         with patch.object(app.pdfplumber, 'open', return_value=pdf), \
-             patch.object(app, 'parse_with_gpt', side_effect=[
+             patch.object(app, 'parse_with_ai', side_effect=[
                  (missing_refund,None,''), (refund,None,'')]) as extract:
             rows, source, error = app.parse_file_bytes(b'synthetic pdf', 'apple.pdf')
         self.assertEqual(error, '')
@@ -161,7 +161,7 @@ class ImportCheckTests(unittest.TestCase):
         pdf.__enter__.return_value.pages = [SimpleNamespace(extract_text=lambda: APPLE_PAGE)]
         missing_refund = [r for r in APPLE_ROWS if r['amount'] != -104.04]
         with patch.object(app.pdfplumber, 'open', return_value=pdf), \
-             patch.object(app, 'parse_with_gpt', side_effect=[
+             patch.object(app, 'parse_with_ai', side_effect=[
                  (missing_refund,None,''), ([],None,'')]):
             rows, source, error = app.parse_file_bytes(b'synthetic pdf', 'apple.pdf')
         self.assertEqual(rows, [])
@@ -171,7 +171,7 @@ class ImportCheckTests(unittest.TestCase):
     def test_chunk_failure_does_not_return_partial_rows(self):
         content = ('Date,Description,Amount\n' + '2026-08-01,X,1\n' * 3000).encode()
         first = ([{'date':'2026-08-01','description':'X','amount':1}], None, '')
-        with patch.object(app, 'parse_with_gpt', side_effect=[first, ([],None,'timeout')]):
+        with patch.object(app, 'parse_with_ai', side_effect=[first, ([],None,'timeout')]):
             rows, source, error = app.parse_file_bytes(content, 'synthetic.csv')
         self.assertEqual(rows, [])
         self.assertIsNone(source)
@@ -182,30 +182,25 @@ class ImportCheckTests(unittest.TestCase):
             {'date':'2026-08-01','description':'ABCDEFGHIJKL FIRST','amount':3},
             {'date':'2026-08-01','description':'ABCDEFGHIJKL SECOND','amount':3},
         ]
-        with patch.object(app, 'parse_with_gpt', return_value=(collision,None,'')):
+        with patch.object(app, 'parse_with_ai', return_value=(collision,None,'')):
             rows, source, error = app.parse_file_bytes(b'synthetic', 'synthetic.csv')
         self.assertEqual(rows, [])
         self.assertIn('ambiguous duplicate', error)
 
     def test_truncated_response_and_invalid_rows_fail_closed(self):
-        class Choice:
-            finish_reason = 'length'
-            message = type('Message', (), {'content':'{"transactions":[]}'})()
-        class Client:
-            chat = type('Chat', (), {'completions':type('Completions', (), {
-                'create':lambda self, **kw:type('Response', (), {'choices':[Choice()]})()})()})()
-        with patch.object(app, 'OpenAI', return_value=Client()):
-            self.assertIn('ended early', app.parse_with_gpt('synthetic','x.csv')[2])
-        Choice.finish_reason = 'stop'
-        Choice.message = type('Message', (), {'content':json.dumps({'transactions':[
+        for stop_reason in ('max_tokens', 'refusal'):
+            client = model_tests.FakeClaude('{"transactions":[]}', stop_reason)
+            with model_tests.patch_claude(client):
+                self.assertIn('ended early', app.parse_with_ai('synthetic','x.csv')[2])
+        client = model_tests.FakeClaude(json.dumps({'transactions':[
             {'date':'2026-08-01','description':'OK','amount':2},
-            {'date':'2026-08-02','description':'BAD','amount':'NaN'}]})})()
-        with patch.object(app, 'OpenAI', return_value=Client()):
-            self.assertIn('invalid row', app.parse_with_gpt('synthetic','x.csv')[2])
+            {'date':'2026-08-02','description':'BAD','amount':'NaN'}]}))
+        with model_tests.patch_claude(client):
+            self.assertIn('invalid row', app.parse_with_ai('synthetic','x.csv')[2])
 
     def test_citi_bofa_section_sign_contract(self):
         # Keep payments made separate from payments received and rewards credits.
-        prompt = app.GPT_PARSE_PROMPT
+        prompt = app.PARSE_PROMPT
         self.assertIn('payments made/outflows', prompt)
         self.assertIn('payments received/inflows', prompt)
         self.assertIn('refunds/credits', prompt)
@@ -216,12 +211,14 @@ class ImportCheckTests(unittest.TestCase):
             {'date':'2026-08-03','description':'BOFA CHECKING WITHDRAWAL','amount':42.00},
             {'date':'2026-08-04','description':'BOFA CHECKING DEPOSIT','amount':-100.00},
         ]
-        response = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
-            message=SimpleNamespace(content=json.dumps({'transactions':fixtures})))])
-        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
-            create=lambda **kwargs: response)))
-        with patch.object(app, 'OpenAI', return_value=client):
-            parsed, _, error = app.parse_with_gpt('synthetic Citi and BofA sections', 'signs.csv')
+        client = model_tests.FakeClaude(json.dumps({'transactions':fixtures}))
+        with model_tests.patch_claude(client):
+            parsed, _, error = app.parse_with_ai('synthetic Citi and BofA sections', 'signs.csv')
+        request = client.requests[0]
+        self.assertEqual(request['system'], app.PARSE_PROMPT)
+        self.assertEqual(request['messages'][0]['content'], 'synthetic Citi and BofA sections')
+        self.assertEqual(request['output_config']['format']['schema'], app.PARSE_SCHEMA)
+        self.assertNotIn('temperature', request)
         self.assertEqual(error, '')
         self.assertEqual([r['amount'] for r in parsed],[-250.00,-5.25,42.00,-100.00])
         self.assertEqual(reconcile_card_statement(None, 'Citi', APPLE_ROWS), None)
