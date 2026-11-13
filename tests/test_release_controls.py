@@ -37,7 +37,7 @@ def validate_verify(text):
         assert 'permissions' not in job
 
 
-RT_SHA = '082f38d35995b50526c43da11fa6a9e73300fd4d'
+RT_SHA = 'bfd9d14bb12907b74bceaa28b7c0382fb3549ea6'
 RELEASE_WORKFLOW = 'jimgreco/release-tools/.github/workflows/server-release.yml@' + RT_SHA
 EC2_SECRETS = ('EC2_HOST', 'EC2_USER', 'EC2_SSH_KEY', 'EC2_SSH_KNOWN_HOSTS')
 
@@ -83,7 +83,8 @@ def validate_manifest(manifest):
     # The container never migrates on start and no release step migrates.
     assert 'migrate' not in manifest
     assert '{sha7}' in manifest['services']['spending']['health']
-    assert manifest['public']['field'] == 'sha' and manifest['public']['length'] == 7
+    assert 'public' not in manifest and 'backup' not in manifest
+    assert manifest['refuse_backwards'] is True
 
 
 class WorkflowSet(unittest.TestCase):
