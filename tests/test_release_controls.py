@@ -90,7 +90,7 @@ def validate_manifest(manifest):
 class WorkflowSet(unittest.TestCase):
     def test_only_the_standard_workflows_exist(self):
         names = {p.name for p in (ROOT / '.github/workflows').iterdir()}
-        self.assertEqual(names, {'release.yml', 'verify.yml'})
+        self.assertEqual(names, {'codeql.yml', 'release.yml', 'verify.yml'})
 
 
 class VerifyWorkflow(unittest.TestCase):
