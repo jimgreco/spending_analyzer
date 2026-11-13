@@ -20,6 +20,5 @@
       "command": ["python", "-c", "import os,sys\nif 'MIGRATION_DATABASE_URL' in os.environ: sys.exit('Runtime environment contains MIGRATION_DATABASE_URL; reconcile before release')\nif not os.environ.get('DATABASE_URL','').startswith(('postgres://','postgresql://')): sys.exit('DATABASE_URL is missing or not PostgreSQL')\n"]
     }
   ],
-  "backup": { "database": "spending", "require_table": "transactions", "keep": 20 },
-  "public": { "url": "https://spending-analyzer.jim-greco.com/api/version", "field": "sha", "length": 7 }
+  "refuse_backwards": true
 }
