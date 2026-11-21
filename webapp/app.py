@@ -9,7 +9,7 @@ Auth:
   - Local dev:   Set LOCAL_DEV=true in .env to bypass OAuth and auto-login as a
                  local test user.  No Google credentials needed.
 """
-import os, re, io, json, hashlib, secrets, uuid, threading, subprocess, math
+import os, re, io, json, hashlib, secrets, uuid, threading, subprocess, math, time, random
 from collections import Counter
 from decimal import Decimal
 from datetime import date, datetime, timedelta, timezone
@@ -36,6 +36,8 @@ from categorization import SYSTEM_PROMPT, RESULTS_SCHEMA, prepare_context, reque
 from import_checks import reconcile_card_statement, detect_account_key, StatementMismatch
 from transaction_types import preview_candidate, sign_issue, summarize_ledger
 from transaction_export import ExportTooLarge, transactions_csv
+import plaid_client
+from plaid_client import PlaidError
 from dotenv import load_dotenv
 
 # ── Load .env (one level up from this file) ───────────────────────────────────────
@@ -595,6 +597,63 @@ def _initialize_legacy_schema_and_data():
         except Exception:
             raise RuntimeError("Local orphan assignment failed") from None
 
+# Additive upgrades applied by `migrate.py` to an adopted database, keyed by the
+# contract version they produce. Each runs once, inside the migration transaction.
+# Runtime grants are explicit per object (docs/database-runtime-access.md).
+SCHEMA_UPGRADES = {
+    2: """
+        CREATE TABLE plaid_items (
+            id               SERIAL      PRIMARY KEY,
+            user_id          INTEGER     NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            item_id          TEXT        NOT NULL UNIQUE,
+            access_token     TEXT        NOT NULL,
+            institution_name TEXT        NOT NULL DEFAULT '',
+            sync_cursor      TEXT,
+            status           TEXT        NOT NULL DEFAULT 'ok'
+                             CHECK (status IN ('ok', 'login_required', 'error')),
+            error_code       TEXT,
+            last_attempt_at  TIMESTAMPTZ,
+            last_synced_at   TIMESTAMPTZ,
+            last_result      TEXT,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX idx_plaid_items_user ON plaid_items(user_id);
+        CREATE TABLE plaid_accounts (
+            id         SERIAL  PRIMARY KEY,
+            item_id    INTEGER NOT NULL REFERENCES plaid_items(id) ON DELETE CASCADE,
+            account_id TEXT    NOT NULL UNIQUE,
+            name       TEXT    NOT NULL,
+            mask       TEXT,
+            subtype    TEXT,
+            source     TEXT    NOT NULL,
+            sync_from  DATE    NOT NULL,
+            enabled    BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        CREATE INDEX idx_plaid_accounts_item ON plaid_accounts(item_id);
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'spending_runtime') THEN
+                GRANT SELECT, INSERT, UPDATE, DELETE ON plaid_items, plaid_accounts TO spending_runtime;
+                GRANT USAGE ON SEQUENCE plaid_items_id_seq, plaid_accounts_id_seq TO spending_runtime;
+            END IF;
+        END $$;
+    """,
+}
+
+
+def _apply_schema_upgrades(cur, current):
+    for version in sorted(SCHEMA_UPGRADES):
+        if version > current:
+            cur.execute(SCHEMA_UPGRADES[version])
+
+
+def _adopted_schema_version(cur, app_name):
+    cur.execute("SELECT to_regclass('public.app_schema_versions') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        return 0
+    cur.execute('SELECT COALESCE(MAX(version), 0) FROM public.app_schema_versions WHERE app=%s', (app_name,))
+    return cur.fetchone()[0]
+
+
 def init_db(*, adopt_existing=False):
     """Explicit schema command; existing data requires validated adoption.
 
@@ -610,14 +669,24 @@ def init_db(*, adopt_existing=False):
                 cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (CONTRACT['app'] + ':schema',))
                 cur.execute("SELECT count(*) FROM pg_tables WHERE schemaname='public'")
                 exists = cur.fetchone()[0] > 0
-                if exists:
-                    assert_schema_compatible(conn, require_version=not adopt_existing)
-                    if not adopt_existing:
+                if exists and adopt_existing:
+                    assert_schema_compatible(conn, require_version=False)
+                elif exists:
+                    # An adopted database: apply any newer additive upgrades, then
+                    # validate. An unadopted one (version 0) fails validation below.
+                    current = _adopted_schema_version(cur, CONTRACT['app'])
+                    if not current:
+                        assert_schema_compatible(conn)
+                    if current == CONTRACT['version']:
+                        assert_schema_compatible(conn)
                         return
+                    _apply_schema_upgrades(cur, current)
+                    assert_schema_compatible(conn, require_version=False)
                 else:
                     if adopt_existing:
                         raise RuntimeError('Cannot adopt an empty database')
                     _initialize_legacy_schema_and_data()
+                    _apply_schema_upgrades(cur, 1)
                     assert_schema_compatible(conn, require_version=False)
                 cur.execute("""CREATE TABLE IF NOT EXISTS public.app_schema_versions (
                     app TEXT NOT NULL, version INTEGER NOT NULL,
@@ -1043,6 +1112,8 @@ def startup():
     from schema_contract import assert_schema_compatible
     with db() as conn:
         assert_schema_compatible(conn)
+    if plaid_client.enabled():
+        threading.Thread(target=_plaid_scheduler, daemon=True).start()
 
 @app.get("/api/version")
 def get_version():
@@ -2259,24 +2330,40 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                             (user_id, all_keys))
                 existing_keys = {r[0] for r in cur.fetchall()}
 
-                new_count = dupe_count = skipped = possible_overlap = 0
+                def already_in_file(r):
+                    return r['dedup_key'] in imported_keys or any(
+                        key in imported_keys for key in
+                        (r.get('legacy_dedup_keys') or [r.get('legacy_dedup_key')]) if key)
+
+                # A charge bank sync already imported: the bank's row wins and keeps
+                # its category and edits; the statement's copy is stored as a duplicate.
+                unseen = [r for r in rows if r['dedup_key'] not in existing_keys and not already_in_file(r)]
+                bank_matches, bank_possible = plaid_client.match_rows(
+                    unseen, _match_candidates(cur, user_id, unseen, True))
+
+                new_count = dupe_count = skipped = possible_overlap = bank_matched = 0
                 insert_rows = []
                 decision_by_key = {}
                 for r, decision in zip(rows, decisions):
                     row_legacy_keys = [key for key in
                                        (r.get('legacy_dedup_keys') or [r.get('legacy_dedup_key')]) if key]
-                    if r['dedup_key'] in imported_keys or any(key in imported_keys for key in row_legacy_keys):
+                    if already_in_file(r):
                         skipped += 1
                         continue
                     is_dupe   = r["dedup_key"] in existing_keys
+                    dedup_of  = r["dedup_key"] if is_dupe else bank_matches.get(r["dedup_key"])
                     legacy_overlap = (not is_dupe and any(key in existing_keys for key in row_legacy_keys))
-                    tx_status = "deduped" if is_dupe else "active"
+                    tx_status = "deduped" if dedup_of else "active"
                     if legacy_overlap:
                         possible_overlap += 1
                         decision = review('Possible match to an older import with unknown account; verify this row.')
+                    elif not dedup_of and r["dedup_key"] in bank_possible:
+                        decision = review('Possible duplicate of a bank-synced row; verify.')
+                    if dedup_of and not is_dupe:
+                        bank_matched += 1
                     insert_rows.append((user_id, r["date"], r["description"],
                                         r["amount"], r["source"], r["dedup_key"],
-                                        tx_status, r["dedup_key"] if is_dupe else None, import_name))
+                                        tx_status, dedup_of, import_name))
                     decision_by_key[r["dedup_key"]] = decision
                     if tx_status == "active":
                         new_count += 1
@@ -2299,7 +2386,7 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                     decision = decision_by_key[dk]
                     if decision["primary_tag"] and decision["primary_tag"] not in tag_ids:
                         decision = review("The suggested category was removed during import; choose a category.")
-                    if dk not in existing_keys:
+                    if dk not in existing_keys and dk not in bank_matches:
                         if decision["needs_review"]:
                             needs_review += 1
                         elif decision["primary_tag"]:
@@ -2331,7 +2418,7 @@ def _process_upload_job(job_id: str, user_id: int, filename: str, content: bytes
                     {'filename': filename, 'file_hash': file_hash,
                      'new_upload_id': new_upload_id, 'status': 'ok', 'source': source,
                      'new': new_count, 'dupes': dupe_count, 'skipped': skipped,
-                     'possible_overlap': possible_overlap,
+                     'possible_overlap': possible_overlap, 'bank_matched': bank_matched,
                      'needs_review': needs_review, 'gpt_tagged': gpt_tagged})
     except Exception as e:
         print(f"[upload_job:{job_id}] {type(e).__name__}: {e}")
@@ -2412,6 +2499,402 @@ def get_upload_job_status(job_id: str, user: dict = Depends(get_current_user)):
     if not row:
         raise HTTPException(404, "Job not found")
     return {"status": row[0], "result": json.loads(row[1]) if row[1] else None}
+
+# ── Bank sync (Plaid) ─────────────────────────────────────────────────────────────
+# Off unless PLAID_CLIENT_ID, PLAID_SECRET and PLAID_TOKEN_KEY are set. Each
+# connected account maps to a source label and a start date; rows dated before
+# it are left to statement uploads, so the two import paths do not overlap.
+PLAID_SYNC_HOURS = 12
+PLAID_CLAIM_SECONDS = 120
+PLAID_RELINK_CODES = {'ITEM_LOGIN_REQUIRED', 'PENDING_EXPIRATION', 'PENDING_DISCONNECT',
+                      'ACCESS_NOT_GRANTED', 'ITEM_NOT_FOUND', 'INVALID_ACCESS_TOKEN'}
+
+
+def _require_plaid():
+    if not plaid_client.enabled():
+        raise HTTPException(404, 'Bank sync is not configured')
+
+
+def _plaid_http_error(exc: PlaidError):
+    return HTTPException(502, f'Plaid: {exc.message}')
+
+
+def _statement_latest_by_source(cur, user_id):
+    """Latest statement-imported date per source; bank-synced rows do not count."""
+    cur.execute("""SELECT source, MAX(date)::text FROM transactions
+        WHERE user_id=%s AND status='active' AND left(dedup_key, 6) <> 'plaid:'
+        GROUP BY source""", (user_id,))
+    return dict(cur.fetchall())
+
+
+def _match_candidates(cur, user_id, rows, bank_rows):
+    """Stored rows that incoming `rows` could duplicate: bank-synced rows when
+    `bank_rows`, else statement rows. Deleted rows count, so a charge the user
+    removed is not brought back through the other channel. A row already
+    paired with one from the other channel is not offered again. The amount
+    is the imported one, so a row the user re-signed still matches."""
+    if not rows:
+        return []
+    days = [r['date'] for r in rows]
+    cur.execute("""SELECT t.dedup_key, t.date::text AS date, t.source, t.description,
+            COALESCE(t.original_amount, t.amount)::float AS amount
+        FROM transactions t
+        WHERE t.user_id=%s AND t.status IN ('active','deleted')
+          AND (left(t.dedup_key, 6) = 'plaid:') = %s
+          AND t.source = ANY(%s)
+          AND t.date BETWEEN %s::date - %s AND %s::date + %s
+          AND COALESCE(t.original_amount, t.amount) = ANY(%s::numeric[])
+          AND NOT EXISTS (SELECT 1 FROM transactions o WHERE o.user_id=t.user_id
+              AND o.dedup_of=t.dedup_key AND (left(o.dedup_key, 6) = 'plaid:') <> %s)
+        ORDER BY t.id""",
+        (user_id, bank_rows, list({r['source'] for r in rows}), min(days), plaid_client.MATCH_DAYS,
+         max(days), plaid_client.MATCH_DAYS, list({round(float(r['amount']), 2) for r in rows}), bank_rows))
+    return [dict(zip(('dedup_key', 'date', 'source', 'description', 'amount'), r)) for r in cur.fetchall()]
+
+
+@app.get('/api/plaid/status')
+def plaid_status(user: dict = Depends(get_current_user)):
+    if not plaid_client.enabled():
+        return {'enabled': False, 'items': []}
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""SELECT id, institution_name, status, error_code, last_synced_at, last_result,
+                    (last_result IS NULL AND last_attempt_at > NOW() - INTERVAL '15 minutes') AS syncing
+                FROM plaid_items WHERE user_id=%s ORDER BY institution_name, id""", (user['id'],))
+            items = [dict(r) for r in cur.fetchall()]
+            cur.execute("""SELECT a.id, a.item_id, a.name, a.mask, a.subtype, a.source,
+                    a.sync_from::text AS sync_from, a.enabled
+                FROM plaid_accounts a JOIN plaid_items i ON i.id=a.item_id
+                WHERE i.user_id=%s ORDER BY a.name, a.id""", (user['id'],))
+            accounts = [dict(r) for r in cur.fetchall()]
+        with conn.cursor() as cur:
+            latest = _statement_latest_by_source(cur, user['id'])
+    for item in items:
+        item['last_synced_at'] = item['last_synced_at'].isoformat() if item['last_synced_at'] else None
+        item['last_result'] = json.loads(item['last_result']) if item['last_result'] else None
+        item['accounts'] = [{k: v for k, v in a.items() if k != 'item_id'}
+                            for a in accounts if a['item_id'] == item['id']]
+    return {'enabled': True, 'environment': plaid_client.plaid_env(),
+            'can_manage': bool(user.get('is_owner')), 'items': items, 'statement_latest': latest}
+
+
+class PlaidLinkBody(BaseModel):
+    item_id: Optional[int] = None
+
+
+@app.post('/api/plaid/link-token')
+def plaid_link_token(body: PlaidLinkBody, user: dict = Depends(require_owner)):
+    """A Link token for a new bank, or to repair an existing connection (update mode)."""
+    _require_plaid()
+    access_token = None
+    if body.item_id is not None:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT access_token FROM plaid_items WHERE id=%s AND user_id=%s',
+                            (body.item_id, user['id']))
+                row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, 'Bank connection not found')
+    try:
+        if body.item_id is not None:
+            access_token = plaid_client.decrypt_token(row[0])
+        return {'link_token': plaid_client.create_link_token(user['id'], access_token)}
+    except PlaidError as exc:
+        raise _plaid_http_error(exc)
+
+
+class PlaidExchangeBody(BaseModel):
+    public_token: str = Field(min_length=1, max_length=500)
+    institution_name: str = Field('', max_length=100)
+
+
+@app.post('/api/plaid/exchange', status_code=201)
+def plaid_exchange(body: PlaidExchangeBody, user: dict = Depends(require_owner)):
+    """Finish a new connection. Accounts start switched off until the owner
+    confirms each one's source label and start date."""
+    _require_plaid()
+    try:
+        access_token, plaid_item_id = plaid_client.exchange_public_token(body.public_token)
+        accounts = plaid_client.get_accounts(access_token)
+    except PlaidError as exc:
+        raise _plaid_http_error(exc)
+    institution = body.institution_name.strip() or 'Bank'
+    with db() as conn:
+        with conn.cursor() as cur:
+            latest = _statement_latest_by_source(cur, user['id'])
+            cur.execute("""INSERT INTO plaid_items (user_id, item_id, access_token, institution_name)
+                VALUES (%s,%s,%s,%s)
+                ON CONFLICT (item_id) DO UPDATE SET access_token=EXCLUDED.access_token,
+                    status='ok', error_code=NULL
+                WHERE plaid_items.user_id=EXCLUDED.user_id RETURNING id""",
+                (user['id'], plaid_item_id, plaid_client.encrypt_token(access_token), institution))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(409, 'This bank connection belongs to another account')
+            for account in accounts:
+                cur.execute("""INSERT INTO plaid_accounts
+                        (item_id, account_id, name, mask, subtype, source, sync_from)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (account_id) DO UPDATE SET name=EXCLUDED.name, mask=EXCLUDED.mask
+                    WHERE plaid_accounts.item_id=EXCLUDED.item_id""",
+                    (row[0], str(account['account_id']),
+                     str(account.get('official_name') or account.get('name') or 'Account')[:120],
+                     (str(account['mask'])[:8] if account.get('mask') else None),
+                     (str(account['subtype'])[:40] if account.get('subtype') else None),
+                     institution, plaid_client.default_sync_from(latest.get(institution))))
+    return {'ok': True, 'item_id': row[0]}
+
+
+class PlaidAccountBody(BaseModel):
+    source: str = Field(min_length=1, max_length=80)
+    sync_from: date
+    enabled: bool
+
+
+@app.put('/api/plaid/accounts/{account_id}')
+def plaid_update_account(account_id: int, body: PlaidAccountBody, user: dict = Depends(require_owner)):
+    """Set an account's source label, start date and on/off switch. The sync
+    cursor is reset so the next sync re-reads history under the new settings;
+    rows already imported are recognised by their Plaid id and not repeated."""
+    _require_plaid()
+    source = body.source.strip()
+    if not source:
+        raise HTTPException(400, 'Source is required')
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE plaid_accounts a SET source=%s, sync_from=%s, enabled=%s
+                FROM plaid_items i WHERE i.id=a.item_id AND a.id=%s AND i.user_id=%s
+                RETURNING i.id""", (source, body.sync_from, body.enabled, account_id, user['id']))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, 'Account not found')
+            cur.execute('UPDATE plaid_items SET sync_cursor=NULL WHERE id=%s', (row[0],))
+    return {'ok': True, 'item_id': row[0]}
+
+
+def _claim_plaid_item(cur, item_id, user_id):
+    """One sync at a time per connection, across workers."""
+    cur.execute("""UPDATE plaid_items SET last_attempt_at=NOW(), last_result=NULL
+        WHERE id=%s AND user_id=%s AND (last_attempt_at IS NULL OR last_result IS NOT NULL
+            OR last_attempt_at < NOW() - INTERVAL '1 second' * %s)
+        RETURNING id""", (item_id, user_id, PLAID_CLAIM_SECONDS))
+    return cur.fetchone() is not None
+
+
+def _start_plaid_sync(item_id):
+    threading.Thread(target=_run_plaid_sync, args=(item_id,), daemon=True).start()
+
+
+@app.post('/api/plaid/items/{item_id}/sync', status_code=202)
+def plaid_sync_now(item_id: int, user: dict = Depends(require_edit)):
+    _require_plaid()
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute('SELECT 1 FROM plaid_items WHERE id=%s AND user_id=%s', (item_id, user['id']))
+            if not cur.fetchone():
+                raise HTTPException(404, 'Bank connection not found')
+            claimed = _claim_plaid_item(cur, item_id, user['id'])
+    if claimed:
+        _start_plaid_sync(item_id)
+    return {'started': claimed}
+
+
+@app.delete('/api/plaid/items/{item_id}')
+def plaid_remove_item(item_id: int, user: dict = Depends(require_owner)):
+    """Disconnect a bank. Imported transactions stay."""
+    _require_plaid()
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute('SELECT access_token FROM plaid_items WHERE id=%s AND user_id=%s',
+                        (item_id, user['id']))
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, 'Bank connection not found')
+    try:
+        plaid_client.remove_item(plaid_client.decrypt_token(row[0]))
+    except PlaidError as exc:
+        # Already gone at Plaid, or unreadable here: nothing left to revoke.
+        if exc.code not in ('ITEM_NOT_FOUND', 'INVALID_ACCESS_TOKEN', 'TOKEN_KEY_MISMATCH'):
+            raise _plaid_http_error(exc)
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute('DELETE FROM plaid_items WHERE id=%s AND user_id=%s', (item_id, user['id']))
+    return {'ok': True}
+
+
+def _finish_plaid_sync(item_id, status, result, cursor=None, error_code=None):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE plaid_items SET status=%s, error_code=%s, last_result=%s,
+                    sync_cursor=COALESCE(%s, sync_cursor),
+                    last_synced_at=CASE WHEN %s='ok' THEN NOW() ELSE last_synced_at END
+                WHERE id=%s""", (status, error_code, json.dumps(result), cursor, status, item_id))
+
+
+def _run_plaid_sync(item_id: int):
+    """Pull one connection's new activity into `transactions`. Runs in a
+    background thread after the caller has claimed the item."""
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT user_id, access_token, sync_cursor, institution_name
+                    FROM plaid_items WHERE id=%s""", (item_id,))
+                item = cur.fetchone()
+                if not item:
+                    return
+                user_id, stored_token, cursor, institution = item
+                cur.execute("""SELECT account_id, source, sync_from::text FROM plaid_accounts
+                    WHERE item_id=%s AND enabled""", (item_id,))
+                accounts = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+        if not accounts:
+            _finish_plaid_sync(item_id, 'ok', {'status': 'ok', 'new': 0, 'needs_review': 0,
+                'message': 'No accounts are switched on'})
+            return
+
+        added, modified, removed, next_cursor = plaid_client.sync_transactions(
+            plaid_client.decrypt_token(stored_token), cursor)
+
+        modified_keys = set()
+        by_key = {}
+        for tx, was_modified in [(t, False) for t in added] + [(t, True) for t in modified]:
+            row = plaid_client.to_row(tx)
+            account = accounts.get(row['account_id']) if row else None
+            if not account or row['date'] < account[1]:
+                continue
+            row['source'] = account[0]
+            row['description'] = clean_description(row['description']) or row['description']
+            by_key[row['dedup_key']] = row
+            if was_modified:
+                modified_keys.add(row['dedup_key'])
+        keys = list(by_key)
+        removed_keys = [plaid_client.KEY_PREFIX + r for r in removed]
+
+        # Categorize only rows not yet stored; keep AI calls outside the write lock.
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT dedup_key FROM transactions WHERE user_id=%s AND dedup_key=ANY(%s)',
+                            (user_id, keys))
+                known = {r[0] for r in cur.fetchall()}
+                cur.execute('SELECT name FROM tags WHERE user_id=%s ORDER BY name', (user_id,))
+                tag_list = [r[0] for r in cur.fetchall()]
+                new_rows = [by_key[k] for k in keys if k not in known]
+                # Rows a statement already supplied need no category of their own.
+                likely_matched, _ = plaid_client.match_rows(
+                    new_rows, _match_candidates(cur, user_id, new_rows, False))
+        to_tag = [r for r in new_rows if r['dedup_key'] not in likely_matched]
+        guide, history = load_categorization_context(user_id)
+        decisions = assign_tags_with_ai(to_tag, tag_list, guide, history)
+        if len(decisions) != len(to_tag):
+            raise ValueError('Categorization returned the wrong row count')
+        decision_by_key = {r['dedup_key']: d for r, d in zip(to_tag, decisions)}
+
+        import_name = f'Bank sync: {institution}'
+        new_count = needs_review = updated = deleted = matched = 0
+        with db() as conn:
+            with conn.cursor() as cur:
+                lock_key = int.from_bytes(
+                    hashlib.sha256(f'upload-owner:{user_id}'.encode()).digest()[:8],
+                    'big', signed=True)
+                cur.execute('SELECT pg_advisory_xact_lock(%s)', (lock_key,))
+                # Any status counts: a row the user deleted is not brought back.
+                cur.execute('SELECT dedup_key FROM transactions WHERE user_id=%s AND dedup_key=ANY(%s)',
+                            (user_id, keys))
+                known = {r[0] for r in cur.fetchall()}
+                fresh = [r for r in new_rows if r['dedup_key'] not in known]
+                # The statement row wins: it keeps its category and edits, and the
+                # bank's copy is stored as a duplicate so it is not imported again.
+                matches, possible = plaid_client.match_rows(
+                    fresh, _match_candidates(cur, user_id, fresh, False))
+                insert_rows = [(user_id, r['date'], r['description'], r['amount'], r['source'],
+                                r['dedup_key'], 'deduped' if r['dedup_key'] in matches else 'active',
+                                matches.get(r['dedup_key']), import_name) for r in fresh]
+                returned = []
+                if insert_rows:
+                    returned = psycopg2.extras.execute_values(cur, """
+                        INSERT INTO transactions
+                            (user_id, date, description, amount, source, dedup_key, status, dedup_of, import_file)
+                        VALUES %s RETURNING id, dedup_key""", insert_rows, fetch=True)
+                cur.execute('SELECT name, id FROM tags WHERE user_id=%s', (user_id,))
+                tag_ids = dict(cur.fetchall())
+                for tx_id, key in returned:
+                    if key in matches:
+                        matched += 1
+                        decision = review('Duplicate of a statement row; choose a category if you restore it.')
+                    elif key in possible:
+                        decision = review('Possible duplicate of a statement row; verify.')
+                    else:
+                        decision = decision_by_key.get(key) or review('Categorization was skipped; choose a category.')
+                    if decision['primary_tag'] and decision['primary_tag'] not in tag_ids:
+                        decision = review('The suggested category was removed during import; choose a category.')
+                    if key not in matches:
+                        new_count += 1
+                        needs_review += 1 if decision['needs_review'] else 0
+                    cur.execute("""
+                        UPDATE transactions SET primary_tag_id=%s, primary_migration_status='auto',
+                            needs_review=%s, suggested_tag_id=%s, categorization_reason=%s,
+                            categorization_confidence=%s, categorization_example_ids=%s
+                        WHERE id=%s AND user_id=%s
+                    """, (tag_ids.get(decision['primary_tag']), decision['needs_review'],
+                          tag_ids.get(decision['suggested_tag']), decision['reason'],
+                          decision['confidence'], decision['example_ids'], tx_id, user_id))
+                # The bank corrected a posted row: follow it unless the amount was edited here.
+                for key in modified_keys & known:
+                    row = by_key[key]
+                    cur.execute("""UPDATE transactions SET date=%s, amount=%s
+                        WHERE user_id=%s AND dedup_key=%s AND status='active' AND amount_revision=0
+                          AND (date, amount) IS DISTINCT FROM (%s::date, %s::numeric)""",
+                        (row['date'], row['amount'], user_id, key, row['date'], row['amount']))
+                    updated += cur.rowcount
+                if removed_keys:
+                    cur.execute("""UPDATE transactions SET status='deleted'
+                        WHERE user_id=%s AND dedup_key=ANY(%s) AND status='active'""",
+                        (user_id, removed_keys))
+                    deleted = cur.rowcount
+                    # A statement row hidden as a duplicate of a bank row that is now gone counts again.
+                    cur.execute("""UPDATE transactions SET status='active', dedup_of=NULL
+                        WHERE user_id=%s AND status='deduped' AND dedup_of=ANY(%s)
+                          AND left(dedup_key, 6) <> 'plaid:'""", (user_id, removed_keys))
+        _finish_plaid_sync(item_id, 'ok', {'status': 'ok', 'new': new_count, 'matched': matched,
+            'needs_review': needs_review, 'updated': updated, 'removed': deleted}, cursor=next_cursor)
+    except PlaidError as exc:
+        status = 'login_required' if exc.code in PLAID_RELINK_CODES else 'error'
+        print(f'[plaid_sync:{item_id}] {exc.code}')
+        _finish_plaid_sync(item_id, status, {'status': 'error', 'message': exc.message}, error_code=exc.code)
+    except Exception as exc:
+        # Type only: messages can carry transaction text or connection details.
+        print(f'[plaid_sync:{item_id}] {type(exc).__name__}')
+        try:
+            _finish_plaid_sync(item_id, 'error', {'status': 'error', 'message': 'Bank sync failed; try again.'},
+                               error_code='SYNC_FAILED')
+        except Exception as update_error:
+            print(f'[plaid_sync:{item_id}] cannot save error: {type(update_error).__name__}')
+
+
+def _claim_due_plaid_item():
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE plaid_items SET last_attempt_at=NOW(), last_result=NULL
+                WHERE id = (SELECT id FROM plaid_items
+                    WHERE status IN ('ok', 'error')
+                      AND (last_attempt_at IS NULL OR last_attempt_at < NOW() - INTERVAL '1 hour' * %s)
+                    ORDER BY last_attempt_at NULLS FIRST LIMIT 1 FOR UPDATE SKIP LOCKED)
+                RETURNING id""", (PLAID_SYNC_HOURS,))
+            row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _plaid_scheduler():
+    """Each worker polls; the atomic claim lets only one sync a given connection."""
+    while True:
+        time.sleep(600 + random.uniform(0, 300))
+        try:
+            item_id = _claim_due_plaid_item()
+            while item_id is not None:
+                _run_plaid_sync(item_id)
+                item_id = _claim_due_plaid_item()
+        except Exception as exc:
+            print(f'[plaid_scheduler] {type(exc).__name__}')
+
 
 # ── Tags ──────────────────────────────────────────────────────────────────────────
 @app.get("/api/tags")

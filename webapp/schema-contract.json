@@ -1,6 +1,6 @@
 {
   "app": "spending",
-  "version": 1,
+  "version": 2,
   "objects": [
     {
       "kind": "column",
@@ -76,6 +76,111 @@
       "kind": "column",
       "name": "invited_users.role",
       "definition": "[\"text\", true, \"'read'::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_accounts.account_id",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_accounts.enabled",
+      "definition": "[\"boolean\", true, \"false\"]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_accounts.id",
+      "definition": "[\"integer\", true, \"nextval('plaid_accounts_id_seq'::regclass)\"]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_accounts.item_id",
+      "definition": "[\"integer\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_accounts.mask",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_accounts.name",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_accounts.source",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_accounts.subtype",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_accounts.sync_from",
+      "definition": "[\"date\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.access_token",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.created_at",
+      "definition": "[\"timestamp with time zone\", true, \"now()\"]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.error_code",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.id",
+      "definition": "[\"integer\", true, \"nextval('plaid_items_id_seq'::regclass)\"]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.institution_name",
+      "definition": "[\"text\", true, \"''::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.item_id",
+      "definition": "[\"text\", true, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.last_attempt_at",
+      "definition": "[\"timestamp with time zone\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.last_result",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.last_synced_at",
+      "definition": "[\"timestamp with time zone\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.status",
+      "definition": "[\"text\", true, \"'ok'::text\"]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.sync_cursor",
+      "definition": "[\"text\", false, null]"
+    },
+    {
+      "kind": "column",
+      "name": "plaid_items.user_id",
+      "definition": "[\"integer\", true, null]"
     },
     {
       "kind": "column",
@@ -494,6 +599,41 @@
     },
     {
       "kind": "constraint",
+      "name": "plaid_accounts:FOREIGN KEY (item_id) REFERENCES plaid_items(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "plaid_accounts:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "plaid_accounts:UNIQUE (account_id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "plaid_items:CHECK ((status = ANY (ARRAY['ok'::text, 'login_required'::text, 'error'::text])))",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "plaid_items:FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "plaid_items:PRIMARY KEY (id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
+      "name": "plaid_items:UNIQUE (item_id)",
+      "definition": "true"
+    },
+    {
+      "kind": "constraint",
       "name": "tags:FOREIGN KEY (group_tag_id) REFERENCES tags(id) ON DELETE SET NULL",
       "definition": "true"
     },
@@ -669,6 +809,16 @@
     },
     {
       "kind": "index",
+      "name": "idx_plaid_accounts_item",
+      "definition": "CREATE INDEX idx_plaid_accounts_item ON public.plaid_accounts USING btree (item_id)"
+    },
+    {
+      "kind": "index",
+      "name": "idx_plaid_items_user",
+      "definition": "CREATE INDEX idx_plaid_items_user ON public.plaid_items USING btree (user_id)"
+    },
+    {
+      "kind": "index",
       "name": "idx_tx_amount_changes",
       "definition": "CREATE INDEX idx_tx_amount_changes ON public.transaction_amount_changes USING btree (transaction_id, id DESC)"
     },
@@ -726,6 +876,26 @@
       "kind": "index",
       "name": "invited_users_pkey",
       "definition": "CREATE UNIQUE INDEX invited_users_pkey ON public.invited_users USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "plaid_accounts_account_id_key",
+      "definition": "CREATE UNIQUE INDEX plaid_accounts_account_id_key ON public.plaid_accounts USING btree (account_id)"
+    },
+    {
+      "kind": "index",
+      "name": "plaid_accounts_pkey",
+      "definition": "CREATE UNIQUE INDEX plaid_accounts_pkey ON public.plaid_accounts USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "plaid_items_item_id_key",
+      "definition": "CREATE UNIQUE INDEX plaid_items_item_id_key ON public.plaid_items USING btree (item_id)"
+    },
+    {
+      "kind": "index",
+      "name": "plaid_items_pkey",
+      "definition": "CREATE UNIQUE INDEX plaid_items_pkey ON public.plaid_items USING btree (id)"
     },
     {
       "kind": "index",
@@ -809,6 +979,16 @@
     },
     {
       "kind": "sequence",
+      "name": "plaid_accounts_id_seq",
+      "definition": "[\"integer\", 1, 1, 2147483647, 1, false]"
+    },
+    {
+      "kind": "sequence",
+      "name": "plaid_items_id_seq",
+      "definition": "[\"integer\", 1, 1, 2147483647, 1, false]"
+    },
+    {
+      "kind": "sequence",
       "name": "tags_id_seq",
       "definition": "[\"integer\", 1, 1, 2147483647, 1, false]"
     },
@@ -850,6 +1030,16 @@
     {
       "kind": "table",
       "name": "invited_users",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "plaid_accounts",
+      "definition": "[\"r\", \"p\", false, false]"
+    },
+    {
+      "kind": "table",
+      "name": "plaid_items",
       "definition": "[\"r\", \"p\", false, false]"
     },
     {

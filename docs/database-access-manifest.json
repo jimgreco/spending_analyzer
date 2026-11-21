@@ -39,6 +39,18 @@
       "UPDATE",
       "DELETE"
     ],
+    "plaid_accounts": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
+    "plaid_items": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE"
+    ],
     "tags": [
       "SELECT",
       "INSERT",
@@ -95,6 +107,12 @@
       "USAGE"
     ],
     "invited_users_id_seq": [
+      "USAGE"
+    ],
+    "plaid_accounts_id_seq": [
+      "USAGE"
+    ],
+    "plaid_items_id_seq": [
       "USAGE"
     ],
     "tags_id_seq": [

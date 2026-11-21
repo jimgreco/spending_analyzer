@@ -92,6 +92,57 @@ or `expected_correction_revision` on primary-category edit. A stale manager
 action returns HTTP 409 and the page refreshes the list before another edit.
 `GET /api/transactions?status=review` returns active pending rows.
 
+## Bank sync (Plaid)
+
+Optional second import path: connect a bank through Plaid and its posted
+transactions arrive on their own, categorized like an uploaded statement. It is
+off, with no UI and every `/api/plaid/*` write returning 404, until all three of
+these are set:
+
+| Variable | Value |
+|----------|-------|
+| `PLAID_CLIENT_ID`, `PLAID_SECRET` | From the Plaid dashboard (Developers → Keys). |
+| `PLAID_TOKEN_KEY` | A Fernet key that encrypts bank access tokens in the database: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Losing or changing it means reconnecting every bank. |
+| `PLAID_ENV` | `production` (default; the free Trial plan uses it too) or `sandbox`. |
+| `PLAID_REDIRECT_URI` | Optional, but required by banks that sign in on their own site (Chase, Bank of America, Citi). Set it to the app's home page URL and add the same URL under Allowed redirect URIs in the Plaid dashboard. |
+
+How it behaves:
+
+- **Connected banks** on the Import page. Only the owner can connect, configure
+  or disconnect; editors can press **Sync now**; read-only users do not see it.
+- A new connection imports nothing until each account is given a **source
+  label** (use the same label as that card's statements), an **Import from**
+  date and is switched on. The date defaults to the day after the latest
+  statement row for that source. Rows before it are left to statements.
+- A charge that arrives both on a statement and through bank sync is counted
+  once. Two rows are the same charge when they have the same source label, the
+  same amount to the cent and dates within 3 days, and either the dates are
+  equal or the descriptions share a word. Pairing is one-to-one, so two equal
+  charges stay two charges. Whichever copy arrived first stays active with its
+  category and edits; the second is stored with status `deduped` (the Deduped
+  tab, where it can be restored). A row with the same amount within 3 days but
+  a different date and no shared word is imported and flagged for review as a
+  possible duplicate. A statement row you deleted also absorbs its bank copy,
+  so the charge does not come back. Matching depends on the account's source
+  label being the same as the statements'.
+- Only posted transactions are imported (pending ones are skipped), dated by
+  purchase date when the bank gives one. Plaid's sign already matches the
+  dashboard: positive is money out. Each row is keyed `plaid:<transaction id>`,
+  so re-reading history never duplicates and a row you deleted stays deleted.
+- If the bank later corrects a posted row, its date and amount follow unless you
+  edited the amount here. A row the bank withdraws moves to the trash.
+- Every worker checks every 10–15 minutes and syncs each connection at most once
+  every 12 hours. A connection whose sign-in expired shows **Reconnect**, which
+  repairs it in place without using another Plaid connection slot.
+- Changing an account's settings re-reads that bank's history under the new
+  settings. Disconnecting revokes the token at Plaid and keeps imported rows.
+
+Schema: contract version 2 adds `plaid_items` and `plaid_accounts`
+(`SCHEMA_UPGRADES` in `app.py`). Run `python webapp/migrate.py` with
+`MIGRATION_DATABASE_URL` **before** releasing this version; the upgrade also
+grants `spending_runtime` DML on the two tables and USAGE on their sequences.
+The previous image keeps running on the upgraded schema.
+
 ## Import reliability
 
 - Recognized Apple Card, Coinbase One Card, Bank of America, Citi, and Chase
