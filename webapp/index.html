@@ -52,6 +52,22 @@ a{color:var(--accent2);text-decoration:none}
   list-style:none;display:flex;align-items:center;gap:6px}
 #upload-history details summary::before{content:"▶";font-size:.65rem}
 #upload-history details[open] summary::before{content:"▼"}
+#bank-sync{margin-bottom:24px;font-size:.85rem}
+#bank-sync summary{cursor:pointer;color:var(--muted);font-size:.8rem;list-style:none;display:flex;align-items:center;gap:6px;user-select:none}
+#bank-sync summary::before{content:"▶";font-size:.65rem}
+#bank-sync details[open] summary::before{content:"▼"}
+.bank-item{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;background:var(--surface)}
+.bank-item[data-status="login_required"],.bank-item[data-status="error"]{border-color:var(--red)}
+.bank-item-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.bank-status{color:var(--muted);font-size:.8rem}
+.bank-actions{margin-left:auto;display:flex;gap:6px}
+.bank-accounts{width:100%;border-collapse:collapse;margin-top:8px}
+.bank-accounts th{text-align:left;color:var(--muted);font-weight:500;font-size:.75rem;padding:4px 6px}
+.bank-accounts td{padding:4px 6px;border-top:1px solid var(--border)}
+.bank-accounts input:not([type=checkbox]){background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px 6px;font-size:.8rem;max-width:100%}
+.bank-mask,.bank-note{color:var(--muted)}
+.bank-note{font-size:.78rem;margin:10px 0}
+.bank-connect{margin-top:4px}
 #history-table{margin-top:10px;font-size:.8rem;border-collapse:collapse;width:100%}
 #history-table td,#history-table th{padding:6px 10px;border-bottom:1px solid var(--border);text-align:left}
 #history-table th{color:var(--muted);font-weight:600;font-size:.72rem;text-transform:uppercase}
@@ -705,6 +721,7 @@ body[data-role=read] #tag-modal .cat-row-actions,body[data-role=read] #tag-modal
   <!-- Upload history -->
   <div id="upload-jobs" aria-live="polite"></div>
   <div id="upload-history"></div>
+  <div id="bank-sync" hidden></div>
 
   <!-- Summary cards -->
   <div class="cards">
@@ -1151,6 +1168,7 @@ async function checkAuth() {
     });
     showUserHeader(user);
     await Promise.all([loadTags(), loadTotals(), loadTransactions(), loadUploadHistory(), loadUploadJobs()]);
+    loadBankSync().then(resumePlaidOAuth);
     if (user.is_owner) checkMigrationBanner();
     applyPageFromHash();
   } catch(e) {
@@ -1554,7 +1572,7 @@ async function loadUploadJobs() {
     const el = document.getElementById('upload-jobs');
     el.innerHTML = recent.length ? `<div style="margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:8px">
       <strong>Recent import jobs</strong><div style="font-size:.83rem;color:var(--muted)">Jobs stay visible after a refresh. For an interrupted or failed job, select the same file again.</div>
-      ${recent.map(j => `<div style="margin-top:8px;overflow-wrap:anywhere">${escHtml(j.filename)} — ${escHtml(j.status)}${j.result?.message ? ': ' + escHtml(j.result.message) : j.result?.status === 'ok' ? `: ${j.result.new} new, ${j.result.dupes} dupes, ${j.result.skipped || 0} already in this file${j.result.possible_overlap ? `, ${j.result.possible_overlap} legacy overlaps to review` : ''}` : ''}</div>`).join('')}
+      ${recent.map(j => `<div style="margin-top:8px;overflow-wrap:anywhere">${escHtml(j.filename)} — ${escHtml(j.status)}${j.result?.message ? ': ' + escHtml(j.result.message) : j.result?.status === 'ok' ? `: ${j.result.new} new, ${j.result.dupes} dupes, ${j.result.skipped || 0} already in this file${j.result.possible_overlap ? `, ${j.result.possible_overlap} legacy overlaps to review` : ''}${j.result.bank_matched ? `, ${j.result.bank_matched} of the dupes already synced from the bank` : ''}` : ''}</div>`).join('')}
       </div>` : '';
     clearTimeout(uploadJobRefreshTimer);
     const activeNow = jobs.some(j => active.has(j.status));
@@ -3355,6 +3373,7 @@ async function uploadFiles(files, force = false, expectedHash = '', displayNames
           if (r.gpt_tagged) classified.push(`${r.gpt_tagged} by AI`);
           if (r.needs_review) classified.push(`${r.needs_review} need review`);
           if (r.possible_overlap) classified.push(`${r.possible_overlap} possible legacy overlaps`);
+          if (r.bank_matched) classified.push(`${r.bank_matched} dupes already synced from the bank`);
           return `${r.filename}: ${r.new} new, ${r.dupes} dupes${classified.length ? ` (${classified.join(', ')})` : ''}`;
         });
       showToast(
@@ -3456,6 +3475,192 @@ async function saveSource(txId, newSource, wrap) {
 function sourceTag(src) {
   const bg = sourceColor(src);
   return `<span class="source-tag" style="background:${bg};color:${contrastText(bg)}">${escHtml(src)}</span>`;
+}
+
+// ── Bank sync (Plaid) ──────────────────────────────────────────────────────────
+// Hidden unless the server has Plaid configured. Owners connect and configure;
+// editors can run a sync; read-only users never see the panel.
+let bankSync = null;
+let bankSyncPoll = null;
+const PLAID_LINK_KEY = 'spending.plaidLink.v1';
+const JSON_POST = body => ({method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+
+function bankError(e) {
+  try { return JSON.parse(e.message).detail || 'Try again.'; } catch (_) { return 'Try again.'; }
+}
+
+async function loadBankSync() {
+  const el = document.getElementById('bank-sync');
+  const wasSyncing = new Set((bankSync?.items || []).filter(i => i.syncing).map(i => i.id));
+  try { bankSync = await api('/api/plaid/status'); } catch (e) { el.hidden = true; return; }
+  if (!bankSync.enabled || currentUser?.role === 'read') { el.hidden = true; return; }
+  const finished = bankSync.items.filter(i => wasSyncing.has(i.id) && !i.syncing);
+  for (const item of finished) {
+    const r = item.last_result || {};
+    if (r.status === 'ok') {
+      showToast(`${item.institution_name} synced`, r.message ||
+        `${r.new || 0} new${r.matched ? `, ${r.matched} already on a statement` : ''}${r.needs_review ? `, ${r.needs_review} to review` : ''}`);
+    } else {
+      showToast(`${item.institution_name} sync failed`, r.message || 'Try again.', 'error');
+    }
+  }
+  if (finished.length) { loadTotals(); loadTransactions(); loadUploadHistory(); }
+  renderBankSync();
+  clearTimeout(bankSyncPoll);
+  if (bankSync.items.some(i => i.syncing)) bankSyncPoll = setTimeout(loadBankSync, 3000);
+}
+
+function bankItemStatus(item) {
+  if (item.syncing) return 'Syncing…';
+  if (item.status === 'login_required') return 'Sign-in needed — reconnect to resume syncing';
+  if (item.status === 'error') return `Last sync failed (${escHtml(item.error_code || 'error')})`;
+  if (!item.accounts.some(a => a.enabled)) return 'Switch on an account to start importing';
+  if (!item.last_synced_at) return 'Not synced yet';
+  return 'Synced ' + escHtml(new Date(item.last_synced_at).toLocaleString([], {dateStyle: 'medium', timeStyle: 'short'}));
+}
+
+function renderBankSync() {
+  const el = document.getElementById('bank-sync');
+  const owner = !!bankSync.can_manage;
+  const lock = owner ? '' : ' disabled';
+  const sources = [...new Set([...(allSources || []), ...Object.keys(bankSync.statement_latest || {})])].sort();
+  const open = el.querySelector('details')?.open ?? true;
+  el.hidden = false;
+  el.innerHTML = `
+    <details${open ? ' open' : ''}>
+      <summary>Connected banks (${bankSync.items.length})${bankSync.environment === 'sandbox' ? ' · sandbox' : ''}</summary>
+      <datalist id="bank-source-list">${sources.map(s => `<option value="${escHtml(s)}">`).join('')}</datalist>
+      ${bankSync.items.map(item => `
+        <div class="bank-item" data-status="${escHtml(item.status)}">
+          <div class="bank-item-head">
+            <strong>${escHtml(item.institution_name)}</strong>
+            <span class="bank-status">${bankItemStatus(item)}</span>
+            <span class="bank-actions">
+              ${item.status === 'login_required' && owner ? `<button class="btn" onclick="openPlaidLink(${item.id})">Reconnect</button>` : ''}
+              <button class="btn" onclick="syncBank(${item.id})"${item.syncing ? ' disabled' : ''}>Sync now</button>
+              ${owner ? `<button class="btn" onclick="disconnectBank(${item.id})">Disconnect</button>` : ''}
+            </span>
+          </div>
+          <table class="bank-accounts">
+            <thead><tr><th>Account</th><th>Source label</th><th>Import from</th><th>On</th><th></th></tr></thead>
+            <tbody>${item.accounts.map(a => `<tr id="bank-account-${a.id}">
+              <td>${escHtml(a.name)}${a.mask ? ` <span class="bank-mask">•••• ${escHtml(a.mask)}</span>` : ''}</td>
+              <td><input class="bank-source" list="bank-source-list" value="${escHtml(a.source)}" maxlength="80"
+                    aria-label="Source label for ${escHtml(a.name)}" oninput="suggestBankStart(${a.id}, ${a.enabled})"${lock}></td>
+              <td><input class="bank-from" type="date" value="${escHtml(a.sync_from)}" aria-label="Import from date for ${escHtml(a.name)}"${lock}></td>
+              <td><input class="bank-enabled" type="checkbox" ${a.enabled ? 'checked' : ''} aria-label="Import ${escHtml(a.name)}"${lock}></td>
+              <td>${owner ? `<button class="btn" onclick="saveBankAccount(${a.id})">Save</button>` : ''}</td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </div>`).join('')}
+      <p class="bank-note">Each account imports posted transactions dated on or after its “Import from” date, under the source label you choose. A charge that is also on an uploaded statement for the same source is counted once: the copy that arrives second is filed under Deduped, where you can restore it.</p>
+      ${owner ? `<button class="btn bank-connect" onclick="openPlaidLink()">+ Connect a bank</button>` : ''}
+    </details>`;
+}
+
+// Until an account is switched on, follow the chosen source: start the day after its last statement row.
+function suggestBankStart(accountId, enabled) {
+  if (enabled) return;
+  const row = document.getElementById(`bank-account-${accountId}`);
+  const latest = (bankSync.statement_latest || {})[row.querySelector('.bank-source').value.trim()];
+  if (!latest) return;
+  const next = new Date(latest + 'T00:00:00Z');
+  next.setUTCDate(next.getUTCDate() + 1);
+  row.querySelector('.bank-from').value = next.toISOString().slice(0, 10);
+}
+
+async function saveBankAccount(accountId) {
+  const row = document.getElementById(`bank-account-${accountId}`);
+  const body = {
+    source: row.querySelector('.bank-source').value.trim(),
+    sync_from: row.querySelector('.bank-from').value,
+    enabled: row.querySelector('.bank-enabled').checked,
+  };
+  if (!body.source || !body.sync_from) { showToast('Not saved', 'Enter a source label and a start date.', 'error'); return; }
+  try {
+    const saved = await api(`/api/plaid/accounts/${accountId}`, {...JSON_POST(body), method: 'PUT'});
+    await startBankSync(saved.item_id);
+  } catch (e) { showToast('Not saved', bankError(e), 'error'); }
+  loadBankSync();
+}
+
+// Mark the connection as syncing locally so a sync that finishes before the
+// next status poll still reports its result.
+async function startBankSync(itemId) {
+  await api(`/api/plaid/items/${itemId}/sync`, {method: 'POST'});
+  const item = bankSync?.items.find(i => i.id === itemId);
+  if (item) item.syncing = true;
+}
+
+async function syncBank(itemId) {
+  try { await startBankSync(itemId); }
+  catch (e) { showToast('Sync not started', bankError(e), 'error'); }
+  loadBankSync();
+}
+
+async function disconnectBank(itemId) {
+  const item = bankSync.items.find(i => i.id === itemId);
+  if (!item || !confirm(`Disconnect ${item.institution_name}? Transactions already imported stay. On Plaid's free plan a disconnected bank still counts toward the connection limit, so use Reconnect to fix a sign-in problem instead.`)) return;
+  try { await api(`/api/plaid/items/${itemId}`, {method: 'DELETE'}); }
+  catch (e) { showToast('Not disconnected', bankError(e), 'error'); }
+  loadBankSync();
+}
+
+function loadPlaidScript() {
+  return new Promise((resolve, reject) => {
+    if (window.Plaid) return resolve();
+    const s = document.createElement('script');
+    s.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('{"detail":"Could not load Plaid Link."}'));
+    document.head.appendChild(s);
+  });
+}
+
+function forgetPlaidLink() { try { localStorage.removeItem(PLAID_LINK_KEY); } catch (_) {} }
+
+// itemId set: repair that connection (update mode). resume set: returning from a bank's OAuth page.
+async function openPlaidLink(itemId = null, resume = null) {
+  try {
+    await loadPlaidScript();
+    let token = resume?.token;
+    if (!token) {
+      token = (await api('/api/plaid/link-token', JSON_POST({item_id: itemId}))).link_token;
+      try { localStorage.setItem(PLAID_LINK_KEY, JSON.stringify({token, itemId})); } catch (_) {}
+    }
+    const handler = Plaid.create({
+      token,
+      ...(resume ? {receivedRedirectUri: resume.href} : {}),
+      onSuccess: async (publicToken, metadata) => {
+        forgetPlaidLink();
+        try {
+          if (itemId) {
+            await startBankSync(itemId);
+          } else {
+            await api('/api/plaid/exchange', JSON_POST({
+              public_token: publicToken, institution_name: metadata?.institution?.name || ''}));
+            showToast('Bank connected', 'Choose a source label and start date for each account, then switch it on.');
+          }
+        } catch (e) { showToast('Bank connection failed', bankError(e), 'error'); }
+        loadBankSync();
+      },
+      onExit: () => forgetPlaidLink(),
+    });
+    handler.open();
+  } catch (e) {
+    forgetPlaidLink();
+    showToast('Could not open bank connection', bankError(e), 'error');
+  }
+}
+
+// Banks that sign in on their own site send the browser back here with oauth_state_id.
+function resumePlaidOAuth() {
+  if (!new URLSearchParams(location.search).has('oauth_state_id')) return;
+  const href = location.href;
+  history.replaceState({}, '', location.pathname + location.hash);
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(PLAID_LINK_KEY) || 'null'); } catch (_) {}
+  if (saved?.token && currentUser?.is_owner) openPlaidLink(saved.itemId || null, {token: saved.token, href});
 }
 
 function escHtml(s) {

@@ -93,6 +93,7 @@ Environment variables (set via EBS console or `eb setenv`):
 - `SECRET_KEY` — itsdangerous session signing key
 - `WEEKLY_SUMMARY_TOKEN_SHA256` — lowercase hex SHA-256 of the weekly-review bearer token (the plaintext token is never stored in the app). Optional: while it or `WEEKLY_SUMMARY_EMAIL` is unset or empty, `/api/weekly-summary` returns 404.
 - `WEEKLY_SUMMARY_EMAIL` — whose ledger `/api/weekly-summary` reports (case-insensitive). An invited user's email reports the `OWNER_EMAIL` ledger, as in the app.
+- `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_TOKEN_KEY` (Fernet key encrypting stored bank access tokens), optional `PLAID_ENV` (`production`/`sandbox`) and `PLAID_REDIRECT_URI` — bank sync is off unless the first three are set. See `webapp/README.md` "Bank sync (Plaid)".
 
 ---
 
@@ -121,6 +122,10 @@ Environment variables (set via EBS console or `eb setenv`):
 | `transaction_tags` | `transaction_id`, `tag_id` — PK(transaction_id, tag_id) |
 | `uploaded_files` | `id`, `user_id`, `filename`, `file_hash`, `source`, `card_last4`, `tx_new`, `tx_dupes` |
 | `invited_users` | `id`, `email` UNIQUE, `role` ('read'/'edit') |
+| `plaid_items` | `id`, `user_id`, `item_id` UNIQUE, `access_token` (encrypted), `institution_name`, `sync_cursor`, `status` ('ok'/'login_required'/'error'), `last_result` |
+| `plaid_accounts` | `id`, `item_id` → `plaid_items`, `account_id` UNIQUE, `source`, `sync_from`, `enabled` |
+
+**Schema upgrades** for the adopted production database are the versioned `SCHEMA_UPGRADES` in `app.py`, applied only by `migrate.py`; each one bumps `schema-contract.json` (`version` plus the new catalog objects). The older list below is the frozen v1 initializer.
 
 **Migrations** live at the bottom of `app.py` as a list of `(name, sql)` tuples. Each runs in its own transaction on startup — failures are logged and skipped, never blocking.
 
@@ -172,6 +177,20 @@ Environment variables (set via EBS console or `eb setenv`):
 | PATCH | `/api/uploads` | Rename display name |
 | PATCH | `/api/uploads/source` | Change source label |
 | PATCH | `/api/uploads/card-last4` | Set card last 4 digits |
+
+### Bank sync (Plaid)
+All in `app.py` under "Bank sync (Plaid)"; HTTP client and row mapping in `plaid_client.py`. Bank-synced rows have `dedup_key = 'plaid:<transaction_id>'` and `import_file = 'Bank sync: <institution>'`.
+
+Statement and bank copies of one charge are paired by `plaid_client.match_rows` (same source, same amount, dates within 3 days, and same date or a shared description word; one-to-one) against `_match_candidates`, in both `_run_plaid_sync` and `_process_upload_job`. The copy that arrives second is inserted `status='deduped'` with `dedup_of` = the first copy's `dedup_key`; weaker candidates are imported with `needs_review`.
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/api/plaid/status` | `{enabled, items[], statement_latest}`; `{enabled:false}` when unconfigured |
+| POST | `/api/plaid/link-token` | Owner. Body `{item_id?}` — with an id, update mode to repair a connection |
+| POST | `/api/plaid/exchange` | Owner. Body `{public_token, institution_name}`; accounts start disabled |
+| PUT | `/api/plaid/accounts/{id}` | Owner. Body `{source, sync_from, enabled}`; resets the sync cursor |
+| POST | `/api/plaid/items/{id}/sync` | Edit. Starts `_run_plaid_sync` in a thread; `{started}` |
+| DELETE | `/api/plaid/items/{id}` | Owner. Revokes at Plaid, keeps transactions |
 
 ### Misc
 | Method | Path | Notes |
